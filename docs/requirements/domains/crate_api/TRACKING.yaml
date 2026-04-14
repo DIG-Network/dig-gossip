@@ -76,10 +76,14 @@ items:
   - id: API-007
     section: "2.2, 2.7"
     summary: "PeerId type alias and PeerInfo with get_group/get_key"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#22-peerid"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_007_tests.rs
+    notes: >
+      PeerId remains Bytes32 alias. PeerInfo { host, port } implements Chia-style get_group (/16 IPv4,
+      32-bit prefix IPv6, IPv4-mapped normalization, SHA-256 hostname fallback) and get_key
+      (addr||port_be or SHA256(host)||port_be). Replaces earlier stub PeerInfo { peer_id } unused by implementation.
   - id: API-008
     section: "3.4"
     summary: "GossipStats and RelayStats"

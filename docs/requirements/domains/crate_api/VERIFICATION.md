@@ -13,7 +13,7 @@
 | API-004 | verified | GossipError enum variants                  | `tests/api_004_tests.rs`: Display strings per API-004 table; `From<ClientError>` / `?`; `Clone` (incl. ClientError via Arc); `Debug`; Sketch* variants |
 | API-005 | verified | PeerConnection wraps Peer with metadata    | `tests/api_005_tests.rs`: all fields + initial bytes/reputation; inbound/outbound; TLS peer_id derivation (ChiaCertificate + x509-parser); loopback WS RequestPeers → inbound_rx |
 | API-006 | verified | PeerReputation and PenaltyReason           | `tests/api_006_tests.rs`: defaults; penalty accumulation + saturating add; auto-ban at threshold + ban_until; `refresh_ban_status` expiry; RTT window/mean/score; zero-RTT score; `as_number`; all `PenaltyReason` variants + CON-007 weight regression; `last_penalty_reason` |
-| API-007 | --     | PeerId type alias and PeerInfo               | Unit test PeerId is Bytes32; PeerInfo get_group/get_key return correct values         |
+| API-007 | verified | PeerId type alias and PeerInfo             | `tests/api_007_tests.rs`: Bytes32 interchange; Debug/Clone/Eq/Hash + HashMap key; get_group IPv4/IPv6/mapped/hostname; get_key layouts, uniqueness, determinism |
 | API-008 | --     | GossipStats and RelayStats                   | Unit test Default impl and field population from a running service                    |
 | API-009 | --     | DigMessageType enum                          | Unit test discriminant values, round-trip serialization, no collision with Chia types  |
 | API-010 | --     | IntroducerConfig and RelayConfig             | Unit test Default impls, Serialize/Deserialize round-trip, field validation            |
