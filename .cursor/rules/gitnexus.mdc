@@ -6,6 +6,16 @@ alwaysApply: true
 
 Upstream: [nxpatterns/gitnexus](https://github.com/nxpatterns/gitnexus). From **this repository root**: `npx gitnexus …`.
 
+## Before ANY code modification (mandatory)
+
+Do **not** apply patches or edit `src/` / `tests/` until GitNexus has been consulted for this session’s intent:
+
+1. **CLI:** `npx gitnexus status` → if index missing/stale, `npx gitnexus analyze` (then proceed).
+2. **MCP:** If GitNexus MCP is connected, use `gitnexus_impact` / `gitnexus_context` on the symbols you will touch **before** editing (especially for renames or public API).
+3. **If CLI fails** (npm/tooling): still attempt MCP tools or `gitnexus://repo/dig-gossip/context`; state in the PR/chat that CLI could not run so humans can refresh the index locally.
+
+After substantive edits, run `npx gitnexus analyze` again (or MCP equivalent) so the graph matches `main`.
+
 ## Before trusting the graph
 
 1. Run **`npx gitnexus status`** (or read `gitnexus://repo/<this-folder-name>/context` if GitNexus MCP is connected).
