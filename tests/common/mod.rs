@@ -26,6 +26,9 @@
 //!   together” requires API-001 / API-002 / CON-001. The function below composes temp dirs,
 //!   certs, configs, and proves two independent listeners can bind — the handles remain
 //!   placeholders until the service constructor exists.
+//! - **[`wss_full_node`]:** CON-001 one-shot TLS WebSocket “full node” acceptor (handshake + `RequestPeers`).
+
+pub mod wss_full_node;
 
 use std::net::SocketAddr;
 use std::path::Path;

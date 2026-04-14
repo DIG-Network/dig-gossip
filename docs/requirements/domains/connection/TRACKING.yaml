@@ -5,10 +5,15 @@ items:
   - id: CON-001
     section: "5.1"
     summary: "Outbound connection via connect_peer()"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#51-outbound-connection-reuses-chia-sdk-client"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_001_tests.rs
+    notes: >
+      connection/outbound.rs mirrors chia-sdk connect_peer + returns Handshake + remote SPKI for PeerId + PeerConnection fields.
+      GossipHandle::connect_to uses TLS connector, RequestPeers, AddressManager::add_to_new_table; PeerSlot::Live stores Peer;
+      inbound_rx forwarded to broadcast hub. API-002/API-008 offline tests use __connect_stub_peer_with_direction.
+      lib.rs re-exports create_native_tls_connector when feature native-tls (create_rustls_connector when rustls-only).
   - id: CON-002
     section: "5.2"
     summary: "Inbound connection listener"

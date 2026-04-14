@@ -74,6 +74,12 @@ pub use chia_protocol::{
     RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
     RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
 };
+/// TLS connector for outbound `wss://` (CON-001 / SPEC §5.1) — STR-004 backend switch.
+#[cfg(feature = "native-tls")]
+pub use chia_sdk_client::create_native_tls_connector;
+/// Rustls backend (enable `rustls` without `native-tls` in STR-004 graphs).
+#[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+pub use chia_sdk_client::create_rustls_connector;
 pub use chia_sdk_client::{
     load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
     RateLimiter, RateLimits, V2_RATE_LIMITS,

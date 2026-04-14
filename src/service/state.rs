@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use chia_protocol::{Message, NodeType};
+use chia_sdk_client::Peer;
 use chia_ssl::ChiaCertificate;
 use lru::LruCache;
 use tokio::sync::broadcast;
@@ -33,13 +34,49 @@ pub(crate) const LC_CONSTRUCTED: u8 = 0;
 pub(crate) const LC_RUNNING: u8 = 1;
 pub(crate) const LC_STOPPED: u8 = 2;
 
-/// Metadata for a **stub** connection (CON-001 will replace with full handshake fields).
-#[allow(dead_code)]
+/// Metadata shared by stub rows and live TLS peers (direction + declared role + remote socket).
 #[derive(Debug, Clone)]
 pub(crate) struct StubPeer {
     pub remote: SocketAddr,
     pub node_type: NodeType,
     pub is_outbound: bool,
+}
+
+/// Live [`Peer`] handle after CON-001 outbound `wss://` + handshake (chia-sdk-client `Arc` inside).
+#[derive(Debug)]
+pub(crate) struct LiveSlot {
+    pub meta: StubPeer,
+    pub peer: Peer,
+}
+
+/// Either a **test-only stub** row or a **real** TLS peer (CON-001+).
+#[derive(Debug)]
+pub(crate) enum PeerSlot {
+    Stub(StubPeer),
+    Live(LiveSlot),
+}
+
+impl PeerSlot {
+    pub(crate) fn remote(&self) -> SocketAddr {
+        match self {
+            PeerSlot::Stub(p) => p.remote,
+            PeerSlot::Live(l) => l.meta.remote,
+        }
+    }
+
+    pub(crate) fn is_outbound(&self) -> bool {
+        match self {
+            PeerSlot::Stub(p) => p.is_outbound,
+            PeerSlot::Live(l) => l.meta.is_outbound,
+        }
+    }
+
+    pub(crate) fn node_type(&self) -> NodeType {
+        match self {
+            PeerSlot::Stub(p) => p.node_type,
+            PeerSlot::Live(l) => l.meta.node_type,
+        }
+    }
 }
 
 /// Arc-shared guts: configuration, TLS material, stub peer map, inbound fan-out, counters.
@@ -50,8 +87,8 @@ pub(crate) struct ServiceState {
     pub address_manager: AddressManager,
     #[allow(dead_code)]
     pub seen_messages: Mutex<LruCache<Bytes32, ()>>,
-    /// Stub connection registry — keyed by deterministic [`peer_id_for_addr`].
-    pub peers: Mutex<HashMap<PeerId, StubPeer>>,
+    /// Connected peers — stubs ([`PeerSlot::Stub`]) or live TLS ([`PeerSlot::Live`]).
+    pub peers: Mutex<HashMap<PeerId, PeerSlot>>,
     pub banned: Mutex<HashSet<PeerId>>,
     pub penalties: Mutex<HashMap<PeerId, u32>>,
     pub lifecycle: AtomicU8,
@@ -70,7 +107,7 @@ pub(crate) struct ServiceState {
     pub total_connections: AtomicU64,
 }
 
-/// Deterministic [`PeerId`] from a remote socket (until CON-001 derives TLS identities).
+/// Deterministic [`PeerId`] from a remote socket (stub peers / tests only — live peers use TLS SPKI).
 pub(crate) fn peer_id_for_addr(addr: SocketAddr) -> PeerId {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

@@ -7,7 +7,7 @@
 
 | ID      | Status | Summary                                          | Verification Approach                                                                      |
 |---------|--------|--------------------------------------------------|--------------------------------------------------------------------------------------------|
-| CON-001 | gap    | Outbound connection via connect_peer()           | Integration test: connect two peers via connect_peer(), verify Handshake and RequestPeers   |
+| CON-001 | verified | Outbound connection via connect_peer() | `tests/con_001_tests.rs`: TLS load/generate/connector; WSS harness handshake + RequestPeers; `GossipHandle::connect_to` + `AddressManager` batch; `ClientError` → `GossipError`; peer field wiring / creation_time |
 | CON-002 | gap    | Inbound connection listener                      | Integration test: start listener, connect client, verify handshake exchange and addr mgr    |
 | CON-003 | gap    | Handshake validation                             | Unit tests: reject mismatched network_id, reject bad protocol_version, sanitize versions    |
 | CON-004 | gap    | Keepalive via Ping/Pong                          | Integration test: verify Ping sent at 30s, disconnect on Pong timeout after 90s             |

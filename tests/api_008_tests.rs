@@ -10,7 +10,8 @@
 //!
 //! Unit tests lock down **type shape**, **`Default`**, **`Debug`/`Clone`**, and **field round-trip**.
 //! Integration tests exercise [`dig_gossip::GossipHandle::stats`] / [`dig_gossip::GossipHandle::relay_stats`]
-//! against the pre–CON-001 stub so counters move in predictable ways without real TLS peers.
+//! against **stub** peers ([`GossipHandle::__connect_stub_peer_with_direction`]) so counters move
+//! without real TLS; live `connect_to` is covered in [`con_001_tests`](../con_001_tests.rs).
 
 mod common;
 
@@ -190,8 +191,12 @@ async fn test_stats_from_running_service() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:18001".parse().unwrap();
     let b: SocketAddr = "127.0.0.1:18002".parse().unwrap();
-    h.connect_to(a).await.unwrap();
-    h.connect_to(b).await.unwrap();
+    h.__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    h.__connect_stub_peer_with_direction(b, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let st = h.stats().await;
     assert_eq!(st.connected_peers, 2);
     assert_eq!(st.outbound_connections, 2);
@@ -232,8 +237,12 @@ async fn test_stats_cumulative_messages() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:18101".parse().unwrap();
     let b: SocketAddr = "127.0.0.1:18102".parse().unwrap();
-    h.connect_to(a).await.unwrap();
-    h.connect_to(b).await.unwrap();
+    h.__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    h.__connect_stub_peer_with_direction(b, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let before = h.stats().await.messages_sent;
     let n = h.broadcast_typed(sample_new_peak(), None).await.unwrap();
     assert_eq!(n, 2);
@@ -246,7 +255,10 @@ async fn test_stats_cumulative_messages() {
 async fn test_stats_send_to_increments_messages_sent() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:18201".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let before = h.stats().await.messages_sent;
     h.send_to(pid, RequestPeers::new()).await.unwrap();
     let after = h.stats().await.messages_sent;
@@ -274,7 +286,10 @@ async fn test_stats_inject_increments_messages_received() {
 async fn test_total_connections_monotonic_across_disconnect() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:18301".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     assert_eq!(h.stats().await.total_connections, 1);
     h.disconnect(&pid).await.unwrap();
     let st = h.stats().await;
@@ -288,7 +303,9 @@ async fn test_stats_inbound_outbound_split() {
     let (_s, h) = running_handle().await;
     let out: SocketAddr = "127.0.0.1:18401".parse().unwrap();
     let inc: SocketAddr = "127.0.0.1:18402".parse().unwrap();
-    h.connect_to(out).await.unwrap();
+    h.__connect_stub_peer_with_direction(out, NodeType::FullNode, true)
+        .await
+        .unwrap();
     h.__connect_stub_peer_with_direction(inc, NodeType::FullNode, false)
         .await
         .unwrap();
