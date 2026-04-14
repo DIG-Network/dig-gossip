@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// ^ Each integration test binary (`str_005_tests`, `api_001_tests`, …) uses a different subset of
+// helpers; unused items in this module are expected when compiling a single test crate.
+
 //! Shared integration-test helpers for **STR-005: Test infrastructure**.
 //!
 //! ## Traceability
@@ -28,8 +32,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dig_gossip::{
-    Bytes32, ChiaCertificate, GossipConfig, GossipHandle, Network, NodeType, Peer, PeerConnection,
-    PeerId, PeerOptions, PeerReputation,
+    Bytes32, ChiaCertificate, GossipConfig, GossipHandle, GossipService, Network, NodeType, Peer,
+    PeerConnection, PeerId, PeerOptions, PeerReputation,
 };
 use rand::Rng;
 use tokio::net::TcpListener;
@@ -195,10 +199,9 @@ pub fn generate_test_certs(dir: &Path) -> (String, String) {
 /// Compose two temp dirs + configs and return **placeholder** [`GossipHandle`]s with resolved
 /// bind addresses.
 ///
-/// **Gap (documented):** A full “two [`dig_gossip::GossipService`] nodes connected with bidirectional
-/// gossip traffic” is **API-001 + CON-001**. This helper proves STR-005 helpers compose and that
-/// two [`GossipConfig::listen_addr`] values can bind independently. Replace handles with real
-/// service instances when the constructor lands.
+/// **Gap (documented):** Full bidirectional gossip traffic still needs **CON-001**. After API-001,
+/// this helper builds two real [`GossipService`] values, calls [`GossipService::start`], and
+/// returns the handles plus ephemeral bind addresses used only to prove distinct OS ports.
 pub async fn connected_test_pair() -> (GossipHandle, GossipHandle, SocketAddr, SocketAddr) {
     let dir_a = test_temp_dir();
     let dir_b = test_temp_dir();
@@ -218,10 +221,12 @@ pub async fn connected_test_pair() -> (GossipHandle, GossipHandle, SocketAddr, S
     drop(la);
     drop(lb);
 
-    (
-        GossipHandle::default(),
-        GossipHandle::default(),
-        addr_a,
-        addr_b,
-    )
+    let sa = GossipService::new(cfg_a).expect("GossipService::new a");
+    let sb = GossipService::new(cfg_b).expect("GossipService::new b");
+    let ha = sa.start().await.expect("start a");
+    let hb = sb.start().await.expect("start b");
+    drop(sa);
+    drop(sb);
+
+    (ha, hb, addr_a, addr_b)
 }

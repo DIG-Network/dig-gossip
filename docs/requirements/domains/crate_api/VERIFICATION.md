@@ -7,7 +7,7 @@
 
 | ID      | Status | Summary                                      | Verification Approach                                                                 |
 |---------|--------|----------------------------------------------|---------------------------------------------------------------------------------------|
-| API-001 | --     | GossipService constructor                    | Unit test constructing GossipService with valid/invalid GossipConfig                  |
+| API-001 | verified | GossipService constructor                  | `tests/api_001_tests.rs`: new/start/stop lifecycle, TLS load/generate, IoError path, config validation; `GossipHandle::health_check` after stop                                      |
 | API-002 | --     | GossipHandle methods                         | Integration tests exercising each GossipHandle method against a running service       |
 | API-003 | --     | GossipConfig struct fields                   | Unit test verifying all fields exist with correct types and defaults                  |
 | API-004 | --     | GossipError enum variants                    | Unit test constructing each variant; verify ClientError From impl                     |
