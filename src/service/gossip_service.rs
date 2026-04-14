@@ -20,6 +20,8 @@ use chia_sdk_client::ClientError;
 use crate::error::GossipError;
 use crate::types::config::GossipConfig;
 
+use tokio::sync::broadcast;
+
 use super::gossip_handle::GossipHandle;
 use super::state::{ServiceState, LC_CONSTRUCTED, LC_RUNNING, LC_STOPPED};
 
@@ -55,9 +57,17 @@ impl GossipService {
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
         ) {
-            Ok(_) => Ok(GossipHandle {
-                inner: self.inner.clone(),
-            }),
+            Ok(_) => {
+                let (tx, _rx) = broadcast::channel(256);
+                *self
+                    .inner
+                    .inbound_tx
+                    .lock()
+                    .expect("inbound_tx mutex poisoned") = Some(tx);
+                Ok(GossipHandle {
+                    inner: self.inner.clone(),
+                })
+            }
             Err(LC_RUNNING) => Err(GossipError::AlreadyStarted),
             Err(LC_STOPPED) => Err(GossipError::InvalidConfig(
                 "gossip service cannot be restarted after stop() (API-001)".to_string(),
@@ -73,15 +83,31 @@ impl GossipService {
     /// With no peers yet (CON-*), this is a state transition only; later it joins tasks and
     /// closes sockets.
     pub async fn stop(&self) -> Result<(), GossipError> {
-        let prev = self
+        let _prev = self
             .inner
             .lifecycle
             .swap(LC_STOPPED, std::sync::atomic::Ordering::SeqCst);
-        match prev {
-            LC_CONSTRUCTED => Ok(()),
-            LC_RUNNING | LC_STOPPED => Ok(()),
-            _ => Ok(()),
-        }
+        *self
+            .inner
+            .inbound_tx
+            .lock()
+            .expect("inbound_tx mutex poisoned") = None;
+        self.inner
+            .peers
+            .lock()
+            .expect("peers mutex poisoned")
+            .clear();
+        self.inner
+            .banned
+            .lock()
+            .expect("banned mutex poisoned")
+            .clear();
+        self.inner
+            .penalties
+            .lock()
+            .expect("penalties mutex poisoned")
+            .clear();
+        Ok(())
     }
 
     /// Test-only introspection: `true` after a successful [`Self::start`].

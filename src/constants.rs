@@ -34,6 +34,10 @@ pub const BAN_DURATION_SECS: u64 = 3600;
 pub const PEER_TIMEOUT_SECS: u64 = 90;
 pub const PING_INTERVAL_SECS: u64 = 30;
 
+/// Default RPC timeout for [`GossipHandle::request`](crate::service::gossip_handle::GossipHandle::request)
+/// until API-003 adds an explicit `GossipConfig` field (API-002 implementation notes).
+pub const DEFAULT_GOSSIP_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 // -- Plumtree --
 
 pub const PLUMTREE_LAZY_TIMEOUT_MS: u64 = 500;
