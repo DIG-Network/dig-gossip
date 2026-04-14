@@ -169,12 +169,11 @@ impl GossipHandle {
             && TypeId::of::<T>() == TypeId::of::<RespondPeers>()
         {
             let resp = empty_respond_peers()?;
-            let bytes = resp.to_bytes().map_err(|e| {
-                GossipError::ClientError(Box::new(chia_sdk_client::ClientError::Streamable(e)))
-            })?;
-            return T::from_bytes(&bytes).map_err(|e| {
-                GossipError::ClientError(Box::new(chia_sdk_client::ClientError::Streamable(e)))
-            });
+            let bytes = resp
+                .to_bytes()
+                .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)))?;
+            return T::from_bytes(&bytes)
+                .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)));
         }
 
         // Unimplemented request/response pairs: fail fast (CON-001 will add real timeouts via
@@ -398,9 +397,7 @@ fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Messa
         id: None,
         data: body
             .to_bytes()
-            .map_err(|e| {
-                GossipError::ClientError(Box::new(chia_sdk_client::ClientError::Streamable(e)))
-            })?
+            .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)))?
             .into(),
     })
 }
