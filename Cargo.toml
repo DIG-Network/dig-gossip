@@ -1,0 +1,88 @@
+# dig-gossip — Peer-to-peer networking and gossip for the DIG Network L2 blockchain.
+#
+# Requirement: STR-001 (Cargo.toml dependencies and feature gates)
+# - Normative: docs/requirements/domains/crate_structure/NORMATIVE.md#STR-001
+# - Spec: docs/requirements/domains/crate_structure/specs/STR-001.md
+# - Master spec: docs/resources/SPEC.md (Sections 1.2, 10.3, 10.4)
+#
+# Rationale for `chia-sdk-client` shape:
+# STR-001 requires both `native-tls` and `rustls` feature forwards to
+# `chia-sdk-client/*`. If we hard-coded `features = ["native-tls"]` on the
+# dependency itself, `cargo check --no-default-features --features rustls` could
+# not cleanly select the rustls backend. We therefore set `default-features = false`
+# on the dependency and enable TLS exclusively via our feature flags.
+#
+# Rationale for optional `siphasher` / `minisketch-rs`:
+# STR-001's implementation notes state these are gated behind `compact-blocks`
+# and `erlay`. Cargo requires optional dependencies to be activated through
+# features; we use the conventional implicit optional-dep features
+# (`siphasher`, `minisketch-rs`) from the `[features]` table.
+
+[package]
+name = "dig-gossip"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
+repository = "https://github.com/DIG-Network/dig-gossip"
+readme = "README.md"
+
+[dependencies]
+# Chia ecosystem — reuse wire types, peer IO, TLS helpers, serialization traits.
+# See STR-001 "Dependency Purposes" and SPEC Section 1.4 (no redefinitions).
+chia-protocol = "0.26"
+chia-sdk-client = { version = "0.28", default-features = false }
+chia-ssl = "0.26"
+chia-traits = "0.26"
+
+# Async runtime / WebSocket framing used by upstream client patterns.
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+
+# Serialization — address manager persistence, relay JSON, bincode payloads.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+
+# Utilities — structured logs, error derives, randomness, LRU caches.
+tracing = "0.1"
+thiserror = "2"
+rand = "0.8"
+lru = "0.12"
+
+# Optional: compact block short IDs (SPEC Section 8.2) — feature `compact-blocks`.
+siphasher = { version = "1", optional = true }
+
+# ERLAY (SPEC Section 8.3) normally relies on a Minisketch binding. The
+# canonical crates.io release (`minisketch-rs`) pulls `bindgen`, which collides at
+# the Cargo **links** layer with `chia-sdk-client`’s optional `rustls` → `aws-lc-rs`
+# (`bindgen`) path — even when `rustls` is disabled — because Cargo still resolves
+# optional dependencies. Until that ecosystem friction is fixed (or we adopt a
+# pure-Rust sketch implementation), **do not** depend on `minisketch-rs` here.
+#
+# The `erlay` feature remains a first-class switch for `cfg(feature = "erlay")`
+# code (see domain specs under `docs/requirements/domains/erlay/`).
+
+[dev-dependencies]
+# Used by STR-001 tests to parse and assert on this manifest declaratively.
+toml = "0.8"
+# Reserved for STR-005 harness / future integration tests.
+tempfile = "3"
+
+[features]
+# Default matches STR-001: TLS via native stack, relay + erlay + compact blocks on.
+default = ["native-tls", "relay", "erlay", "compact-blocks"]
+
+# TLS backends — mutually exclusive at the `chia-sdk-client` layer.
+native-tls = ["chia-sdk-client/native-tls"]
+rustls = ["chia-sdk-client/rustls"]
+
+# Relay fallback / introducer flows (SPEC Section 7) — cfg gate only for now.
+relay = []
+
+# ERLAY — feature gate for set-reconciliation code paths (see TRACKING note: no
+# `minisketch-rs` dep until Cargo `links` collision with `chia-sdk-client` is resolved).
+erlay = []
+
+# Compact blocks — enables SipHash-backed short transaction IDs.
+compact-blocks = ["siphasher"]
