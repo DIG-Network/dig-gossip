@@ -31,7 +31,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 2: Connection Lifecycle
 
-- [ ] CON-001 — Outbound connection via chia-sdk-client connect_peer()
+- [x] CON-001 — Outbound connection via chia-sdk-client connect_peer()
 - [ ] CON-002 — Inbound connection listener (TcpListener + TLS accept + Peer::from_websocket)
 - [ ] CON-003 — Handshake validation (network_id match, protocol_version compat)
 - [ ] CON-004 — Keepalive (Ping/Pong, timeout detection at PEER_TIMEOUT_SECS)

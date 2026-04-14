@@ -8,10 +8,9 @@
 //!
 //! ## Scope (this commit)
 //!
-//! Many rows in the API-002 table assume **live `Peer` handles** (CON-001) or introducer I/O
-//! (DSC-*). Those flows are exercised with **stub peers** stored in [`dig_gossip::GossipHandle`]'s
-//! shared state, documented deviations (empty [`PeerConnection`] lists), or `#[ignore]` where only
-//! real networking can satisfy the assertion.
+//! Many rows assume **live `Peer` handles** or introducer I/O (DSC-*). **Offline** registry tests
+//! call [`GossipHandle::__connect_stub_peer_with_direction`] (deterministic [`PeerId`] from socket);
+//! **real** `connect_to` TLS + `RequestPeers` lives in [`con_001_tests`](../con_001_tests.rs).
 
 mod common;
 
@@ -54,9 +53,15 @@ async fn test_broadcast_returns_peer_count() {
     let a: SocketAddr = "127.0.0.1:9101".parse().unwrap();
     let b: SocketAddr = "127.0.0.1:9102".parse().unwrap();
     let c: SocketAddr = "127.0.0.1:9103".parse().unwrap();
-    h.connect_to(a).await.unwrap();
-    h.connect_to(b).await.unwrap();
-    h.connect_to(c).await.unwrap();
+    h.__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    h.__connect_stub_peer_with_direction(b, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    h.__connect_stub_peer_with_direction(c, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let dummy = Message {
         msg_type: ProtocolMessageTypes::RequestPeers,
         id: None,
@@ -73,9 +78,16 @@ async fn test_broadcast_with_exclude() {
     let a: SocketAddr = "127.0.0.1:9201".parse().unwrap();
     let b: SocketAddr = "127.0.0.1:9202".parse().unwrap();
     let c: SocketAddr = "127.0.0.1:9203".parse().unwrap();
-    let id_b = h.connect_to(b).await.unwrap();
-    h.connect_to(a).await.unwrap();
-    h.connect_to(c).await.unwrap();
+    let id_b = h
+        .__connect_stub_peer_with_direction(b, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    h.__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    h.__connect_stub_peer_with_direction(c, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let dummy = Message {
         msg_type: ProtocolMessageTypes::RequestPeers,
         id: None,
@@ -93,7 +105,9 @@ async fn test_broadcast_typed_serializes() {
     assert_eq!(NewPeak::msg_type(), ProtocolMessageTypes::NewPeak);
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:9301".parse().unwrap();
-    h.connect_to(a).await.unwrap();
+    h.__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let n = h.broadcast_typed(sample_new_peak(), None).await.unwrap();
     assert_eq!(n, 1);
     let st = h.stats().await;
@@ -105,7 +119,10 @@ async fn test_broadcast_typed_serializes() {
 async fn test_send_to_connected_peer() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:9401".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     h.send_to(pid, RequestPeers::new()).await.unwrap();
 }
 
@@ -122,7 +139,10 @@ async fn test_send_to_unknown_peer() {
 async fn test_request_response() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:9501".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let r: RespondPeers = h.request(pid, RequestPeers::new()).await.unwrap();
     assert!(r.peer_list.is_empty());
 }
@@ -132,7 +152,10 @@ async fn test_request_response() {
 async fn test_request_timeout() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:9601".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let err = h
         .request::<RespondBlock, RequestPeers>(pid, RequestPeers::new())
         .await
@@ -161,7 +184,7 @@ async fn test_inbound_receiver() {
     assert_eq!(got.1.msg_type, ProtocolMessageTypes::NewPeak);
 }
 
-/// **Row:** `test_connected_peers` — returns empty until CON-001 can build [`PeerConnection`] (module rustdoc).
+/// **Row:** `test_connected_peers` — snapshot RPC still empty (live [`PeerConnection`] ownership — module rustdoc).
 #[tokio::test]
 async fn test_connected_peers() {
     let (_s, h) = running_handle().await;
@@ -174,7 +197,9 @@ async fn test_peer_count() {
     let (_s, h) = running_handle().await;
     for i in 0..5u16 {
         let addr = SocketAddr::from(([127, 0, 0, 1], 9700 + i));
-        h.connect_to(addr).await.unwrap();
+        h.__connect_stub_peer_with_direction(addr, NodeType::FullNode, true)
+            .await
+            .unwrap();
     }
     assert_eq!(h.peer_count().await, 5);
 }
@@ -224,12 +249,15 @@ async fn test_get_connections_outbound_only() {
     assert_eq!(h.__stub_filter_count_for_tests(None, true).await, 1);
 }
 
-/// **Row:** `test_connect_to_success`.
+/// **Row:** `test_connect_to_success` — **stub** registry (`__connect_stub_peer_with_direction`); real TLS: `con_001_tests`.
 #[tokio::test]
 async fn test_connect_to_success() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10001".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     assert_eq!(h.peer_count().await, 1);
     assert_ne!(pid, Bytes32::default());
 }
@@ -243,14 +271,26 @@ async fn test_connect_to_max_connections() {
     cfg.max_connections = 2;
     let svc = GossipService::new(cfg).expect("new");
     let h = svc.start().await.expect("start");
-    h.connect_to("127.0.0.1:10101".parse().unwrap())
-        .await
-        .unwrap();
-    h.connect_to("127.0.0.1:10102".parse().unwrap())
-        .await
-        .unwrap();
+    h.__connect_stub_peer_with_direction(
+        "127.0.0.1:10101".parse().unwrap(),
+        NodeType::FullNode,
+        true,
+    )
+    .await
+    .unwrap();
+    h.__connect_stub_peer_with_direction(
+        "127.0.0.1:10102".parse().unwrap(),
+        NodeType::FullNode,
+        true,
+    )
+    .await
+    .unwrap();
     let err = h
-        .connect_to("127.0.0.1:10103".parse().unwrap())
+        .__connect_stub_peer_with_direction(
+            "127.0.0.1:10103".parse().unwrap(),
+            NodeType::FullNode,
+            true,
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, GossipError::MaxConnectionsReached(2)));
@@ -261,8 +301,14 @@ async fn test_connect_to_max_connections() {
 async fn test_connect_to_duplicate() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10201".parse().unwrap();
-    let first = h.connect_to(a).await.unwrap();
-    let err = h.connect_to(a).await.unwrap_err();
+    let first = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
+    let err = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap_err();
     assert!(matches!(err, GossipError::DuplicateConnection(p) if p == first));
 }
 
@@ -284,7 +330,10 @@ async fn test_connect_to_self() {
 async fn test_disconnect_peer() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10301".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     h.disconnect(&pid).await.unwrap();
     assert_eq!(h.peer_count().await, 0);
 }
@@ -294,7 +343,10 @@ async fn test_disconnect_peer() {
 async fn test_ban_peer() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10401".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     h.ban_peer(&pid, dig_gossip::PenaltyReason::ProtocolViolation)
         .await
         .unwrap();
@@ -308,7 +360,10 @@ async fn test_ban_peer() {
 async fn test_penalize_peer_below_threshold() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10501".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     h.penalize_peer(&pid, dig_gossip::PenaltyReason::ConnectionIssue)
         .await
         .unwrap();
@@ -319,7 +374,10 @@ async fn test_penalize_peer_below_threshold() {
 async fn test_penalize_peer_auto_ban() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10601".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     // 4 × Spam (25) = 100 → threshold ban (API-006 / CON-007 weights).
     for _ in 0..4 {
         h.penalize_peer(&pid, dig_gossip::PenaltyReason::Spam)
@@ -369,7 +427,10 @@ async fn test_register_with_introducer() {
 async fn test_request_peers_from() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10701".parse().unwrap();
-    let pid = h.connect_to(a).await.unwrap();
+    let pid = h
+        .__connect_stub_peer_with_direction(a, NodeType::FullNode, true)
+        .await
+        .unwrap();
     let r = h.request_peers_from(&pid).await.unwrap();
     assert!(r.peer_list.is_empty());
 }

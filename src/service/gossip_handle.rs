@@ -9,9 +9,9 @@
 //! - **`inbound_receiver`:** SPEC shows `&mpsc::Receiver<_>` while [`GossipHandle`] is [`Clone`].
 //!   Cloning a handle cannot share a single-consumer `mpsc` receiver safely. We return a
 //!   [`broadcast::Receiver`] subscription (see [`ServiceState::inbound_tx`](super::state::ServiceState::inbound_tx)).
-//! - **`connected_peers` / `get_connections`:** Returning real [`crate::types::peer::PeerConnection`]
-//!   values requires live [`chia_sdk_client::Peer`] handles (CON-001). These methods return an empty
-//!   vector until the connection layer can populate them (TRACKING notes).
+//! - **`connected_peers` / `get_connections`:** Returning owned [`crate::types::peer::PeerConnection`]
+//!   values would duplicate [`tokio::sync::mpsc::Receiver`] halves; CON-001 keeps live [`chia_sdk_client::Peer`]
+//!   handles inside [`super::state::PeerSlot::Live`] while these RPCs stay empty until a snapshot API lands.
 
 use chia_protocol::{
     ChiaProtocolMessage, Message, NodeType, RequestPeers, RespondPeers, TimestampedPeerInfo,
@@ -23,11 +23,11 @@ use tokio::sync::broadcast;
 
 use crate::constants::PENALTY_BAN_THRESHOLD;
 use crate::error::GossipError;
-use crate::types::peer::{PeerConnection, PeerId};
+use crate::types::peer::{peer_id_from_tls_spki_der, PeerConnection, PeerId, PeerInfo};
 use crate::types::reputation::PenaltyReason;
 use crate::types::stats::{GossipStats, RelayStats};
 
-use super::state::{peer_id_for_addr, ServiceState, StubPeer};
+use super::state::{peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer};
 
 /// Cloneable façade over the shared [`ServiceState`] (`Arc`).
 #[derive(Debug, Clone)]
@@ -125,14 +125,20 @@ impl GossipHandle {
         {
             return Err(GossipError::PeerBanned(peer_id));
         }
-        if !self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .contains_key(&peer_id)
-        {
-            return Err(GossipError::PeerNotConnected(peer_id));
+        let maybe_live = {
+            let peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            match peers.get(&peer_id) {
+                None => return Err(GossipError::PeerNotConnected(peer_id)),
+                Some(PeerSlot::Live(l)) => Some(l.peer.clone()),
+                Some(PeerSlot::Stub(_)) => None,
+            }
+        };
+        if let Some(p) = maybe_live {
+            p.send(body).await?;
         }
         self.inner
             .messages_sent
@@ -158,14 +164,20 @@ impl GossipHandle {
         {
             return Err(GossipError::PeerBanned(peer_id));
         }
-        if !self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .contains_key(&peer_id)
-        {
-            return Err(GossipError::PeerNotConnected(peer_id));
+        let maybe_live = {
+            let peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            match peers.get(&peer_id) {
+                None => return Err(GossipError::PeerNotConnected(peer_id)),
+                Some(PeerSlot::Live(l)) => Some(l.peer.clone()),
+                Some(PeerSlot::Stub(_)) => None,
+            }
+        };
+        if let Some(p) = maybe_live {
+            return p.request_infallible(body).await.map_err(GossipError::from);
         }
 
         if TypeId::of::<B>() == TypeId::of::<RequestPeers>()
@@ -179,8 +191,7 @@ impl GossipHandle {
                 .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)));
         }
 
-        // Unimplemented request/response pairs: fail fast (CON-001 will add real timeouts via
-        // `Peer::request_infallible` and `DEFAULT_GOSSIP_REQUEST_TIMEOUT_SECS` from `constants`).
+        // Unimplemented request/response pairs for stub peers — live peers handled above.
         Err(GossipError::RequestTimeout)
     }
 
@@ -203,10 +214,114 @@ impl GossipHandle {
         Vec::new()
     }
 
-    /// Stub `connect_to`: records a synthetic peer until CON-001 calls `connect_peer`.
+    /// Outbound TLS peer: [`crate::connection::outbound::connect_outbound_peer`] + `RequestPeers` (CON-001).
+    ///
+    /// **Spec:** [`CON-001.md`](../../../docs/requirements/domains/connection/specs/CON-001.md) — uses
+    /// [`chia_sdk_client::create_native_tls_connector`] / rustls equivalent, Chia [`Handshake`], then
+    /// merges [`RespondPeers::peer_list`] via [`crate::discovery::address_manager::AddressManager::add_to_new_table`].
+    ///
+    /// **Tests without a WSS peer:** use [`Self::__connect_stub_peer_with_direction`] (deterministic
+    /// [`peer_id_for_addr`] keys) so API-002 matrices stay offline.
     pub async fn connect_to(&self, addr: std::net::SocketAddr) -> Result<PeerId, GossipError> {
-        self.connect_stub_inner(addr, NodeType::FullNode, true)
+        self.require_running()?;
+        if addr == self.inner.config.listen_addr {
+            return Err(GossipError::SelfConnection);
+        }
+        {
+            let peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            for (k, slot) in peers.iter() {
+                if slot.remote() == addr {
+                    return Err(GossipError::DuplicateConnection(*k));
+                }
+            }
+            if peers.len() >= self.inner.config.max_connections {
+                return Err(GossipError::MaxConnectionsReached(
+                    self.inner.config.max_connections,
+                ));
+            }
+        }
+
+        let connector = crate::connection::outbound::tls_connector_for_cert(&self.inner.tls)
+            .map_err(GossipError::from)?;
+        let network_id =
+            crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
+        let opts = self.inner.config.peer_options;
+
+        let out =
+            crate::connection::outbound::connect_outbound_peer(network_id, connector, addr, opts)
+                .await
+                .map_err(GossipError::from)?;
+
+        let peer_id = peer_id_from_tls_spki_der(&out.remote_spki_der);
+        let is_banned = self
+            .inner
+            .banned
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?
+            .contains(&peer_id);
+        if is_banned {
+            let _ = out.peer.close().await;
+            return Err(GossipError::PeerBanned(peer_id));
+        }
+        let duplicate = self
+            .inner
+            .peers
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?
+            .contains_key(&peer_id);
+        if duplicate {
+            let _ = out.peer.close().await;
+            return Err(GossipError::DuplicateConnection(peer_id));
+        }
+
+        let src = PeerInfo {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+        };
+        let respond: RespondPeers = out
+            .peer
+            .request_infallible(RequestPeers::new())
             .await
+            .map_err(GossipError::from)?;
+        self.inner
+            .address_manager
+            .add_to_new_table(&respond.peer_list, &src, 0);
+
+        if let Ok(g) = self.inner.inbound_tx.lock() {
+            if let Some(tx) = g.as_ref() {
+                let tx = tx.clone();
+                let mut inbound_rx = out.inbound_rx;
+                let pid_task = peer_id;
+                tokio::spawn(async move {
+                    while let Some(msg) = inbound_rx.recv().await {
+                        let _ = tx.send((pid_task, msg));
+                    }
+                });
+            }
+        }
+
+        let meta = StubPeer {
+            remote: addr,
+            node_type: out.their_handshake.node_type,
+            is_outbound: true,
+        };
+        let peer = out.peer;
+        let mut peers = self
+            .inner
+            .peers
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?;
+        peers.insert(peer_id, PeerSlot::Live(LiveSlot { meta, peer }));
+        drop(peers);
+
+        self.inner
+            .total_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(peer_id)
     }
 
     async fn connect_stub_inner(
@@ -244,11 +359,11 @@ impl GossipHandle {
         }
         peers.insert(
             pid,
-            StubPeer {
+            PeerSlot::Stub(StubPeer {
                 remote: addr,
                 node_type,
                 is_outbound,
-            },
+            }),
         );
         drop(peers);
         self.inner
@@ -282,18 +397,23 @@ impl GossipHandle {
         peers
             .values()
             .filter(|p| {
-                node_type.is_none_or(|nt| nt == p.node_type) && (!outbound_only || p.is_outbound)
+                node_type.is_none_or(|nt| nt == p.node_type())
+                    && (!outbound_only || p.is_outbound())
             })
             .count()
     }
 
     pub async fn disconnect(&self, peer_id: &PeerId) -> Result<(), GossipError> {
         self.require_running()?;
-        self.inner
+        let removed = self
+            .inner
             .peers
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?
             .remove(peer_id);
+        if let Some(PeerSlot::Live(l)) = removed {
+            let _ = l.peer.close().await;
+        }
         Ok(())
     }
 
@@ -308,11 +428,15 @@ impl GossipHandle {
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?
             .insert(*peer_id);
-        self.inner
+        let removed = self
+            .inner
             .peers
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?
             .remove(peer_id);
+        if let Some(PeerSlot::Live(l)) = removed {
+            let _ = l.peer.close().await;
+        }
         Ok(())
     }
 
@@ -402,7 +526,7 @@ impl GossipHandle {
             let mut inb = 0usize;
             let mut out = 0usize;
             for p in peers.values() {
-                if p.is_outbound {
+                if p.is_outbound() {
                     out += 1;
                 } else {
                     inb += 1;
@@ -444,6 +568,16 @@ impl GossipHandle {
         } else {
             Some(RelayStats::default())
         }
+    }
+
+    /// CON-001 test hook: last [`AddressManager::add_to_new_table`](crate::discovery::address_manager::AddressManager::add_to_new_table) batch.
+    #[doc(hidden)]
+    pub fn __con001_last_address_batch_for_tests(
+        &self,
+    ) -> Option<(Vec<TimestampedPeerInfo>, PeerInfo)> {
+        self.inner
+            .address_manager
+            .__last_new_table_batch_for_tests()
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.

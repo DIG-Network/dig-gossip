@@ -23,7 +23,7 @@ use crate::types::config::GossipConfig;
 use tokio::sync::broadcast;
 
 use super::gossip_handle::GossipHandle;
-use super::state::{ServiceState, LC_CONSTRUCTED, LC_RUNNING, LC_STOPPED};
+use super::state::{PeerSlot, ServiceState, LC_CONSTRUCTED, LC_RUNNING, LC_STOPPED};
 
 /// Owns configuration, TLS identity, and placeholder subsystems created in `new()`.
 ///
@@ -92,11 +92,15 @@ impl GossipService {
             .inbound_tx
             .lock()
             .expect("inbound_tx mutex poisoned") = None;
-        self.inner
-            .peers
-            .lock()
-            .expect("peers mutex poisoned")
-            .clear();
+        let old_peers = {
+            let mut guard = self.inner.peers.lock().expect("peers mutex poisoned");
+            std::mem::take(&mut *guard)
+        };
+        for (_, slot) in old_peers {
+            if let PeerSlot::Live(l) = slot {
+                let _ = l.peer.close().await;
+            }
+        }
         self.inner
             .banned
             .lock()
