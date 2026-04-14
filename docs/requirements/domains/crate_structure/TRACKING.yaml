@@ -51,7 +51,14 @@ items:
   - id: STR-005
     section: "11"
     summary: "Test infrastructure with helpers"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#11-testing-strategy"
-    tests: []
-    notes: ""
+    tests:
+      - tests/str_005_tests.rs
+    notes: >
+      `tests/common/mod.rs` provides random_peer_id, mock_peer_connection (async loopback ws +
+      Peer::from_websocket), temp dirs, test_network_id (SHA256 "dig_testnet" bytes),
+      test_network (empty DNS), test_gossip_config, generate_test_certs, connected_test_pair
+      (placeholder handles + real :0 bind addresses until API-001). GossipConfig and PeerConnection
+      structs expanded so helpers compile; full connected gossip + bidirectional messaging deferred
+      to API-001/002/CON-001 (ignored test stub). See tests/str_005_tests.rs and module docs.

@@ -1,0 +1,67 @@
+domain_id: plumtree
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: PLT-001
+    section: "8.1"
+    summary: "PlumtreeState structure and defaults"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-002
+    section: "8.1"
+    summary: "Eager push sends full message"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-003
+    section: "8.1"
+    summary: "Lazy push sends LazyAnnounce"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-004
+    section: "8.1"
+    summary: "Duplicate detection demotes to lazy + PRUNE"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-005
+    section: "8.1"
+    summary: "Lazy timeout triggers GRAFT + promote"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-006
+    section: "8.1"
+    summary: "Tree self-healing on eager peer disconnect"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-007
+    section: "8.1"
+    summary: "Message cache LRU with TTL"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-008
+    section: "8.1"
+    summary: "Seen set LRU deduplication"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PLT-009
+    section: "8.1"
+    summary: "PlumtreeMessage wire types with DigMessageType IDs 214-217"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""

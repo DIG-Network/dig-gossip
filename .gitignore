@@ -1,0 +1,28 @@
+# Build artifacts
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Repomix context packs (local only)
+.repomix/
+
+# GitNexus index (local only)
+.gitnexus/
+
+# SocratiCode (Docker-managed, local only)
+.socraticode/
+
+# Claude Code local settings & worktrees
+.claude/settings.local.json
+.claude/worktrees/
+
+# Transient prompt notes (local only)
+docs/prompt/chat.md

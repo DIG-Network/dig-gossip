@@ -1,0 +1,60 @@
+domain_id: relay
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: RLY-001
+    section: "7, 5.1"
+    summary: "Relay client connect and register"
+    status: gap
+    spec_ref: "SPEC.md#7-relay-fallback"
+    tests: []
+    notes: ""
+  - id: RLY-002
+    section: "7"
+    summary: "Relay message forwarding"
+    status: gap
+    spec_ref: "SPEC.md#7-relay-fallback"
+    tests: []
+    notes: ""
+  - id: RLY-003
+    section: "7, 8.1"
+    summary: "Relay broadcast"
+    status: gap
+    spec_ref: "SPEC.md#7-relay-fallback"
+    tests: []
+    notes: ""
+  - id: RLY-004
+    section: "7, 2.12"
+    summary: "Auto-reconnect on disconnect"
+    status: gap
+    spec_ref: "SPEC.md#212-relayconfig"
+    tests: []
+    notes: ""
+  - id: RLY-005
+    section: "7, 2.9"
+    summary: "Relay peer list"
+    status: gap
+    spec_ref: "SPEC.md#29-relaypeerinfo"
+    tests: []
+    notes: ""
+  - id: RLY-006
+    section: "7, 2.12, 2.13"
+    summary: "Relay keepalive"
+    status: gap
+    spec_ref: "SPEC.md#212-relayconfig"
+    tests: []
+    notes: ""
+  - id: RLY-007
+    section: "7.1"
+    summary: "NAT traversal hole punching"
+    status: gap
+    spec_ref: "SPEC.md#71-nat-traversal-upgrade"
+    tests: []
+    notes: ""
+  - id: RLY-008
+    section: "7"
+    summary: "Transport selection"
+    status: gap
+    spec_ref: "SPEC.md#7-relay-fallback"
+    tests: []
+    notes: ""

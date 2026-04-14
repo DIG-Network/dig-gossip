@@ -1,0 +1,126 @@
+schema_version: 1
+
+status_values:
+  active: "Requirements in use for dig-gossip implementation"
+  planned: "Scoped; not yet verified"
+
+domains:
+  - id: crate_structure
+    title: "Crate Structure"
+    summary: "Crate folder layout, module hierarchy, Cargo.toml configuration, feature gates, chia crate re-exports, and test infrastructure."
+    status: planned
+    paths:
+      normative: domains/crate_structure/NORMATIVE.md
+      verification: domains/crate_structure/VERIFICATION.md
+      tracking: domains/crate_structure/TRACKING.yaml
+      requirement_specs: domains/crate_structure
+
+  - id: crate_api
+    title: "Crate API"
+    summary: "Public API surface: GossipService constructor, GossipHandle (broadcast, send_to, request, stats), GossipConfig, GossipError, PeerConnection, PeerReputation, PeerId, PeerInfo, DigMessageType, config types."
+    status: planned
+    paths:
+      normative: domains/crate_api/NORMATIVE.md
+      verification: domains/crate_api/VERIFICATION.md
+      tracking: domains/crate_api/TRACKING.yaml
+      requirement_specs: domains/crate_api
+
+  - id: connection
+    title: "Connection"
+    summary: "Connection lifecycle: outbound via chia-sdk-client connect_peer(), inbound via TcpListener + Peer::from_websocket(), handshake validation, keepalive, rate limiting, peer banning, version sanitization."
+    status: planned
+    paths:
+      normative: domains/connection/NORMATIVE.md
+      verification: domains/connection/VERIFICATION.md
+      tracking: domains/connection/TRACKING.yaml
+      requirement_specs: domains/connection
+
+  - id: discovery
+    title: "Discovery"
+    summary: "Peer discovery: AddressManager (tried/new tables, Rust port), persistent serialization, DNS seeding via chia-sdk-client Network, introducer query/registration, discovery loop with exponential backoff, peer exchange, feeler connections, parallel connect, AS-level diversity."
+    status: planned
+    paths:
+      normative: domains/discovery/NORMATIVE.md
+      verification: domains/discovery/VERIFICATION.md
+      tracking: domains/discovery/TRACKING.yaml
+      requirement_specs: domains/discovery
+
+  - id: relay
+    title: "Relay"
+    summary: "Relay fallback: relay client connect/register, message forwarding, broadcast, auto-reconnect, peer list, keepalive, NAT traversal hole punching, transport selection (direct > relay)."
+    status: planned
+    paths:
+      normative: domains/relay/NORMATIVE.md
+      verification: domains/relay/VERIFICATION.md
+      tracking: domains/relay/TRACKING.yaml
+      requirement_specs: domains/relay
+
+  - id: plumtree
+    title: "Plumtree Gossip"
+    summary: "Structured gossip: PlumtreeState (eager/lazy peers), eager push, lazy push (hash-only), duplicate detection with PRUNE, lazy timeout with GRAFT, tree self-healing, message cache, LRU seen set."
+    status: planned
+    paths:
+      normative: domains/plumtree/NORMATIVE.md
+      verification: domains/plumtree/VERIFICATION.md
+      tracking: domains/plumtree/TRACKING.yaml
+      requirement_specs: domains/plumtree
+
+  - id: compact_blocks
+    title: "Compact Blocks"
+    summary: "Compact block relay: CompactBlock encoding (header + short TX IDs + prefilled), SipHash short ID computation, mempool reconstruction, missing transaction request, fallback to full block."
+    status: planned
+    paths:
+      normative: domains/compact_blocks/NORMATIVE.md
+      verification: domains/compact_blocks/VERIFICATION.md
+      tracking: domains/compact_blocks/TRACKING.yaml
+      requirement_specs: domains/compact_blocks
+
+  - id: erlay
+    title: "ERLAY Transaction Relay"
+    summary: "ERLAY-style transaction relay: flood set selection, low-fanout NewTransaction flooding, minisketch encoding/decoding, periodic set reconciliation, symmetric difference computation, flood set rotation, inbound peer exclusion."
+    status: planned
+    paths:
+      normative: domains/erlay/NORMATIVE.md
+      verification: domains/erlay/VERIFICATION.md
+      tracking: domains/erlay/TRACKING.yaml
+      requirement_specs: domains/erlay
+
+  - id: priority
+    title: "Priority & Backpressure"
+    summary: "Message priority lanes (Critical/Normal/Bulk), PriorityOutbound queue, drain order, starvation prevention, adaptive backpressure thresholds, tx dedup suppression, bulk drop, normal delay."
+    status: planned
+    paths:
+      normative: domains/priority/NORMATIVE.md
+      verification: domains/priority/VERIFICATION.md
+      tracking: domains/priority/TRACKING.yaml
+      requirement_specs: domains/priority
+
+  - id: performance
+    title: "Performance"
+    summary: "Latency-aware peer scoring (RTT tracking, composite score), peer selection preference, Plumtree tree optimization, parallel bootstrap, bandwidth benchmarks, latency benchmarks."
+    status: planned
+    paths:
+      normative: domains/performance/NORMATIVE.md
+      verification: domains/performance/VERIFICATION.md
+      tracking: domains/performance/TRACKING.yaml
+      requirement_specs: domains/performance
+
+  - id: concurrency
+    title: "Concurrency"
+    summary: "Thread safety (Send + Sync + Clone), task architecture (listener, discovery, serialization, cleanup, relay, per-connection), shared state synchronization (RwLock, mpsc, AtomicU64), graceful shutdown, address manager timestamp updates, periodic cleanup."
+    status: planned
+    paths:
+      normative: domains/concurrency/NORMATIVE.md
+      verification: domains/concurrency/VERIFICATION.md
+      tracking: domains/concurrency/TRACKING.yaml
+      requirement_specs: domains/concurrency
+
+  - id: privacy
+    title: "Privacy"
+    summary: "Dandelion++ transaction origin privacy (stem/fluff phases, epoch rotation, timeout), ephemeral PeerId rotation (certificate rotation, reconnection, opt-out), Tor/SOCKS5 proxy transport (outbound, inbound .onion, hybrid, transport selection)."
+    status: planned
+    paths:
+      normative: domains/privacy/NORMATIVE.md
+      verification: domains/privacy/VERIFICATION.md
+      tracking: domains/privacy/TRACKING.yaml
+      requirement_specs: domains/privacy

@@ -1,0 +1,68 @@
+domain_id: connection
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: CON-001
+    section: "5.1"
+    summary: "Outbound connection via connect_peer()"
+    status: gap
+    spec_ref: "SPEC.md#51-outbound-connection-reuses-chia-sdk-client"
+    tests: []
+    notes: ""
+  - id: CON-002
+    section: "5.2"
+    summary: "Inbound connection listener"
+    status: gap
+    spec_ref: "SPEC.md#52-inbound-connection"
+    tests: []
+    notes: ""
+  - id: CON-003
+    section: "5.1, 5.2"
+    summary: "Handshake validation"
+    status: gap
+    spec_ref: "SPEC.md#51-outbound-connection-reuses-chia-sdk-client"
+    tests: []
+    notes: ""
+  - id: CON-004
+    section: "2.13"
+    summary: "Keepalive via Ping/Pong"
+    status: gap
+    spec_ref: "SPEC.md#213-constants"
+    tests: []
+    notes: ""
+  - id: CON-005
+    section: "5.3"
+    summary: "Per-connection rate limiting"
+    status: gap
+    spec_ref: "SPEC.md#53-rate-limiting"
+    tests: []
+    notes: ""
+  - id: CON-006
+    section: "2.4"
+    summary: "Connection metrics tracking"
+    status: gap
+    spec_ref: "SPEC.md#24-peerconnection-dig-extension-of-chia-sdk-clientpeer"
+    tests: []
+    notes: ""
+  - id: CON-007
+    section: "2.5, 2.13"
+    summary: "Peer banning via reputation"
+    status: gap
+    spec_ref: "SPEC.md#25-peerreputation-dig-extension"
+    tests: []
+    notes: ""
+  - id: CON-008
+    section: "5.1, 5.2"
+    summary: "Version string sanitization"
+    status: gap
+    spec_ref: "SPEC.md#51-outbound-connection-reuses-chia-sdk-client"
+    tests: []
+    notes: ""
+
+  - id: CON-009
+    section: "5.3"
+    summary: "Mandatory mutual TLS (mTLS) via chia-ssl on ALL P2P connections. Both sides present certs. No unencrypted or server-only TLS."
+    status: gap
+    spec_ref: "docs/requirements/domains/connection/specs/CON-009.md"
+    tests: []
+    notes: "Hard security requirement. mTLS — both sides present chia-ssl certs. PeerId = SHA256(remote_cert_pubkey). Relay connections exempt (standard wss://)."

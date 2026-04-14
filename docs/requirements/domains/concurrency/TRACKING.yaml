@@ -1,0 +1,46 @@
+domain_id: concurrency
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: CNC-001
+    section: "9.1, 3.3"
+    summary: "GossipService/GossipHandle Send + Sync + Clone"
+    status: gap
+    spec_ref: "SPEC.md#33-gossiphandle"
+    tests: []
+    notes: ""
+  - id: CNC-002
+    section: "9.1, 3.2"
+    summary: "Task architecture (listener, discovery, serialization, cleanup, relay, per-connection)"
+    status: gap
+    spec_ref: "SPEC.md#32-lifecycle"
+    tests: []
+    notes: ""
+  - id: CNC-003
+    section: "9.1"
+    summary: "Shared state synchronization primitives (RwLock, mpsc, AtomicU64)"
+    status: gap
+    spec_ref: "SPEC.md#91-crate-boundary"
+    tests: []
+    notes: ""
+  - id: CNC-004
+    section: "3.2"
+    summary: "Graceful shutdown (stop all tasks, disconnect peers, save state)"
+    status: gap
+    spec_ref: "SPEC.md#32-lifecycle"
+    tests: []
+    notes: ""
+  - id: CNC-005
+    section: "6.4"
+    summary: "Address manager timestamp update on message receipt from outbound peer"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop"
+    tests: []
+    notes: ""
+  - id: CNC-006
+    section: "2.13"
+    summary: "Periodic cleanup task (stale connections, expired bans)"
+    status: gap
+    spec_ref: "SPEC.md#213-constants"
+    tests: []
+    notes: ""

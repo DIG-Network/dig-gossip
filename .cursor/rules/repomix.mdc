@@ -1,0 +1,30 @@
+---
+alwaysApply: true
+---
+
+# Repomix workflow
+
+Upstream: [yamadashy/repomix](https://github.com/yamadashy/repomix). CLI: **`npx repomix@latest`** from **this repository root**.
+
+## Before code changes (required)
+
+1. **Pick scope** — the smallest set of paths that covers **every** file you will add or edit in this change (typically `src/`, `tests/`, and/or `docs/requirements/` or a single domain under `docs/requirements/domains/`).
+2. **Pack** — always pass **`-o`** under **`.repomix/`** with distinct filenames (avoid default output in the repo root):
+   ```bash
+   npx repomix@latest src -o .repomix/pack-src.xml
+   npx repomix@latest tests -o .repomix/pack-tests.xml
+   npx repomix@latest docs/requirements -o .repomix/pack-requirements.xml
+   ```
+   Per-domain packs and naming: **`.claude/skills/repomix/SKILL.md`** and **`docs/prompt/tools/repomix.md`**.
+3. **Load** — **read** every pack that covers your scope **before** proposing or applying patches. Regenerate if the tree changed since the last read.
+
+If **`src/`** or **`tests/`** do not exist yet, pack **`docs/requirements`** (and any directories that do exist) until those trees are added.
+
+## Hygiene
+
+- **`.repomix/`** must remain **gitignored** (local LLM context only).
+- Repomix honors **`.gitignore`**; do not bypass ignores to include secrets.
+
+## One-liner
+
+**Pack edit scope into `.repomix/*.xml` → read those packs → edit. Pair with GitNexus gates (`gitnexus.mdc`).**

@@ -1,0 +1,88 @@
+domain_id: discovery
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: DSC-001
+    section: "6.3"
+    summary: "AddressManager with tried/new tables"
+    status: gap
+    spec_ref: "SPEC.md#63-address-manager-rust-port-no-crate-exists"
+    tests: []
+    notes: ""
+  - id: DSC-002
+    section: "6.3"
+    summary: "Address manager persistence (save/load)"
+    status: gap
+    spec_ref: "SPEC.md#63-address-manager-rust-port-no-crate-exists"
+    tests: []
+    notes: ""
+  - id: DSC-003
+    section: "6.2"
+    summary: "DNS seeding via Network::lookup_all()"
+    status: gap
+    spec_ref: "SPEC.md#62-dns-seeding-reuses-chia-sdk-clientnetwork"
+    tests: []
+    notes: ""
+  - id: DSC-004
+    section: "6.5"
+    summary: "Introducer query (get_peers)"
+    status: gap
+    spec_ref: "SPEC.md#65-introducer-client-dig-extension"
+    tests: []
+    notes: ""
+  - id: DSC-005
+    section: "6.5"
+    summary: "Introducer registration (register_peer)"
+    status: gap
+    spec_ref: "SPEC.md#65-introducer-client-dig-extension"
+    tests: []
+    notes: ""
+  - id: DSC-006
+    section: "6.4"
+    summary: "Discovery loop with DNS-first and backoff"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: DSC-007
+    section: "6.6"
+    summary: "Peer exchange (RequestPeers/RespondPeers)"
+    status: gap
+    spec_ref: "SPEC.md#66-peer-exchange-via-gossip"
+    tests: []
+    notes: ""
+  - id: DSC-008
+    section: "6.4"
+    summary: "Feeler connections on Poisson schedule"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: DSC-009
+    section: "6.4"
+    summary: "Parallel connection establishment"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: DSC-010
+    section: "6.4"
+    summary: "AS-level diversity enforcement"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: DSC-011
+    section: "6.4"
+    summary: "/16 group filter for outbound connections"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: DSC-012
+    section: "6.5"
+    summary: "IntroducerPeers/VettedPeer tracking"
+    status: gap
+    spec_ref: "SPEC.md#65-introducer-client-dig-extension"
+    tests: []
+    notes: ""

@@ -1,0 +1,60 @@
+domain_id: priority
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: PRI-001
+    section: "8.4"
+    summary: "MessagePriority enum with three lanes"
+    status: gap
+    spec_ref: "SPEC.md#84-message-priority-lanes"
+    tests: []
+    notes: ""
+  - id: PRI-002
+    section: "8.4"
+    summary: "PriorityOutbound with three VecDeque queues"
+    status: gap
+    spec_ref: "SPEC.md#84-message-priority-lanes"
+    tests: []
+    notes: ""
+  - id: PRI-003
+    section: "8.4"
+    summary: "Drain order: critical, normal, one bulk"
+    status: gap
+    spec_ref: "SPEC.md#84-message-priority-lanes"
+    tests: []
+    notes: ""
+  - id: PRI-004
+    section: "8.4"
+    summary: "Starvation prevention for bulk messages"
+    status: gap
+    spec_ref: "SPEC.md#84-message-priority-lanes"
+    tests: []
+    notes: ""
+  - id: PRI-005
+    section: "8.5"
+    summary: "BackpressureConfig with three thresholds"
+    status: gap
+    spec_ref: "SPEC.md#85-adaptive-backpressure"
+    tests: []
+    notes: ""
+  - id: PRI-006
+    section: "8.5"
+    summary: "Tx dedup at queue depth >= 25"
+    status: gap
+    spec_ref: "SPEC.md#85-adaptive-backpressure"
+    tests: []
+    notes: ""
+  - id: PRI-007
+    section: "8.5"
+    summary: "Bulk drop at queue depth >= 50"
+    status: gap
+    spec_ref: "SPEC.md#85-adaptive-backpressure"
+    tests: []
+    notes: ""
+  - id: PRI-008
+    section: "8.5"
+    summary: "Normal delay at queue depth >= 100"
+    status: gap
+    spec_ref: "SPEC.md#85-adaptive-backpressure"
+    tests: []
+    notes: ""

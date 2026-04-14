@@ -1,0 +1,84 @@
+domain_id: privacy
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+
+items:
+  - id: PRV-001
+    section: "Dandelion++"
+    summary: "DandelionConfig struct: enabled, fluff_probability, stem_timeout_secs, epoch_secs. Feature-gated."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-001.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-002
+    section: "Dandelion++"
+    summary: "Stem phase: forward to one relay, not in mempool, not served on RequestTransaction."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-002.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-003
+    section: "Dandelion++"
+    summary: "Fluff transition: 10% probability coin flip. Fluff → mempool + broadcast. Stem → forward."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-003.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-004
+    section: "Dandelion++"
+    summary: "Stem timeout: force-fluff after DANDELION_STEM_TIMEOUT_SECS (30s)."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-004.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-005
+    section: "Dandelion++"
+    summary: "Epoch rotation: stem relay re-randomized every DANDELION_EPOCH_SECS (600s)."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-005.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-006
+    section: "Ephemeral PeerId"
+    summary: "PeerIdRotationConfig struct: enabled, rotation_interval_secs, reconnect_on_rotation."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-006.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-007
+    section: "Ephemeral PeerId"
+    summary: "Certificate rotation: generate fresh ChiaCertificate, reconnect peers, new PeerId."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-007.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-008
+    section: "Ephemeral PeerId"
+    summary: "Rotation opt-out: rotation_interval_secs=0 disables rotation."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-008.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-009
+    section: "Tor Transport"
+    summary: "TorConfig struct: enabled, socks5_proxy, onion_address, prefer_tor. Feature-gated."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-009.md"
+    tests: []
+    notes: ""
+
+  - id: PRV-010
+    section: "Tor Transport"
+    summary: "Tor outbound via SOCKS5, inbound via .onion, hybrid mode, transport selection order."
+    status: gap
+    spec_ref: "docs/requirements/domains/privacy/specs/PRV-010.md"
+    tests: []
+    notes: ""
