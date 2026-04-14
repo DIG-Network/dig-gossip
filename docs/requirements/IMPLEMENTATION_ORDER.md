@@ -19,7 +19,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 - [x] API-001 — GossipService constructor (`new` with GossipConfig)
 - [x] API-002 — GossipHandle type (broadcast, send_to, request, inbound_receiver, stats)
-- [ ] API-003 — GossipConfig struct (listen_addr, peer_id, network_id, network, targets, bootstrap)
+- [x] API-003 — GossipConfig struct (listen_addr, peer_id, network_id, network, targets, bootstrap)
 - [ ] API-004 — GossipError enum (wraps ClientError, peer errors, discovery errors, relay errors)
 - [ ] API-005 — PeerConnection struct (wraps chia-sdk-client::Peer with gossip metadata)
 - [ ] API-006 — PeerReputation and PenaltyReason (penalty accumulation, ban threshold, auto-unban)

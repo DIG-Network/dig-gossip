@@ -10,7 +10,16 @@
 //! - **`tokio-socks`** — SOCKS5 connector for hybrid / fallback paths.
 //!
 //! This module is a **structural shell** for STR-004; connection logic lands under PRV-010.
+//!
+//! **API-003:** [`GossipConfig`](crate::types::config::GossipConfig) carries `Option<TorConfig>` when
+//! feature `tor` is enabled ([`SPEC.md`](../../../docs/resources/SPEC.md) §1.9.3).
 
-/// Placeholder for SOCKS proxy endpoint configuration (expanded in PRV-009/010).
-#[derive(Debug, Clone, Default)]
-pub struct TorTransportConfig {}
+/// SOCKS / onion endpoint knobs for hybrid transports (expanded in PRV-009/010).
+///
+/// Named `TorConfig` in API-003 / SPEC; [`TorTransportConfig`] remains a type alias for STR-004
+/// tests and older call sites.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TorConfig {}
+
+/// Historical name from STR-004 shell — identical to [`TorConfig`].
+pub type TorTransportConfig = TorConfig;

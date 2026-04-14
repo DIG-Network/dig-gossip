@@ -177,6 +177,14 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         max_seen_messages: 1000,
         peers_file_path: temp_dir.join("peers.dat"),
         peer_options: PeerOptions::default(),
+        #[cfg(feature = "dandelion")]
+        dandelion: None,
+        peer_id_rotation: None,
+        #[cfg(feature = "tor")]
+        tor: None,
+        #[cfg(feature = "erlay")]
+        erlay: None,
+        backpressure: None,
     }
 }
 
