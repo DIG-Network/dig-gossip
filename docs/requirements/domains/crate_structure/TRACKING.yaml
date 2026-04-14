@@ -17,10 +17,15 @@ items:
   - id: STR-002
     section: "10.1"
     summary: "Module hierarchy matches SPEC Section 10.1"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#101-module-structure"
-    tests: []
-    notes: ""
+    tests:
+      - tests/str_002_tests.rs
+    notes: >
+      Implemented per STR-002 acceptance (types/, service/, connection/, discovery/, relay/, gossip/, util/).
+      SPEC Section 10.1 also lists `privacy/` (dandelion, peer_id_rotation, tor); that subtree is not in the STR-002
+      checklist and is deferred to the privacy domain work. `relay` is `#[cfg(feature = "relay")]` from lib.rs;
+      `gossip/compact_block` and `gossip/erlay` are cfg-gated inside `gossip/mod.rs`.
   - id: STR-003
     section: "10.2"
     summary: "Public re-exports in lib.rs"

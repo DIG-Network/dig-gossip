@@ -10,7 +10,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 ## Phase 0: Crate Structure & Foundation
 
 - [x] STR-001 — Cargo.toml with chia crate dependencies, feature gates, and metadata
-- [ ] STR-002 — Module hierarchy (`src/lib.rs` root, submodule layout matching SPEC Section 10.1)
+- [x] STR-002 — Module hierarchy (`src/lib.rs` root, submodule layout matching SPEC Section 10.1)
 - [ ] STR-003 — Re-export strategy (chia-protocol, chia-sdk-client, chia-ssl types)
 - [ ] STR-004 — Feature flags (native-tls, rustls, relay, erlay, compact-blocks)
 - [ ] STR-005 — Test infrastructure (`tests/` layout, helpers, mock peer harness)
