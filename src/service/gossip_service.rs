@@ -157,6 +157,6 @@ fn load_tls_material(config: &GossipConfig) -> Result<chia_ssl::ChiaCertificate,
 fn map_sdk_tls_err(e: ClientError) -> GossipError {
     match e {
         ClientError::Io(io) => GossipError::IoError(io.to_string()),
-        other => GossipError::ClientError(Box::new(other)),
+        other => other.into(),
     }
 }

@@ -1,26 +1,44 @@
 //! Unified error type for the gossip crate.
 //!
-//! **Requirement:** Re-exported at crate root per STR-003 /
-//! [`docs/resources/SPEC.md`](../docs/resources/SPEC.md) Section 10.2.
-//! **Behavioral spec:** [`API-004.md`](../docs/requirements/domains/crate_api/specs/API-004.md)
-//! — API-002 extends variants for handle RPCs; full matrix lands with API-004 tests.
+//! **Re-export:** STR-003 — [`SPEC.md`](../docs/resources/SPEC.md) Section 10.2 (`GossipError` at crate root).
+//!
+//! **Normative matrix:** [`API-004.md`](../docs/requirements/domains/crate_api/specs/API-004.md) and
+//! SPEC Section 4 — lifecycle, peer, discovery, relay, and transport errors share one `enum` so
+//! [`GossipService`](crate::service::gossip_service::GossipService) / [`GossipHandle`](crate::service::gossip_handle::GossipHandle)
+//! callers use a single `Result` boundary.
+//!
+//! ## `ClientError` and `Clone`
+//!
+//! Upstream [`chia_sdk_client::ClientError`] derives [`std::fmt::Debug`] and [`thiserror::Error`] but
+//! **not** [`Clone`]. API-004 still requires [`GossipError`] to be cloneable (cheap retries, multi-owner
+//! handles). We therefore store client failures as [`std::sync::Arc`]`<ClientError>` (see variant
+//! [`GossipError::ClientError`]): [`From`] still accepts a bare `ClientError`, and [`Clone`] duplicates
+//! the handle only. This matches the API-004 implementation note (“boxed representation”) while
+//! satisfying `Clone` without losing structured upstream errors.
+
+use std::sync::Arc;
 
 use thiserror::Error;
 
 use crate::types::peer::PeerId;
 
 /// Top-level error for DIG gossip operations.
-#[derive(Debug, Error)]
+///
+/// **Variants:** API-004 core set plus API-001 helpers [`GossipError::InvalidConfig`] and
+/// [`GossipError::AlreadyStarted`] (constructor / lifecycle — kept to avoid churn in [`API-001.md`](../docs/requirements/domains/crate_api/specs/API-001.md) tests).
+#[derive(Debug, Clone, Error)]
 pub enum GossipError {
     /// Errors from `chia-sdk-client` (`connect_peer`, certificate loading, wire failures).
     ///
-    /// **Layout:** boxed so `Result<_, GossipError>` stays small (`clippy::result_large_err`).
+    /// Wrapped in [`Arc`] so [`GossipError`] remains [`Clone`] even though [`chia_sdk_client::ClientError`]
+    /// is not (API-004 implementation notes).
     #[error("client error: {0}")]
-    ClientError(Box<chia_sdk_client::ClientError>),
+    ClientError(Arc<chia_sdk_client::ClientError>),
 
     #[error("I/O error: {0}")]
     IoError(String),
 
+    /// Configuration rejected before networking (API-001 [`GossipService::new`](crate::service::gossip_service::GossipService::new)).
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
@@ -30,7 +48,6 @@ pub enum GossipError {
     #[error("service already running")]
     AlreadyStarted,
 
-    // --- API-002 / API-004 lifecycle & peers ---
     #[error("peer not connected: {0}")]
     PeerNotConnected(PeerId),
 
@@ -63,10 +80,18 @@ pub enum GossipError {
 
     #[error("channel closed")]
     ChannelClosed,
+
+    /// Minisketch / set-reconciliation failure (ERLAY — [`SPEC.md`](../docs/resources/SPEC.md) §8.3).
+    #[error("sketch error: {0}")]
+    SketchError(String),
+
+    /// Sketch could not decode symmetric difference (capacity / corruption — API-004 table).
+    #[error("sketch decode failed")]
+    SketchDecodeFailed,
 }
 
 impl From<chia_sdk_client::ClientError> for GossipError {
     fn from(value: chia_sdk_client::ClientError) -> Self {
-        Self::ClientError(Box::new(value))
+        Self::ClientError(Arc::new(value))
     }
 }

@@ -44,10 +44,13 @@ items:
   - id: API-004
     section: "4"
     summary: "GossipError enum variants (wraps ClientError)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#4-error-types"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_004_tests.rs
+    notes: >
+      ClientError stored as Arc<ClientError> so GossipError derives Clone (upstream ClientError is not Clone).
+      ERLAY variants SketchError / SketchDecodeFailed added. API-001 variants InvalidConfig / AlreadyStarted retained.
   - id: API-005
     section: "2.4"
     summary: "PeerConnection wraps chia-sdk-client::Peer with metadata"
