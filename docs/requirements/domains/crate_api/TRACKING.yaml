@@ -18,10 +18,17 @@ items:
   - id: API-002
     section: "3.2, 3.3"
     summary: "GossipHandle methods (broadcast, send_to, request, peers, discovery, stats)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#33-gossiphandle"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_002_tests.rs
+    notes: >
+      Stub implementation: broadcast/send_to count stub peers and bump messages_broadcast_total;
+      inbound_receiver returns broadcast::Receiver (SPEC shows mpsc — documented in gossip_handle.rs);
+      request: RequestPeers/RespondPeers round-trip via TypeId fast-path, else RequestTimeout;
+      connected_peers/get_connections return empty PeerConnection lists until CON-001;
+      connect_to uses deterministic stub PeerId + caps; penalize_peer can auto-ban at threshold;
+      introducer/discover/register/relay_stats stubs match config presence. See tests for matrix.
   - id: API-003
     section: "2.10"
     summary: "GossipConfig struct fields"

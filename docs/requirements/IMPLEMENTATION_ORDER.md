@@ -18,7 +18,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 ## Phase 1: Crate API Types
 
 - [x] API-001 — GossipService constructor (`new` with GossipConfig)
-- [ ] API-002 — GossipHandle type (broadcast, send_to, request, inbound_receiver, stats)
+- [x] API-002 — GossipHandle type (broadcast, send_to, request, inbound_receiver, stats)
 - [ ] API-003 — GossipConfig struct (listen_addr, peer_id, network_id, network, targets, bootstrap)
 - [ ] API-004 — GossipError enum (wraps ClientError, peer errors, discovery errors, relay errors)
 - [ ] API-005 — PeerConnection struct (wraps chia-sdk-client::Peer with gossip metadata)
