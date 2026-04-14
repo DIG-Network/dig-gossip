@@ -5,10 +5,16 @@ items:
   - id: API-001
     section: "3.1"
     summary: "GossipService constructor (new with GossipConfig)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#31-construction"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_001_tests.rs
+    notes: >
+      new() validates GossipConfig, ensure parent dirs, load_ssl_cert (upstream generate-if-missing),
+      allocates ServiceState (AddressManager stub, LruCache seen set, peer map placeholder). start/stop
+      use AtomicU8 lifecycle; GossipHandle::health_check gates until API-002. No Tokio tasks or binds
+      in new(). API-004 enum extended only partially (ClientError, IoError, InvalidConfig,
+      ServiceNotStarted, AlreadyStarted). Full peer disconnect on stop deferred to CON-*.
   - id: API-002
     section: "3.2, 3.3"
     summary: "GossipHandle methods (broadcast, send_to, request, peers, discovery, stats)"

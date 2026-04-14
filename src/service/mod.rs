@@ -5,5 +5,7 @@
 //! **API specs:** [`docs/requirements/domains/crate_api/specs/API-001.md`](../../../docs/requirements/domains/crate_api/specs/API-001.md),
 //! [`API-002.md`](../../../docs/requirements/domains/crate_api/specs/API-002.md).
 
+mod state;
+
 pub mod gossip_handle;
 pub mod gossip_service;
