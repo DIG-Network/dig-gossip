@@ -1,0 +1,44 @@
+domain_id: crate_structure
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: STR-001
+    section: "10.4, 10.3, 1.2"
+    summary: "Cargo.toml dependencies and feature gates"
+    status: verified
+    spec_ref: "SPEC.md#104-cargotoml-dependencies"
+    tests:
+      - tests/str_001_tests.rs
+    notes: >
+      `minisketch-rs` is not declared: its build depends on `bindgen` (`links = "clang"`),
+      which collides in Cargo’s resolver with `chia-sdk-client`’s optional `rustls` → `aws-lc-rs (bindgen)` edge even when only `native-tls` is enabled. The `erlay`
+      feature remains an empty gate for cfg(feature = "erlay") until a pure-Rust
+      sketch or upstream graph fix lands.
+  - id: STR-002
+    section: "10.1"
+    summary: "Module hierarchy matches SPEC Section 10.1"
+    status: gap
+    spec_ref: "SPEC.md#101-module-structure"
+    tests: []
+    notes: ""
+  - id: STR-003
+    section: "10.2"
+    summary: "Public re-exports in lib.rs"
+    status: gap
+    spec_ref: "SPEC.md#102-public-re-exports-librs"
+    tests: []
+    notes: ""
+  - id: STR-004
+    section: "10.3"
+    summary: "Feature flags match SPEC Section 10.3"
+    status: gap
+    spec_ref: "SPEC.md#103-feature-flags"
+    tests: []
+    notes: ""
+  - id: STR-005
+    section: "11"
+    summary: "Test infrastructure with helpers"
+    status: gap
+    spec_ref: "SPEC.md#11-testing-strategy"
+    tests: []
+    notes: ""
