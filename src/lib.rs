@@ -84,7 +84,12 @@ pub use chia_traits::Streamable;
 // ---------------------------------------------------------------------------
 // DIG-specific (implemented here)
 // ---------------------------------------------------------------------------
-pub use types::config::{GossipConfig, IntroducerConfig, RelayConfig};
+pub use gossip::backpressure::BackpressureConfig;
+#[cfg(feature = "dandelion")]
+pub use types::config::DandelionConfig;
+#[cfg(feature = "erlay")]
+pub use types::config::ErlayConfig;
+pub use types::config::{GossipConfig, IntroducerConfig, PeerIdRotationConfig, RelayConfig};
 pub use types::dig_messages::DigMessageType;
 pub use types::peer::{PeerConnection, PeerId, PeerInfo};
 pub use types::reputation::{PeerReputation, PenaltyReason};
@@ -115,8 +120,8 @@ pub use gossip::erlay::{ErlayState, ReconciliationSketch};
 #[cfg(feature = "dandelion")]
 pub use privacy::dandelion::StemTransaction;
 
-/// Tor/SOCKS transport configuration shell (feature `tor`).
+/// Tor/SOCKS transport configuration (feature `tor`). `TorTransportConfig` is a legacy alias.
 #[cfg(feature = "tor")]
-pub use privacy::tor::TorTransportConfig;
+pub use privacy::tor::{TorConfig, TorTransportConfig};
 
 pub use constants::*;

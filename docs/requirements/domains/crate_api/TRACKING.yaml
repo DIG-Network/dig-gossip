@@ -32,10 +32,15 @@ items:
   - id: API-003
     section: "2.10"
     summary: "GossipConfig struct fields"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#210-gossipconfig"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_003_tests.rs
+    notes: >
+      Full field set per API-003/SPEC §2.10 with STR-004 feature gates on dandelion, tor, erlay slots.
+      DandelionConfig (privacy/dandelion), TorConfig + TorTransportConfig alias (privacy/tor), ErlayConfig
+      (gossip/erlay), BackpressureConfig (gossip/backpressure), PeerIdRotationConfig (types/config).
+      Nested configs are placeholders until PRV-*/ERL-*/PRI-* land. Default values use crate constants.
   - id: API-004
     section: "4"
     summary: "GossipError enum variants (wraps ClientError)"

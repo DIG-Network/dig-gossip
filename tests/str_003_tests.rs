@@ -138,11 +138,12 @@ fn test_reexport_constants() {
 fn test_full_import_set() {
     #![allow(unused_imports)]
     use dig_gossip::{
-        load_ssl_cert, AddressManager, Bytes32, ChiaCertificate, ChiaProtocolMessage, Client,
-        ClientError, ClientState, DigMessageType, FullBlock, GossipConfig, GossipError,
-        GossipHandle, GossipService, GossipStats, Handshake, IntroducerClient, IntroducerConfig,
-        IntroducerPeers, Message, Network, NewPeak, NewTransaction, NewUnfinishedBlock, NodeType,
-        Peer, PeerConnection, PeerId, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
+        load_ssl_cert, AddressManager, BackpressureConfig, Bytes32, ChiaCertificate,
+        ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType, FullBlock,
+        GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
+        IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, NewPeak,
+        NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection, PeerId,
+        PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
         ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits, RelayConfig, RelayStats,
         RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
         RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
@@ -173,10 +174,33 @@ fn test_reexport_compact_block_types() {
 fn test_reexport_erlay_types() {
     assert_send_sync::<dig_gossip::ErlayState>();
     assert_send_sync::<dig_gossip::ReconciliationSketch>();
+    assert_send_sync::<dig_gossip::ErlayConfig>();
 }
 
 #[cfg(feature = "dandelion")]
 #[test]
 fn test_reexport_stem_transaction() {
     assert_send_sync::<dig_gossip::StemTransaction>();
+}
+
+#[cfg(feature = "dandelion")]
+#[test]
+fn test_reexport_dandelion_config() {
+    assert_send_sync::<dig_gossip::DandelionConfig>();
+}
+
+#[test]
+fn test_reexport_backpressure_config() {
+    assert_send_sync::<dig_gossip::BackpressureConfig>();
+}
+
+#[test]
+fn test_reexport_peer_id_rotation_config() {
+    assert_send_sync::<dig_gossip::PeerIdRotationConfig>();
+}
+
+#[cfg(feature = "tor")]
+#[test]
+fn test_reexport_tor_config() {
+    assert_send_sync::<dig_gossip::TorConfig>();
 }
