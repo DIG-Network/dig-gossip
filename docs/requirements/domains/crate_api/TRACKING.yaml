@@ -1,0 +1,81 @@
+domain_id: crate_api
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: API-001
+    section: "3.1"
+    summary: "GossipService constructor (new with GossipConfig)"
+    status: gap
+    spec_ref: "SPEC.md#31-construction"
+    tests: []
+    notes: ""
+  - id: API-002
+    section: "3.2, 3.3"
+    summary: "GossipHandle methods (broadcast, send_to, request, peers, discovery, stats)"
+    status: gap
+    spec_ref: "SPEC.md#33-gossiphandle"
+    tests: []
+    notes: ""
+  - id: API-003
+    section: "2.10"
+    summary: "GossipConfig struct fields"
+    status: gap
+    spec_ref: "SPEC.md#210-gossipconfig"
+    tests: []
+    notes: ""
+  - id: API-004
+    section: "4"
+    summary: "GossipError enum variants (wraps ClientError)"
+    status: gap
+    spec_ref: "SPEC.md#4-error-types"
+    tests: []
+    notes: ""
+  - id: API-005
+    section: "2.4"
+    summary: "PeerConnection wraps chia-sdk-client::Peer with metadata"
+    status: gap
+    spec_ref: "SPEC.md#24-peerconnection"
+    tests: []
+    notes: ""
+  - id: API-006
+    section: "2.5"
+    summary: "PeerReputation and PenaltyReason"
+    status: gap
+    spec_ref: "SPEC.md#25-peerreputation"
+    tests: []
+    notes: ""
+  - id: API-007
+    section: "2.2, 2.7"
+    summary: "PeerId type alias and PeerInfo with get_group/get_key"
+    status: gap
+    spec_ref: "SPEC.md#22-peerid"
+    tests: []
+    notes: ""
+  - id: API-008
+    section: "3.4"
+    summary: "GossipStats and RelayStats"
+    status: gap
+    spec_ref: "SPEC.md#34-statistics"
+    tests: []
+    notes: ""
+  - id: API-009
+    section: "2.3"
+    summary: "DigMessageType enum (200+ range)"
+    status: gap
+    spec_ref: "SPEC.md#23-dig-extension-message-types"
+    tests: []
+    notes: ""
+  - id: API-010
+    section: "2.11, 2.12"
+    summary: "IntroducerConfig and RelayConfig"
+    status: gap
+    spec_ref: "SPEC.md#211-introducerconfig"
+    tests: []
+    notes: ""
+  - id: API-011
+    section: "2.6, 2.8"
+    summary: "ExtendedPeerInfo and VettedPeer"
+    status: gap
+    spec_ref: "SPEC.md#26-extendedpeerinfo"
+    tests: []
+    notes: ""

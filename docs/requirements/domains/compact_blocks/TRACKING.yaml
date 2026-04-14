@@ -1,0 +1,46 @@
+domain_id: compact_blocks
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: CBK-001
+    section: "8.2"
+    summary: "CompactBlock struct with required fields"
+    status: gap
+    spec_ref: "SPEC.md#82-compact-block-relay"
+    tests: []
+    notes: ""
+  - id: CBK-002
+    section: "8.2"
+    summary: "ShortTxId = SipHash truncated to 6 bytes"
+    status: gap
+    spec_ref: "SPEC.md#82-compact-block-relay"
+    tests: []
+    notes: ""
+  - id: CBK-003
+    section: "8.2"
+    summary: "Block reconstruction from mempool matches"
+    status: gap
+    spec_ref: "SPEC.md#82-compact-block-relay"
+    tests: []
+    notes: ""
+  - id: CBK-004
+    section: "8.2"
+    summary: "Missing tx request/response protocol"
+    status: gap
+    spec_ref: "SPEC.md#82-compact-block-relay"
+    tests: []
+    notes: ""
+  - id: CBK-005
+    section: "8.2"
+    summary: "Fallback to full block when >5 missing"
+    status: gap
+    spec_ref: "SPEC.md#82-compact-block-relay"
+    tests: []
+    notes: ""
+  - id: CBK-006
+    section: "8.2"
+    summary: "Deterministic SipHash key from header hash"
+    status: gap
+    spec_ref: "SPEC.md#82-compact-block-relay"
+    tests: []
+    notes: ""

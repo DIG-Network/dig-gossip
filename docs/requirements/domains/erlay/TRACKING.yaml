@@ -1,0 +1,60 @@
+domain_id: erlay
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: ERL-001
+    section: "8.3"
+    summary: "Flood set = 8 random connected outbound peers"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-002
+    section: "8.3"
+    summary: "NewTransaction sent only to flood set; tx_id added to local sketch"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-003
+    section: "8.3"
+    summary: "Minisketch encode/decode for tx_id sets with capacity 20"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-004
+    section: "8.3"
+    summary: "Set reconciliation every 2000ms per non-flood peer"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-005
+    section: "8.3"
+    summary: "Symmetric difference resolution; both peers converge"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-006
+    section: "8.3"
+    summary: "Flood set re-randomized every 60 seconds"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-007
+    section: "8.3"
+    summary: "Inbound peers excluded from flood set"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: ERL-008
+    section: "8.3"
+    summary: "ErlayConfig struct with flood_peer_count, reconciliation_interval_ms, sketch_capacity"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""

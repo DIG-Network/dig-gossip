@@ -1,0 +1,28 @@
+---
+alwaysApply: true
+---
+
+# Code and test documentation (dig-gossip)
+
+These conventions apply to **all** new or modified Rust and test code in this repository.
+
+## Tests (`tests/**/*.rs`, `#[cfg(test)]` modules)
+
+- Every test file MUST start with a **module-level** `//!` doc block that:
+  - Names the requirement ID(s) it verifies (e.g. STR-001, API-002) and links to normative/spec paths under `docs/requirements/domains/`.
+  - States **what** is being exercised and **how** passing tests prove the requirement is satisfied (causal chain: assertion → acceptance criterion).
+- Each `#[test]` SHOULD have a short doc comment or an adjacent comment block if the name alone is insufficient, especially for integration tests that shell out or parse manifests.
+
+## Production code (`src/**/*.rs`)
+
+- Prefer **high-signal, LLM-friendly** comments: usage, **rationale**, **decisions** (including rejected alternatives when non-obvious), invariants, and operational context.
+- Include **semantic links** where helpful:
+  - Paths to requirements: `docs/requirements/domains/{domain}/specs/{ID}.md`, `NORMATIVE.md`, `VERIFICATION.md`.
+  - Paths to the master spec: `docs/resources/SPEC.md` (section references in prose).
+  - Paths to related modules or types in this crate (`crate::…`, file paths in comments).
+- Avoid noise: comments should add information a reader (human or model) cannot get from names and types alone.
+
+## Related project docs
+
+- Implementation order and traceability: `docs/requirements/IMPLEMENTATION_ORDER.md`
+- Requirements index: `docs/requirements/README.md`

@@ -1,0 +1,46 @@
+domain_id: performance
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+items:
+  - id: PRF-001
+    section: "1.8, 2.5, 4.4"
+    summary: "Latency-aware scoring via Ping/Pong RTT"
+    status: gap
+    spec_ref: "SPEC.md#25-peerreputation-dig-extension"
+    tests: []
+    notes: ""
+  - id: PRF-002
+    section: "1.8, 6.4"
+    summary: "Peer selection prefers higher-scored peers"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: PRF-003
+    section: "1.8, 8.1"
+    summary: "Plumtree tree optimization for low latency"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: PRF-004
+    section: "1.8, 6.4"
+    summary: "Parallel bootstrap via FuturesUnordered"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: PRF-005
+    section: "11.3"
+    summary: "Bandwidth benchmarks (Plumtree, compact, ERLAY)"
+    status: gap
+    spec_ref: "SPEC.md#113-benchmark-tests"
+    tests: []
+    notes: ""
+  - id: PRF-006
+    section: "11.3"
+    summary: "Latency benchmarks (NewPeak p99, bootstrap time)"
+    status: gap
+    spec_ref: "SPEC.md#113-benchmark-tests"
+    tests: []
+    notes: ""

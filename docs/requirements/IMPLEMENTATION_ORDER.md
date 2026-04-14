@@ -13,7 +13,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] STR-002 — Module hierarchy (`src/lib.rs` root, submodule layout matching SPEC Section 10.1)
 - [x] STR-003 — Re-export strategy (chia-protocol, chia-sdk-client, chia-ssl types)
 - [x] STR-004 — Feature flags (native-tls, rustls, relay, erlay, compact-blocks)
-- [ ] STR-005 — Test infrastructure (`tests/` layout, helpers, mock peer harness)
+- [x] STR-005 — Test infrastructure (`tests/` layout, helpers, mock peer harness)
 
 ## Phase 1: Crate API Types
 
@@ -77,6 +77,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [ ] PLT-006 — Tree self-healing on peer disconnect (lazy promotion)
 - [ ] PLT-007 — Message cache (LRU, capacity 1000, TTL 60s) for GRAFT responses
 - [ ] PLT-008 — Seen set (LRU deduplication, capacity 100K)
+- [ ] PLT-009 — PlumtreeMessage wire types (LazyAnnounce, Prune, Graft, RequestByHash with DigMessageType IDs 214-217)
 
 ## Phase 6: Compact Block Relay
 
@@ -96,6 +97,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [ ] ERL-005 — Symmetric difference computation and missing tx exchange
 - [ ] ERL-006 — Flood set rotation every ERLAY_FLOOD_SET_ROTATION_SECS
 - [ ] ERL-007 — Inbound peers excluded from flood set
+- [ ] ERL-008 — ErlayConfig struct (flood_peer_count, reconciliation_interval_ms, sketch_capacity)
 
 ## Phase 8: Priority Lanes & Backpressure
 
@@ -150,11 +152,11 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 | 2 | Connection | 9 |
 | 3 | Discovery | 12 |
 | 4 | Relay | 8 |
-| 5 | Plumtree Gossip | 8 |
+| 5 | Plumtree Gossip | 9 |
 | 6 | Compact Blocks | 6 |
-| 7 | ERLAY Tx Relay | 7 |
+| 7 | ERLAY Tx Relay | 8 |
 | 8 | Priority & Backpressure | 8 |
 | 9 | Performance | 6 |
 | 10 | Concurrency | 6 |
 | 11 | Privacy | 10 |
-| **Total** | | **96** |
+| **Total** | | **98** |
