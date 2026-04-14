@@ -2,9 +2,13 @@
 //!
 //! **Layout:** STR-002; **re-exports:** STR-003 /
 //! [`specs/STR-003.md`](../../../docs/requirements/domains/crate_structure/specs/STR-003.md).
-//! **Full metadata:** API-005 /
-//! [`docs/requirements/domains/crate_api/specs/API-005.md`](../../../docs/requirements/domains/crate_api/specs/API-005.md)
-//! and [`SPEC.md`](../../../docs/resources/SPEC.md) Section 2.4.
+//!
+//! - **API-007 — [`PeerId`] / [`PeerInfo`]:**
+//!   [`docs/requirements/domains/crate_api/specs/API-007.md`](../../../docs/requirements/domains/crate_api/specs/API-007.md),
+//!   [`SPEC.md`](../../../docs/resources/SPEC.md) §2.2, §2.7 (Chia `peer_info.py` semantics).
+//! - **API-005 — [`PeerConnection`]:**
+//!   [`docs/requirements/domains/crate_api/specs/API-005.md`](../../../docs/requirements/domains/crate_api/specs/API-005.md)
+//!   and [`SPEC.md`](../../../docs/resources/SPEC.md) Section 2.4.
 //!
 //! `PeerConnection` intentionally **does not** implement [`Clone`]: it owns an
 //! [`tokio::sync::mpsc::Receiver`] for inbound wire messages (SPEC 2.4), which is not clonable.
@@ -12,7 +16,7 @@
 //! receiver would violate single-consumer semantics.
 
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use chia_protocol::{Bytes32, Message, NodeType};
 use chia_sdk_client::Peer;
@@ -21,7 +25,10 @@ use tokio::sync::mpsc;
 
 use super::reputation::PeerReputation;
 
-/// 32-byte peer identifier (BLS-derived in Chia; same wire type for DIG).
+/// A unique identifier for a peer, derived from SHA256(TLS public key material).
+///
+/// **Normative:** API-007 — type alias for [`Bytes32`] from `chia-protocol` so wire types and
+/// hashing stay aligned with Chia crates (see [`SPEC.md`](../../../docs/resources/SPEC.md) §2.2).
 pub type PeerId = Bytes32;
 
 /// Derive the gossip-layer [`PeerId`] from a TLS **SubjectPublicKeyInfo** block in PKIX DER form.
@@ -38,13 +45,85 @@ pub fn peer_id_from_tls_spki_der(spki_der: &[u8]) -> PeerId {
     PeerId::from(bytes)
 }
 
-/// Static / semi-static peer metadata used by discovery and address bucketing.
+/// Resolved peer socket identity for the **address manager** (tried/new buckets, group diversity).
 ///
-/// **Future fields:** IP, ports, services flags, timestamp — see discovery specs.
-#[derive(Debug, Clone)]
+/// This is **not** the TLS-derived [`PeerId`]; it is the `host` + `port` we would dial or learned
+/// from DNS / introducer. [`get_group`](Self::get_group) and [`get_key`](Self::get_key) mirror Chia
+/// `peer_info.py:43-57` so DSC-001 / DSC-011 can port Python bucketing faithfully.
+///
+/// **Parsing:** [`Self::host`] is usually a numeric IP string. If it is not a literal [`IpAddr`],
+/// methods fall back to **deterministic SHA-256** of the host string (and for [`Self::get_key`],
+/// append the port in big-endian), per API-007 implementation notes — avoids `std` hasher
+/// instability across Rust versions.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeerInfo {
-    /// Stable peer identity on the wire.
-    pub peer_id: PeerId,
+    /// Hostname or IP literal (e.g. `"192.168.1.5"`, `"2001:db8::1"`, `"seed.example.com"`).
+    pub host: String,
+    /// P2P port (may be `0` in edge cases; still encoded in [`Self::get_key`]).
+    pub port: u16,
+}
+
+impl PeerInfo {
+    /// Network “group” for eclipse resistance: IPv4 `/16` (first two octets), IPv6 first 32 bits.
+    ///
+    /// **IPv4-mapped IPv6** (`::ffff:a.b.c.d`) is normalized to IPv4 so grouping matches Chia.
+    /// **Non-IP hosts:** returns the first **4** bytes of `SHA256(host)` so length is stable and
+    /// suitable alongside IPv6 group width (API-007 test plan).
+    ///
+    /// **See:** [`SPEC.md`](../../../docs/resources/SPEC.md) §2.7, Chia `peer_info.py:51-56`.
+    pub fn get_group(&self) -> Vec<u8> {
+        match self.host.parse::<IpAddr>() {
+            Ok(ip) => group_bytes_for_ip(normalize_ip(ip)),
+            Err(_) => hostname_group_bytes(&self.host),
+        }
+    }
+
+    /// Stable bucket key: IP octets then port **big-endian** (Chia `peer_info.py:43-49`).
+    ///
+    /// - **IPv4:** 4 + 2 bytes  
+    /// - **IPv6:** 16 + 2 bytes  
+    /// - **IPv4-mapped IPv6:** uses the embedded IPv4 (4 + 2 bytes)  
+    /// - **Hostname (unparseable as [`IpAddr`]):** `SHA256(host) || port_be` (32 + 2 bytes)
+    pub fn get_key(&self) -> Vec<u8> {
+        match self.host.parse::<IpAddr>() {
+            Ok(ip) => key_bytes_for_ip(normalize_ip(ip), self.port),
+            Err(_) => hostname_key_bytes(&self.host, self.port),
+        }
+    }
+}
+
+/// Collapse IPv4-mapped IPv6 to [`IpAddr::V4`] so `/16` grouping matches Chia.
+fn normalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 @ IpAddr::V4(_) => v4,
+    }
+}
+
+fn group_bytes_for_ip(ip: IpAddr) -> Vec<u8> {
+    match ip {
+        IpAddr::V4(v4) => v4.octets()[..2].to_vec(),
+        IpAddr::V6(v6) => v6.octets()[..4].to_vec(),
+    }
+}
+
+fn key_bytes_for_ip(ip: IpAddr, port: u16) -> Vec<u8> {
+    let mut v = match ip {
+        IpAddr::V4(v4) => v4.octets().to_vec(),
+        IpAddr::V6(v6) => v6.octets().to_vec(),
+    };
+    v.extend_from_slice(&port.to_be_bytes());
+    v
+}
+
+fn hostname_group_bytes(host: &str) -> Vec<u8> {
+    Sha256::digest(host.as_bytes())[..4].to_vec()
+}
+
+fn hostname_key_bytes(host: &str, port: u16) -> Vec<u8> {
+    let mut out = Sha256::digest(host.as_bytes()).to_vec();
+    out.extend_from_slice(&port.to_be_bytes());
+    out
 }
 
 /// Active connection with gossip bookkeeping.
