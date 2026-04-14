@@ -1,8 +1,8 @@
 # dig-gossip — Peer-to-peer networking and gossip for the DIG Network L2 blockchain.
 #
-# Requirement: STR-001 (Cargo.toml dependencies and feature gates)
-# - Normative: docs/requirements/domains/crate_structure/NORMATIVE.md#STR-001
-# - Spec: docs/requirements/domains/crate_structure/specs/STR-001.md
+# Crate manifest — STR-001 (dependencies), STR-004 (feature flags / defaults).
+# - Normative: docs/requirements/domains/crate_structure/NORMATIVE.md
+# - Specs: docs/requirements/domains/crate_structure/specs/STR-001.md, STR-004.md
 # - Master spec: docs/resources/SPEC.md (Sections 1.2, 10.3, 10.4)
 #
 # Rationale for `chia-sdk-client` shape:
@@ -53,6 +53,13 @@ lru = "0.12"
 # Optional: compact block short IDs (SPEC Section 8.2) — feature `compact-blocks`.
 siphasher = { version = "1", optional = true }
 
+# Optional: Tor client (SPEC Section 1.9.3) — feature `tor` (NORMATIVE STR-004).
+# Kept lightweight via `default-features = false`; enable `tokio` for async integration.
+arti-client = { version = "0.41", optional = true, default-features = false, features = ["tokio"] }
+
+# SOCKS5 for Tor and hybrid outbound (feature `tor`).
+tokio-socks = { version = "0.5", optional = true }
+
 # ERLAY (SPEC Section 8.3) normally relies on a Minisketch binding. The
 # canonical crates.io release (`minisketch-rs`) pulls `bindgen`, which collides at
 # the Cargo **links** layer with `chia-sdk-client`’s optional `rustls` → `aws-lc-rs`
@@ -70,22 +77,26 @@ toml = "0.8"
 tempfile = "3"
 
 [features]
-# Default matches STR-001: TLS via native stack, relay + erlay + compact blocks on.
-default = ["native-tls", "relay", "erlay", "compact-blocks"]
+# STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
+default = ["native-tls", "relay", "erlay", "compact-blocks", "dandelion"]
 
 # TLS backends — mutually exclusive at the `chia-sdk-client` layer.
 native-tls = ["chia-sdk-client/native-tls"]
 rustls = ["chia-sdk-client/rustls"]
 
-# Relay fallback / introducer flows (SPEC Section 7) — cfg gate only for now.
+# Relay fallback / introducer flows (SPEC Section 7).
 relay = []
 
-# ERLAY — feature gate for set-reconciliation code paths (see TRACKING note: no
-# `minisketch-rs` dep until Cargo `links` collision with `chia-sdk-client` is resolved).
+# ERLAY — SPEC names `minisketch-rs`; see `[dependencies]` comment: that crate is omitted
+# (Cargo `links` / bindgen clash with `chia-sdk-client`’s optional rustls path). The feature
+# remains the cfg switch for `gossip/erlay.rs`.
 erlay = []
 
-# Compact blocks — enables SipHash-backed short transaction IDs.
-compact-blocks = ["siphasher"]
+# Compact blocks — enables optional `siphasher`.
+compact-blocks = ["dep:siphasher"]
 
-# Dandelion++ privacy (stem/fluff) — no extra deps at STR-003; see privacy specs.
+# Dandelion++ — no extra dependencies (PRV-* specs).
 dandelion = []
+
+# Tor / SOCKS5 — opt-in only (not in `default`).
+tor = ["dep:arti-client", "dep:tokio-socks"]

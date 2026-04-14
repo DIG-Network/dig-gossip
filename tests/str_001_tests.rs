@@ -332,8 +332,8 @@ fn test_feature_compact_blocks() {
         .expect("compact-blocks feature must exist");
     let entries: Vec<&str> = flag.iter().filter_map(Value::as_str).collect();
     assert!(
-        entries.contains(&"siphasher"),
-        "compact-blocks must enable siphasher (optional dep), got {entries:?}"
+        entries.contains(&"siphasher") || entries.contains(&"dep:siphasher"),
+        "compact-blocks must enable optional siphasher dep, got {entries:?}"
     );
 }
 
@@ -346,7 +346,13 @@ fn test_default_features() {
         .and_then(Value::as_array)
         .expect("default feature set must exist");
     let entries: Vec<&str> = default.iter().filter_map(Value::as_str).collect();
-    for required in ["native-tls", "relay", "erlay", "compact-blocks"] {
+    for required in [
+        "native-tls",
+        "relay",
+        "erlay",
+        "compact-blocks",
+        "dandelion",
+    ] {
         assert!(
             entries.contains(&required),
             "default features must include {required}, got {entries:?}"

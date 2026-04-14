@@ -11,12 +11,15 @@
 //! - **Public re-exports (this file, bottom):** STR-003 —
 //!   [`docs/requirements/domains/crate_structure/specs/STR-003.md`](../docs/requirements/domains/crate_structure/specs/STR-003.md)
 //!   and SPEC Section 10.2.
+//! - **Feature flags:** STR-004 —
+//!   [`docs/requirements/domains/crate_structure/specs/STR-004.md`](../docs/requirements/domains/crate_structure/specs/STR-004.md)
+//!   and SPEC Section 10.3.
 //!
 //! ## Module tree (STR-002)
 //!
 //! Subsystems are split so each directory maps to a requirements domain (`connection/`,
 //! `discovery/`, `gossip/`, …). Optional compilation (`relay`, `compact-blocks`, `erlay`,
-//! `dandelion`) keeps minimal TLS-only graphs lean for CI.
+//! `dandelion`, `tor`) keeps minimal TLS-only graphs lean for CI.
 //!
 //! ## Design constraints (from SPEC)
 //!
@@ -46,8 +49,10 @@ pub mod util;
 #[cfg(feature = "relay")]
 pub mod relay;
 
-/// Dandelion++, PeerId rotation, Tor — populated incrementally (privacy domain).
-#[cfg(feature = "dandelion")]
+/// Privacy transport and propagation (`dandelion`, `tor` features — STR-004 / SPEC 10.1 `privacy/`).
+///
+/// Compiled when **either** `dandelion` or `tor` is enabled so Tor-only builds do not pull Dandelion code.
+#[cfg(any(feature = "dandelion", feature = "tor"))]
 pub mod privacy;
 
 // =============================================================================
@@ -109,5 +114,9 @@ pub use gossip::erlay::{ErlayState, ReconciliationSketch};
 
 #[cfg(feature = "dandelion")]
 pub use privacy::dandelion::StemTransaction;
+
+/// Tor/SOCKS transport configuration shell (feature `tor`).
+#[cfg(feature = "tor")]
+pub use privacy::tor::TorTransportConfig;
 
 pub use constants::*;
