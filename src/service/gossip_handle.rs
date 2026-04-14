@@ -312,10 +312,10 @@ impl GossipHandle {
     pub async fn penalize_peer(
         &self,
         peer_id: &PeerId,
-        _reason: PenaltyReason,
+        reason: PenaltyReason,
     ) -> Result<(), GossipError> {
         self.require_running()?;
-        let add = 40u32;
+        let add = reason.penalty_points();
         let should_ban = {
             let mut p = self
                 .inner
@@ -327,7 +327,7 @@ impl GossipHandle {
             *e >= PENALTY_BAN_THRESHOLD
         };
         if should_ban {
-            self.ban_peer(peer_id, PenaltyReason::Unspecified).await?;
+            self.ban_peer(peer_id, reason).await?;
         }
         Ok(())
     }

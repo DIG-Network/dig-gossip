@@ -295,7 +295,7 @@ async fn test_ban_peer() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10401".parse().unwrap();
     let pid = h.connect_to(a).await.unwrap();
-    h.ban_peer(&pid, dig_gossip::PenaltyReason::Unspecified)
+    h.ban_peer(&pid, dig_gossip::PenaltyReason::ProtocolViolation)
         .await
         .unwrap();
     assert_eq!(h.peer_count().await, 0);
@@ -309,7 +309,7 @@ async fn test_penalize_peer_below_threshold() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10501".parse().unwrap();
     let pid = h.connect_to(a).await.unwrap();
-    h.penalize_peer(&pid, dig_gossip::PenaltyReason::Unspecified)
+    h.penalize_peer(&pid, dig_gossip::PenaltyReason::ConnectionIssue)
         .await
         .unwrap();
     assert_eq!(h.peer_count().await, 1);
@@ -320,8 +320,9 @@ async fn test_penalize_peer_auto_ban() {
     let (_s, h) = running_handle().await;
     let a: SocketAddr = "127.0.0.1:10601".parse().unwrap();
     let pid = h.connect_to(a).await.unwrap();
-    for _ in 0..3 {
-        h.penalize_peer(&pid, dig_gossip::PenaltyReason::Unspecified)
+    // 4 × Spam (25) = 100 → threshold ban (API-006 / CON-007 weights).
+    for _ in 0..4 {
+        h.penalize_peer(&pid, dig_gossip::PenaltyReason::Spam)
             .await
             .unwrap();
     }

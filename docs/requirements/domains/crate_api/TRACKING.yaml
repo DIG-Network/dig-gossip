@@ -64,10 +64,15 @@ items:
   - id: API-006
     section: "2.5"
     summary: "PeerReputation and PenaltyReason"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#25-peerreputation"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_006_tests.rs
+    notes: >
+      PenaltyReason variants and penalty_points() align with CON-007; PeerReputation applies saturating penalties,
+      timed ban at PENALTY_BAN_THRESHOLD with BAN_DURATION_SECS, refresh_ban_status clears expired bans, RTT_WINDOW_SIZE
+      rolling mean + score (trust *1/avg,0 when no RTT). gossip_handle penalize_peer uses reason.penalty_points().
+      PartialEq without Eq (f64 score field).
   - id: API-007
     section: "2.2, 2.7"
     summary: "PeerId type alias and PeerInfo with get_group/get_key"
