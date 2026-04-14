@@ -129,6 +129,11 @@ fn test_reexport_vetted_peer() {
 }
 
 #[test]
+fn test_reexport_extended_peer_info() {
+    assert_send_sync::<dig_gossip::ExtendedPeerInfo>();
+}
+
+#[test]
 fn test_reexport_constants() {
     assert_eq!(dig_gossip::DEFAULT_P2P_PORT, 9444);
 }
@@ -140,10 +145,10 @@ fn test_full_import_set() {
     use dig_gossip::{
         load_ssl_cert, peer_id_from_tls_spki_der, AddressManager, BackpressureConfig, Bytes32,
         ChiaCertificate, ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType,
-        FullBlock, GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
-        IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, NewPeak,
-        NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection, PeerId,
-        PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
+        ExtendedPeerInfo, FullBlock, GossipConfig, GossipError, GossipHandle, GossipService,
+        GossipStats, Handshake, IntroducerClient, IntroducerConfig, IntroducerPeers, Message,
+        Network, NewPeak, NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection,
+        PeerId, PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
         ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits, RelayConfig, RelayStats,
         RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
         RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,

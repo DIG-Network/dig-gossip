@@ -9,6 +9,9 @@
 //! - **API-005 — [`PeerConnection`]:**
 //!   [`docs/requirements/domains/crate_api/specs/API-005.md`](../../../docs/requirements/domains/crate_api/specs/API-005.md)
 //!   and [`SPEC.md`](../../../docs/resources/SPEC.md) Section 2.4.
+//! - **API-011 — [`ExtendedPeerInfo`]:**
+//!   [`docs/requirements/domains/crate_api/specs/API-011.md`](../../../docs/requirements/domains/crate_api/specs/API-011.md),
+//!   [`SPEC.md`](../../../docs/resources/SPEC.md) §2.6 — address-manager row metadata (Chia `address_manager.py:43`).
 //!
 //! `PeerConnection` intentionally **does not** implement [`Clone`]: it owns an
 //! [`tokio::sync::mpsc::Receiver`] for inbound wire messages (SPEC 2.4), which is not clonable.
@@ -124,6 +127,38 @@ fn hostname_key_bytes(host: &str, port: u16) -> Vec<u8> {
     let mut out = Sha256::digest(host.as_bytes()).to_vec();
     out.extend_from_slice(&port.to_be_bytes());
     out
+}
+
+/// Address-manager row: tried vs new table metadata for one [`PeerInfo`].
+///
+/// **Rust port** of Chia `ExtendedPeerInfo` (`address_manager.py:43+`). DSC-001 will embed these in
+/// tried/new buckets; fields mirror Python semantics so eviction, ref-counting, and random peer pick
+/// (`random_pos`) can be ported line-by-line.
+///
+/// Uses this crate’s [`PeerInfo`] (API-007), **not** [`chia_protocol::TimestampedPeerInfo`], so
+/// [`get_group`](PeerInfo::get_group) / [`get_key`](PeerInfo::get_key) stay available for bucketing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedPeerInfo {
+    /// Address we would dial or learned from the network.
+    pub peer_info: PeerInfo,
+    /// Last time this row was updated (Unix seconds); staleness / horizon logic (DSC-001).
+    pub timestamp: u64,
+    /// Peer that gossiped this address — drives **source-group** buckets in the new table.
+    pub src: PeerInfo,
+    /// Index in the random-order vector for O(1) uniform selection; [`None`] until inserted.
+    pub random_pos: Option<usize>,
+    /// `true` once we have placed the peer in the **tried** table (successful connect historically).
+    pub is_tried: bool,
+    /// New-table reference count from bucket entries pointing at this record; `0` in tried rows.
+    pub ref_count: u32,
+    /// Last successful TCP/TLS completion (Unix seconds); `0` means never connected.
+    pub last_success: u64,
+    /// Last connect attempt (Unix seconds); pairs with [`Self::num_attempts`] for backoff.
+    pub last_try: u64,
+    /// Monotonic attempt counter; compared to [`crate::constants::MAX_RETRIES`] when evicting.
+    pub num_attempts: u32,
+    /// Rate-limits how often attempts increment toward eviction (Chia `last_count_attempt`).
+    pub last_count_attempt: u64,
 }
 
 /// Active connection with gossip bookkeeping.

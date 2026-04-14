@@ -27,7 +27,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] API-008 — GossipStats and RelayStats structs
 - [x] API-009 — DigMessageType enum (type IDs 200+ for attestation, checkpoint, status)
 - [x] API-010 — IntroducerConfig and RelayConfig structs
-- [ ] API-011 — ExtendedPeerInfo and VettedPeer types (for address manager and introducer)
+- [x] API-011 — ExtendedPeerInfo and VettedPeer types (for address manager and introducer)
 
 ## Phase 2: Connection Lifecycle
 

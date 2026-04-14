@@ -119,7 +119,11 @@ items:
   - id: API-011
     section: "2.6, 2.8"
     summary: "ExtendedPeerInfo and VettedPeer"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#26-extendedpeerinfo"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_011_tests.rs
+    notes: >
+      ExtendedPeerInfo in types/peer.rs (PeerInfo fields, not TimestampedPeerInfo); VettedPeer full struct
+      in discovery/introducer_peers.rs with Debug/Clone/PartialEq/Eq/Hash and signed vetted. Re-exported at
+      crate root (STR-003). STR-003 full import set + test_reexport_extended_peer_info updated.
