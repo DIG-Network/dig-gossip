@@ -34,6 +34,8 @@ chia-protocol = "0.26"
 chia-sdk-client = { version = "0.28", default-features = false }
 chia-ssl = "0.26"
 chia-traits = "0.26"
+# SHA256(peer TLS SubjectPublicKeyInfo DER) — API-005 / CON-001 peer_id derivation (NIST SHA-256).
+sha2 = "0.10"
 
 # Async runtime / WebSocket framing used by upstream client patterns.
 tokio = { version = "1", features = ["full"] }
@@ -75,6 +77,8 @@ tokio-socks = { version = "0.5", optional = true }
 toml = "0.8"
 # Reserved for STR-005 harness / future integration tests.
 tempfile = "3"
+# Parse PEM certs in API-005 tests to extract SPKI DER (same x509-parser series as rcgen/chia-ssl).
+x509-parser = "0.16"
 
 [features]
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).

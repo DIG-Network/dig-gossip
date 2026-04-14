@@ -138,9 +138,9 @@ fn test_reexport_constants() {
 fn test_full_import_set() {
     #![allow(unused_imports)]
     use dig_gossip::{
-        load_ssl_cert, AddressManager, BackpressureConfig, Bytes32, ChiaCertificate,
-        ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType, FullBlock,
-        GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
+        load_ssl_cert, peer_id_from_tls_spki_der, AddressManager, BackpressureConfig, Bytes32,
+        ChiaCertificate, ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType,
+        FullBlock, GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
         IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, NewPeak,
         NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection, PeerId,
         PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,

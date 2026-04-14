@@ -16,12 +16,27 @@ use std::net::SocketAddr;
 
 use chia_protocol::{Bytes32, Message, NodeType};
 use chia_sdk_client::Peer;
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use super::reputation::PeerReputation;
 
 /// 32-byte peer identifier (BLS-derived in Chia; same wire type for DIG).
 pub type PeerId = Bytes32;
+
+/// Derive the gossip-layer [`PeerId`] from a TLS **SubjectPublicKeyInfo** block in PKIX DER form.
+///
+/// **Normative:** API-005 acceptance — “`peer_id` is derived from SHA256 of the TLS public key.”
+/// We define that as **SHA256(`raw` SPKI DER)** where `raw` is the ASN.1 `SubjectPublicKeyInfo` sequence
+/// (algorithm id + subjectPublicKey bit string), matching the `SubjectPublicKeyInfo::raw` slice in
+/// the `x509-parser` crate when parsing X.509 certs. CON-001 will lift this blob from the negotiated peer cert.
+///
+/// **Not** the bare RSA/EC bit string alone — callers must pass the full SPKI DER slice.
+pub fn peer_id_from_tls_spki_der(spki_der: &[u8]) -> PeerId {
+    let digest = Sha256::digest(spki_der);
+    let bytes: [u8; 32] = digest.into();
+    PeerId::from(bytes)
+}
 
 /// Static / semi-static peer metadata used by discovery and address bucketing.
 ///
