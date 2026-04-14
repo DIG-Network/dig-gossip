@@ -22,7 +22,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] API-003 — GossipConfig struct (listen_addr, peer_id, network_id, network, targets, bootstrap)
 - [x] API-004 — GossipError enum (wraps ClientError, peer errors, discovery errors, relay errors)
 - [x] API-005 — PeerConnection struct (wraps chia-sdk-client::Peer with gossip metadata)
-- [ ] API-006 — PeerReputation and PenaltyReason (penalty accumulation, ban threshold, auto-unban)
+- [x] API-006 — PeerReputation and PenaltyReason (penalty accumulation, ban threshold, auto-unban)
 - [ ] API-007 — PeerId type alias and PeerInfo with get_group()/get_key()
 - [ ] API-008 — GossipStats and RelayStats structs
 - [ ] API-009 — DigMessageType enum (type IDs 200+ for attestation, checkpoint, status)
