@@ -109,10 +109,13 @@ items:
   - id: API-010
     section: "2.11, 2.12"
     summary: "IntroducerConfig and RelayConfig"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#211-introducerconfig"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_010_tests.rs
+    notes: >
+      Serde + Default per SPEC §2.11/2.12; empty endpoint sentinel; #[serde(default)] on structs;
+      relay ping_interval_secs uses PING_INTERVAL_SECS. DEFAULT_INTRODUCER_NETWORK_ID re-exported.
   - id: API-011
     section: "2.6, 2.8"
     summary: "ExtendedPeerInfo and VettedPeer"

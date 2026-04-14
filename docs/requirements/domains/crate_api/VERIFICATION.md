@@ -16,5 +16,5 @@
 | API-007 | verified | PeerId type alias and PeerInfo             | `tests/api_007_tests.rs`: Bytes32 interchange; Debug/Clone/Eq/Hash + HashMap key; get_group IPv4/IPv6/mapped/hostname; get_key layouts, uniqueness, determinism |
 | API-008 | verified | GossipStats and RelayStats | `tests/api_008_tests.rs`: Default/Debug/Clone; populated structs; `stats()` topology + cumulative counters + disconnect monotonic `total_connections`; `relay_stats` None/Some; inject → `messages_received`; send_to/broadcast → `messages_sent` |
 | API-009 | verified | DigMessageType enum | `tests/api_009_tests.rs`: per-variant `as u8`; uniqueness; serde_json + bincode round-trip; TryFrom; HashSet; sample Chia `msg_type` below200 vs DIG band |
-| API-010 | --     | IntroducerConfig and RelayConfig             | Unit test Default impls, Serialize/Deserialize round-trip, field validation            |
+| API-010 | verified | IntroducerConfig and RelayConfig | `tests/api_010_tests.rs`: field access; all SPEC defaults; Debug/Clone; JSON + bincode round-trip; partial JSON defaults |
 | API-011 | --     | ExtendedPeerInfo and VettedPeer              | Unit test construction, field access, and compatibility with address manager           |

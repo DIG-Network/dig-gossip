@@ -26,7 +26,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] API-007 — PeerId type alias and PeerInfo with get_group()/get_key()
 - [x] API-008 — GossipStats and RelayStats structs
 - [x] API-009 — DigMessageType enum (type IDs 200+ for attestation, checkpoint, status)
-- [ ] API-010 — IntroducerConfig and RelayConfig structs
+- [x] API-010 — IntroducerConfig and RelayConfig structs
 - [ ] API-011 — ExtendedPeerInfo and VettedPeer types (for address manager and introducer)
 
 ## Phase 2: Connection Lifecycle

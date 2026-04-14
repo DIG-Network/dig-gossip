@@ -89,7 +89,10 @@ pub use gossip::backpressure::BackpressureConfig;
 pub use types::config::DandelionConfig;
 #[cfg(feature = "erlay")]
 pub use types::config::ErlayConfig;
-pub use types::config::{GossipConfig, IntroducerConfig, PeerIdRotationConfig, RelayConfig};
+pub use types::config::{
+    GossipConfig, IntroducerConfig, PeerIdRotationConfig, RelayConfig,
+    DEFAULT_INTRODUCER_NETWORK_ID,
+};
 pub use types::dig_messages::{DigMessageType, UnknownDigMessageType};
 pub use types::peer::{peer_id_from_tls_spki_der, PeerConnection, PeerId, PeerInfo};
 pub use types::reputation::{PeerReputation, PenaltyReason};
