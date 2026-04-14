@@ -40,10 +40,14 @@ items:
   - id: STR-004
     section: "10.3"
     summary: "Feature flags match SPEC Section 10.3"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#103-feature-flags"
-    tests: []
-    notes: ""
+    tests:
+      - tests/str_004_tests.rs
+    notes: >
+      Default includes dandelion; tor is opt-in with arti-client + tokio-socks optional deps.
+      `compact-blocks` uses dep:siphasher. `erlay` remains empty (no minisketch-rs — STR-001 resolver note).
+      `privacy` module mounts when dandelion OR tor; submodules gated per STR-004.
   - id: STR-005
     section: "11"
     summary: "Test infrastructure with helpers"
