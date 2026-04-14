@@ -1,7 +1,7 @@
-//! Clone-friendly handle: broadcast, `send_to`, request/response, stats channels.
+//! Cheap clone handle for callers to broadcast, query stats, and shut down.
 //!
-//! **STR-002:** structural module only.
-//! **Behavior:** [`docs/requirements/domains/crate_api/specs/API-002.md`](../../../docs/requirements/domains/crate_api/specs/API-002.md).
+//! **Re-export:** STR-003; **methods:** API-002.
 
-#[allow(dead_code)]
-const _: () = ();
+/// `Arc`-backed façade (implementation lands in API-002).
+#[derive(Debug, Default)]
+pub struct GossipHandle {}

@@ -1,7 +1,8 @@
-//! DIG-specific message type IDs (`DigMessageType`, 200+ range).
-//!
-//! **Layout:** STR-002.
-//! **Behavior:** [`docs/requirements/domains/crate_api/specs/API-009.md`](../../../docs/requirements/domains/crate_api/specs/API-009.md).
+//! DIG-specific protocol message type IDs (200+ range), distinct from Chia’s enum.
 
-#[allow(dead_code)]
-const _: () = ();
+/// Wire discriminator for DIG extensions (attestations, checkpoints, status, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DigMessageType {
+    /// Lower bound of the DIG-reserved band (API-009 will assign real IDs).
+    ReservedBase = 200,
+}

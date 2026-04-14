@@ -86,3 +86,6 @@ erlay = []
 
 # Compact blocks — enables SipHash-backed short transaction IDs.
 compact-blocks = ["siphasher"]
+
+# Dandelion++ privacy (stem/fluff) — no extra deps at STR-003; see privacy specs.
+dandelion = []

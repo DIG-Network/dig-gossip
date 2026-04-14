@@ -1,7 +1,7 @@
-//! Address manager (Rust port of Chia `address_manager.py` / Bitcoin `CAddrMan`).
+//! Address manager (tried/new tables, bucketing, eviction).
 //!
-//! **STR-002:** file/module boundary.
-//! **Behavior:** [`docs/requirements/domains/discovery/specs/DSC-001.md`](../../../docs/requirements/domains/discovery/specs/DSC-001.md).
+//! **Re-export:** STR-003; **logic:** DSC-001+.
 
-#[allow(dead_code)]
-const _: () = ();
+/// Port of Chia `address_manager.py` — structure only for STR-003.
+#[derive(Debug, Default)]
+pub struct AddressManager {}

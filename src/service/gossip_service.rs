@@ -1,7 +1,7 @@
-//! Core service actor: bind, accept, discovery, gossip orchestration.
+//! Primary service type: binds listeners, runs discovery, owns subsystem handles.
 //!
-//! **STR-002:** structural module only.
-//! **Behavior:** [`docs/requirements/domains/crate_api/specs/API-001.md`](../../../docs/requirements/domains/crate_api/specs/API-001.md).
+//! **Re-export:** STR-003; **constructor / lifecycle:** API-001.
 
-#[allow(dead_code)]
-const _: () = ();
+/// Owns long-lived tasks and configuration for a gossip node.
+#[derive(Debug, Default)]
+pub struct GossipService {}

@@ -1,8 +1,6 @@
-//! Introducer query + DIG `register_peer` extension.
+//! Introducer HTTP/WebSocket client (query + DIG registration).
 //!
-//! **STR-002:** structural.
-//! **Behavior:** [`docs/requirements/domains/discovery/specs/DSC-004.md`](../../../docs/requirements/domains/discovery/specs/DSC-004.md),
-//! [`DSC-005.md`](../../../docs/requirements/domains/discovery/specs/DSC-005.md).
+//! **Re-export:** STR-003; **flows:** DSC-004, DSC-005.
 
-#[allow(dead_code)]
-const _: () = ();
+#[derive(Debug, Default)]
+pub struct IntroducerClient {}

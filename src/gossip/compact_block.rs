@@ -1,8 +1,20 @@
-//! Compact block encoding, short tx IDs, reconstruction against mempool.
+//! Compact block relay types (BIP-152-style) — feature `compact-blocks`.
 //!
-//! **Feature:** `compact-blocks` (enables `siphasher` in [`Cargo.toml`](../../Cargo.toml)).
-//! **STR-002:** compiled only when the feature is on (see [`crate::gossip`] `mod.rs`).
+//! **Re-export:** STR-003 when `compact-blocks` is enabled.
 //! **Domain:** [`docs/requirements/domains/compact_blocks/`](../../../docs/requirements/domains/compact_blocks/).
 
-#[allow(dead_code)]
-const _: () = ();
+#[derive(Debug, Clone, Default)]
+pub struct CompactBlock {}
+
+/// Truncated transaction identifier (`SHORT_TX_ID_BYTES` in [`crate::constants`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShortTxId(pub [u8; 6]);
+
+#[derive(Debug, Clone, Default)]
+pub struct PrefilledTransaction {}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequestBlockTransactions {}
+
+#[derive(Debug, Clone, Default)]
+pub struct RespondBlockTransactions {}

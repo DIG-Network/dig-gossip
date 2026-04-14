@@ -1,7 +1,12 @@
-//! Peer reputation and penalty bookkeeping.
-//!
-//! **Layout:** STR-002.
-//! **Behavior:** [`docs/requirements/domains/crate_api/specs/API-006.md`](../../../docs/requirements/domains/crate_api/specs/API-006.md).
+//! Peer reputation and penalty reasons (API-006).
 
-#[allow(dead_code)]
-const _: () = ();
+/// Rolling penalties, ban state, and decay — placeholder until API-006 fills behavior.
+#[derive(Debug, Clone, Default)]
+pub struct PeerReputation {}
+
+/// Why a penalty was applied (rate limit, invalid message, protocol abuse, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PenaltyReason {
+    /// Placeholder — variants will mirror API-006.
+    Unspecified,
+}
