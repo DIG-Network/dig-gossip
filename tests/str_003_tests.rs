@@ -148,7 +148,7 @@ fn test_full_import_set() {
         RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
         RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
         RespondUnfinishedBlock, SpendBundle, Streamable, TimestampedPeerInfo,
-        UnknownDigMessageType, VettedPeer, V2_RATE_LIMITS,
+        UnknownDigMessageType, VettedPeer, DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
     };
 }
 

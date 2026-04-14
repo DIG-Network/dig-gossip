@@ -4,6 +4,10 @@
 //! [`docs/requirements/domains/crate_api/specs/API-003.md`](../../../docs/requirements/domains/crate_api/specs/API-003.md)
 //! and [`SPEC.md`](../../../docs/resources/SPEC.md) §2.10.
 //!
+//! **Introducer / relay slots:** API-010 /
+//! [`docs/requirements/domains/crate_api/specs/API-010.md`](../../../docs/requirements/domains/crate_api/specs/API-010.md)
+//! ([`IntroducerConfig`], [`RelayConfig`]) — serde-friendly knobs for DSC-* and RLY-* clients.
+//!
 //! ## Feature-gated fields
 //!
 //! Optional subsystems attach to [`GossipConfig`] only when their Cargo features are enabled
@@ -16,10 +20,11 @@ use std::path::PathBuf;
 
 use chia_protocol::Bytes32;
 use chia_sdk_client::{Network, PeerOptions};
+use serde::{Deserialize, Serialize};
 
 use super::peer::PeerId;
 use crate::constants::{
-    DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT, DEFAULT_TARGET_OUTBOUND_COUNT,
+    DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT, DEFAULT_TARGET_OUTBOUND_COUNT, PING_INTERVAL_SECS,
 };
 use crate::gossip::backpressure::BackpressureConfig;
 
@@ -120,10 +125,73 @@ impl Default for GossipConfig {
     }
 }
 
-/// Introducer host, registration policy, retry cadence.
-#[derive(Debug, Clone, Default)]
-pub struct IntroducerConfig {}
+/// Default `network_id` string sent to the introducer (SPEC §2.11 / API-010).
+pub const DEFAULT_INTRODUCER_NETWORK_ID: &str = "DIG_MAINNET";
 
-/// Relay URL, credentials, reconnect policy.
-#[derive(Debug, Clone, Default)]
-pub struct RelayConfig {}
+/// Introducer client configuration (bootstrap + registration — DSC-004 / DSC-005).
+///
+/// **`endpoint`** is deployment-specific; [`Default`] uses an empty string as a **sentinel** — callers
+/// must validate non-empty before dialing (API-010 implementation notes). Other fields match SPEC §2.11
+/// defaults so `..Default::default()` fills timeouts and `network_id` when only the URL is set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IntroducerConfig {
+    /// WebSocket URL (e.g. `ws://introducer.example.com:9448`).
+    pub endpoint: String,
+    /// Outbound connect timeout (seconds). Default **10**.
+    pub connection_timeout_secs: u64,
+    /// Per-request timeout (seconds). Default **10**.
+    pub request_timeout_secs: u64,
+    /// Logical network label for introducer registration. Default **`DIG_MAINNET`**.
+    pub network_id: String,
+}
+
+impl Default for IntroducerConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            connection_timeout_secs: 10,
+            request_timeout_secs: 10,
+            network_id: DEFAULT_INTRODUCER_NETWORK_ID.to_string(),
+        }
+    }
+}
+
+/// Relay fallback client configuration (RLY-* — SPEC §2.12 / API-010).
+///
+/// **`endpoint`** uses the same empty sentinel pattern as [`IntroducerConfig`]. **`enabled`** defaults
+/// to **`true`** so `Some(RelayConfig::default())` in tests represents “relay feature present” while
+/// still requiring a real URL in production. **`prefer_relay`** implements SPEC Design Decision 8
+/// (default direct P2P first).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelayConfig {
+    /// WebSocket URL (e.g. `wss://relay.example.com:9450`).
+    pub endpoint: String,
+    /// Master switch: when `false`, the client must not open a relay session even if `endpoint` is set.
+    pub enabled: bool,
+    /// Connect timeout (seconds). Default **10**.
+    pub connection_timeout_secs: u64,
+    /// Base delay between reconnect attempts (seconds). Default **5** (RLY-004 lineage).
+    pub reconnect_delay_secs: u64,
+    /// Cap on consecutive reconnect attempts (`0` = give up immediately per API-010 notes).
+    pub max_reconnect_attempts: u32,
+    /// Keepalive ping period — aligned with [`PING_INTERVAL_SECS`](crate::constants::PING_INTERVAL_SECS) (**30**).
+    pub ping_interval_secs: u64,
+    /// When `true`, prefer relay transport even if direct peers exist (RLY-008).
+    pub prefer_relay: bool,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            enabled: true,
+            connection_timeout_secs: 10,
+            reconnect_delay_secs: 5,
+            max_reconnect_attempts: 10,
+            ping_interval_secs: PING_INTERVAL_SECS,
+            prefer_relay: false,
+        }
+    }
+}
