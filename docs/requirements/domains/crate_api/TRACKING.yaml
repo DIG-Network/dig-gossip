@@ -54,10 +54,13 @@ items:
   - id: API-005
     section: "2.4"
     summary: "PeerConnection wraps chia-sdk-client::Peer with metadata"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#24-peerconnection"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_005_tests.rs
+    notes: >
+      peer_id_from_tls_spki_der(spki_der) = SHA256(SPKI DER) for SubjectPublicKeyInfo raw bytes; re-exported at crate root.
+      sha2 dependency for hash; x509-parser dev-dep for PEM tests only. PeerReputation gains PartialEq for assertions.
   - id: API-006
     section: "2.5"
     summary: "PeerReputation and PenaltyReason"

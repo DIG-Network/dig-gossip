@@ -91,7 +91,7 @@ pub use types::config::DandelionConfig;
 pub use types::config::ErlayConfig;
 pub use types::config::{GossipConfig, IntroducerConfig, PeerIdRotationConfig, RelayConfig};
 pub use types::dig_messages::DigMessageType;
-pub use types::peer::{PeerConnection, PeerId, PeerInfo};
+pub use types::peer::{peer_id_from_tls_spki_der, PeerConnection, PeerId, PeerInfo};
 pub use types::reputation::{PeerReputation, PenaltyReason};
 pub use types::stats::{GossipStats, RelayStats};
 

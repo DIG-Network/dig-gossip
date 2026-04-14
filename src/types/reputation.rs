@@ -1,7 +1,7 @@
 //! Peer reputation and penalty reasons (API-006).
 
 /// Rolling penalties, ban state, and decay — placeholder until API-006 fills behavior.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeerReputation {}
 
 /// Why a penalty was applied (rate limit, invalid message, protocol abuse, …).
