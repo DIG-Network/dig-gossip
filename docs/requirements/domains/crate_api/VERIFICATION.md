@@ -17,4 +17,4 @@
 | API-008 | verified | GossipStats and RelayStats | `tests/api_008_tests.rs`: Default/Debug/Clone; populated structs; `stats()` topology + cumulative counters + disconnect monotonic `total_connections`; `relay_stats` None/Some; inject → `messages_received`; send_to/broadcast → `messages_sent` |
 | API-009 | verified | DigMessageType enum | `tests/api_009_tests.rs`: per-variant `as u8`; uniqueness; serde_json + bincode round-trip; TryFrom; HashSet; sample Chia `msg_type` below200 vs DIG band |
 | API-010 | verified | IntroducerConfig and RelayConfig | `tests/api_010_tests.rs`: field access; all SPEC defaults; Debug/Clone; JSON + bincode round-trip; partial JSON defaults |
-| API-011 | --     | ExtendedPeerInfo and VettedPeer              | Unit test construction, field access, and compatibility with address manager           |
+| API-011 | verified | ExtendedPeerInfo and VettedPeer | `tests/api_011_tests.rs`: all ExtendedPeerInfo fields + new/tried/random_pos/last_success/num_attempts semantics; PeerInfo-not-TimestampedPeerInfo; VettedPeer derives + signed vetted + HashSet; `tests/str_003_tests.rs` re-export |
