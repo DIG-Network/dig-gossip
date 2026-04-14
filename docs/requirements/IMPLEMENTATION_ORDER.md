@@ -25,7 +25,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] API-006 — PeerReputation and PenaltyReason (penalty accumulation, ban threshold, auto-unban)
 - [x] API-007 — PeerId type alias and PeerInfo with get_group()/get_key()
 - [x] API-008 — GossipStats and RelayStats structs
-- [ ] API-009 — DigMessageType enum (type IDs 200+ for attestation, checkpoint, status)
+- [x] API-009 — DigMessageType enum (type IDs 200+ for attestation, checkpoint, status)
 - [ ] API-010 — IntroducerConfig and RelayConfig structs
 - [ ] API-011 — ExtendedPeerInfo and VettedPeer types (for address manager and introducer)
 

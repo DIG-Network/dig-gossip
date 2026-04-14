@@ -99,10 +99,13 @@ items:
   - id: API-009
     section: "2.3"
     summary: "DigMessageType enum (200+ range)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#23-dig-extension-message-types"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_009_tests.rs
+    notes: >
+      repr(u8) variants 200-217 per NORMATIVE; manual serde as wire u8; TryFrom<u8> with UnknownDigMessageType;
+      DigMessageType::ALL for iteration. Re-export UnknownDigMessageType at crate root. Removed stub ReservedBase.
   - id: API-010
     section: "2.11, 2.12"
     summary: "IntroducerConfig and RelayConfig"

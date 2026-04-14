@@ -1,0 +1,24 @@
+---
+alwaysApply: true
+description: dig-gossip tests/ layout — one flat file per requirement
+---
+
+# dig-gossip — flat `tests/` layout
+
+## Rule
+
+- The **`tests/`** directory stays **flat**: each traceable requirement is verified by **one dedicated integration-test file** at the root of `tests/`, named:
+
+  `tests/{DOMAIN}_{NNN}_tests.rs`
+
+  Examples: `api_009_tests.rs`, `str_005_tests.rs`, `con_001_tests.rs` (when CON-* tests land).
+
+- **Do not** introduce requirement-scoped subfolders under `tests/` (e.g. `tests/api/`, `tests/crate_api/`). That breaks the “one file per requirement ID” traceability model used in `IMPLEMENTATION_ORDER.md` and `TRACKING.yaml`.
+
+- **Exception:** `tests/common/` is allowed **only** for **STR-005** shared harness helpers (`mod common;` from individual test crates). Do not stash requirement-specific suites under `common/`.
+
+- When implementing a new requirement: add **exactly one** new `tests/*_tests.rs` file for that ID; update that requirement’s row in `TRACKING.yaml` / `VERIFICATION.md` to point at that file.
+
+## Rationale
+
+Flat names make requirements grep-able, keep Cargo’s `[[test]]` discovery obvious, and pair 1:1 with `docs/requirements/domains/*/specs/{ID}.md` test plans.

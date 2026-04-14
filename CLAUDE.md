@@ -14,11 +14,22 @@ dig-gossip — P2P gossip, relay, and related protocol work for the DIG network 
 
 ---
 
+## Tests layout (permanent)
+
+- **`tests/` is flat:** one file per requirement ID: `tests/{DOMAIN}_{NNN}_tests.rs` (e.g. `api_009_tests.rs`). No requirement subfolders under `tests/`.
+- **Exception:** `tests/common/` only for STR-005 shared harness; requirement suites stay as sibling `*_tests.rs` files.
+
+See `.cursor/rules/dig-gossip-tests-flat.mdc`.
+
+---
+
 ## Tool Usage — MANDATORY ON EVERY PROMPT
 
-### GitNexus — Impact analysis before editing
+### GitNexus — Before **any** code change
 
-**ALWAYS run impact analysis before modifying any public symbol.**
+**Run the GitNexus loop before modifying `src/` or `tests/`** (not only for “public” symbols): `status` → `analyze` if stale → **`gitnexus_impact`** on targets you will edit when MCP/CLI is available. If `npx gitnexus` fails locally, use GitNexus MCP or note the failure for the user.
+
+**ALWAYS run impact analysis before modifying any public symbol** (minimum bar when graph tools work).
 
 ```bash
 npx gitnexus status          # Check index freshness

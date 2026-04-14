@@ -147,8 +147,8 @@ fn test_full_import_set() {
         ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits, RelayConfig, RelayStats,
         RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
         RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
-        RespondUnfinishedBlock, SpendBundle, Streamable, TimestampedPeerInfo, VettedPeer,
-        V2_RATE_LIMITS,
+        RespondUnfinishedBlock, SpendBundle, Streamable, TimestampedPeerInfo,
+        UnknownDigMessageType, VettedPeer, V2_RATE_LIMITS,
     };
 }
 
