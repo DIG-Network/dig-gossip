@@ -1,7 +1,8 @@
 //! Shared runtime state for [`super::gossip_service::GossipService`] and [`super::gossip_handle::GossipHandle`].
 //!
 //! **Requirements:** API-001 (lifecycle + TLS), API-002 (handle RPC wiring) /
-//! [`API-002.md`](../../../docs/requirements/domains/crate_api/specs/API-002.md).
+//! [`API-002.md`](../../../docs/requirements/domains/crate_api/specs/API-002.md), API-008 (stats atomics) /
+//! [`API-008.md`](../../../docs/requirements/domains/crate_api/specs/API-008.md).
 //!
 //! ## Stub peers (pre–CON-001)
 //!
@@ -58,8 +59,15 @@ pub(crate) struct ServiceState {
     /// Rust-idiomatic way to keep [`GossipHandle: Clone`](super::gossip_handle::GossipHandle)
     /// while allowing multiple subscribers (see `GossipHandle::inbound_receiver` rustdoc).
     pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, Message)>>>,
-    /// Sum of peer delivery counts from [`super::gossip_handle::GossipHandle::broadcast`] (stub).
-    pub messages_broadcast: AtomicU64,
+    /// Cumulative “messages sent” counter (API-008): broadcast adds per-recipient deliveries; `send_to` adds 1.
+    pub messages_sent: AtomicU64,
+    /// Cumulative inbound messages observed (stub: test inject path increments).
+    pub messages_received: AtomicU64,
+    /// Cumulative outbound / inbound bytes (stub: remain `0` until CON-* meters TLS payload sizes).
+    pub bytes_sent: AtomicU64,
+    pub bytes_received: AtomicU64,
+    /// Cumulative successful stub/live `connect` completions (never decremented on disconnect).
+    pub total_connections: AtomicU64,
 }
 
 /// Deterministic [`PeerId`] from a remote socket (until CON-001 derives TLS identities).
@@ -95,7 +103,11 @@ impl ServiceState {
             penalties: Mutex::new(HashMap::new()),
             lifecycle: AtomicU8::new(LC_CONSTRUCTED),
             inbound_tx: Mutex::new(None),
-            messages_broadcast: AtomicU64::new(0),
+            messages_sent: AtomicU64::new(0),
+            messages_received: AtomicU64::new(0),
+            bytes_sent: AtomicU64::new(0),
+            bytes_received: AtomicU64::new(0),
+            total_connections: AtomicU64::new(0),
         }
     }
 

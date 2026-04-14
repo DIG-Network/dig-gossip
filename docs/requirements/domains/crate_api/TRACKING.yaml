@@ -23,7 +23,7 @@ items:
     tests:
       - tests/api_002_tests.rs
     notes: >
-      Stub implementation: broadcast/send_to count stub peers and bump messages_broadcast_total;
+      Stub implementation: broadcast/send_to count stub peers and bump GossipStats.messages_sent (API-008);
       inbound_receiver returns broadcast::Receiver (SPEC shows mpsc — documented in gossip_handle.rs);
       request: RequestPeers/RespondPeers round-trip via TypeId fast-path, else RequestTimeout;
       connected_peers/get_connections return empty PeerConnection lists until CON-001;
@@ -87,10 +87,15 @@ items:
   - id: API-008
     section: "3.4"
     summary: "GossipStats and RelayStats"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#34-statistics"
-    tests: []
-    notes: ""
+    tests:
+      - tests/api_008_tests.rs
+    notes: >
+      Full field sets per API-008; ServiceState holds messages_sent, messages_received, byte counters (stub 0),
+      total_connections. stats() snapshots peers (in/out split), seen LRU len, known_addresses=0 until DSC-001.
+      relay_connected/relay_peer_count stub false/0; relay_stats() is Some(default) when relay configured.
+      Renamed prior messages_broadcast_total surface to messages_sent.
   - id: API-009
     section: "2.3"
     summary: "DigMessageType enum (200+ range)"

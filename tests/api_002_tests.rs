@@ -97,7 +97,7 @@ async fn test_broadcast_typed_serializes() {
     let n = h.broadcast_typed(sample_new_peak(), None).await.unwrap();
     assert_eq!(n, 1);
     let st = h.stats().await;
-    assert!(st.messages_broadcast_total >= 1);
+    assert!(st.messages_sent >= 1);
 }
 
 /// **Row:** `test_send_to_connected_peer` / `test_send_to_unknown_peer`.

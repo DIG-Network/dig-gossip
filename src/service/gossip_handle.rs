@@ -66,7 +66,7 @@ impl GossipHandle {
 
     /// Broadcast a wire [`Message`] to the stub peer set; returns how many peers would receive it.
     ///
-    /// **Stub:** increments [`ServiceState::messages_broadcast`] by the delivery count. With zero
+    /// **Stub:** increments [`ServiceState::messages_sent`] by the per-peer delivery count. With zero
     /// peers, returns `Ok(0)` (API-002 implementation notes).
     pub async fn broadcast(
         &self,
@@ -93,7 +93,7 @@ impl GossipHandle {
             }
         }
         self.inner
-            .messages_broadcast
+            .messages_sent
             .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(n)
     }
@@ -134,6 +134,9 @@ impl GossipHandle {
         {
             return Err(GossipError::PeerNotConnected(peer_id));
         }
+        self.inner
+            .messages_sent
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -247,6 +250,10 @@ impl GossipHandle {
                 is_outbound,
             },
         );
+        drop(peers);
+        self.inner
+            .total_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(pid)
     }
 
@@ -352,18 +359,85 @@ impl GossipHandle {
         self.request(*peer_id, RequestPeers::new()).await
     }
 
+    /// Snapshot gossip observability (API-008 / SPEC §3.4).
+    ///
+    /// Assembled from [`ServiceState`](super::state::ServiceState) with short mutex holds; byte counters stay
+    /// at `0` in the stub until CON-* meters wire traffic.
     pub async fn stats(&self) -> GossipStats {
-        let connected = self.peer_count().await;
-        let messages_broadcast_total = self
+        let messages_sent = self
             .inner
-            .messages_broadcast
+            .messages_sent
             .load(std::sync::atomic::Ordering::Relaxed);
+        let messages_received = self
+            .inner
+            .messages_received
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let bytes_sent = self
+            .inner
+            .bytes_sent
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let bytes_received = self
+            .inner
+            .bytes_received
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let total_connections = self
+            .inner
+            .total_connections
+            .load(std::sync::atomic::Ordering::Relaxed) as usize;
+
+        let (connected_peers, inbound_connections, outbound_connections, seen_messages) = {
+            let peers = match self.inner.peers.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    return GossipStats {
+                        total_connections,
+                        messages_sent,
+                        messages_received,
+                        bytes_sent,
+                        bytes_received,
+                        ..Default::default()
+                    };
+                }
+            };
+            let mut inb = 0usize;
+            let mut out = 0usize;
+            for p in peers.values() {
+                if p.is_outbound {
+                    out += 1;
+                } else {
+                    inb += 1;
+                }
+            }
+            let connected = peers.len();
+            drop(peers);
+            let seen = self
+                .inner
+                .seen_messages
+                .lock()
+                .map(|c| c.len())
+                .unwrap_or(0);
+            (connected, inb, out, seen)
+        };
+
         GossipStats {
-            connected_peers: connected,
-            messages_broadcast_total,
+            total_connections,
+            connected_peers,
+            inbound_connections,
+            outbound_connections,
+            messages_sent,
+            messages_received,
+            bytes_sent,
+            bytes_received,
+            known_addresses: 0,
+            seen_messages,
+            // Stub until RLY-*: mirror [`RelayStats::connected`] (always false with `RelayStats::default()`).
+            relay_connected: false,
+            relay_peer_count: 0,
         }
     }
 
+    /// `Some(RelayStats)` only when [`GossipConfig::relay`](crate::types::config::GossipConfig::relay) is set;
+    /// values are stubs (`Default`) until RLY-* implements the relay client.
     pub async fn relay_stats(&self) -> Option<RelayStats> {
         if self.inner.config.relay.is_none() {
             None
@@ -387,6 +461,9 @@ impl GossipHandle {
             .map_err(|_| GossipError::ChannelClosed)?;
         let tx = g.as_ref().ok_or(GossipError::ServiceNotStarted)?;
         let _ = tx.send((sender, message));
+        self.inner
+            .messages_received
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }
