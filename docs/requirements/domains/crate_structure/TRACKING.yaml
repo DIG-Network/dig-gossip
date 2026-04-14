@@ -29,10 +29,14 @@ items:
   - id: STR-003
     section: "10.2"
     summary: "Public re-exports in lib.rs"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#102-public-re-exports-librs"
-    tests: []
-    notes: ""
+    tests:
+      - tests/str_003_tests.rs
+    notes: >
+      Introducer request/response kinds are variants on ProtocolMessageTypes in chia-protocol 0.26,
+      not standalone types; SPEC Section 10.2’s pub use list was adjusted accordingly with an in-code comment.
+      DIG placeholder types live in types/, service/, discovery/, gossip/, relay/, privacy/; `dandelion` feature added for StemTransaction re-export.
   - id: STR-004
     section: "10.3"
     summary: "Feature flags match SPEC Section 10.3"

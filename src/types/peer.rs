@@ -1,10 +1,32 @@
-//! Peer identity and connection wrappers (`PeerId`, `PeerInfo`, `PeerConnection`).
+//! Peer identity, metadata, and the gossip-layer connection wrapper.
 //!
-//! **Layout:** STR-002 — this file’s existence and path are the requirement; behavior
-//! is specified under [`docs/requirements/domains/crate_api/`](../../../docs/requirements/domains/crate_api/)
-//! (e.g. API-005, API-007).
+//! **Layout:** STR-002; **re-exports:** STR-003 /
+//! [`specs/STR-003.md`](../../../docs/requirements/domains/crate_structure/specs/STR-003.md).
 //!
-//! **Spec:** [`docs/resources/SPEC.md`](../../../docs/resources/SPEC.md) Section 10.1 (`types/peer.rs`).
+//! **`PeerId`** is a type alias to [`chia_protocol::Bytes32`] — we never invent a parallel
+//! identity type. **`PeerConnection`** will accumulate gossip metadata (API-005); for STR-003
+//! it only needs to exist as a public type holding the upstream [`chia_sdk_client::Peer`].
 
-#[allow(dead_code)]
-const _: () = ();
+use chia_protocol::Bytes32;
+use chia_sdk_client::Peer;
+
+/// 32-byte peer identifier (BLS-derived in Chia; same wire type for DIG).
+pub type PeerId = Bytes32;
+
+/// Static / semi-static peer metadata used by discovery and address bucketing.
+///
+/// **Future fields:** IP, ports, services flags, timestamp — see discovery specs.
+#[derive(Debug, Clone)]
+pub struct PeerInfo {
+    /// Stable peer identity on the wire.
+    pub peer_id: PeerId,
+}
+
+/// Active connection with gossip bookkeeping.
+///
+/// **Spec intent:** wrap [`Peer`] plus DIG-only fields (reputation snapshot, caps, …).
+#[derive(Debug, Clone)]
+pub struct PeerConnection {
+    /// Underlying Chia light-wallet-protocol peer handle (TLS WebSocket).
+    pub peer: Peer,
+}

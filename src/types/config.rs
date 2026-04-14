@@ -1,8 +1,15 @@
-//! Configuration structs (`GossipConfig`, introducer/relay config).
+//! Configuration types for the gossip service, introducer, and relay.
 //!
-//! **Layout:** STR-002 — [`docs/requirements/domains/crate_structure/specs/STR-002.md`](../../../docs/requirements/domains/crate_structure/specs/STR-002.md)
-//! **Behavior:** [`docs/requirements/domains/crate_api/specs/API-003.md`](../../../docs/requirements/domains/crate_api/specs/API-003.md),
-//! [`API-010.md`](../../../docs/requirements/domains/crate_api/specs/API-010.md).
+//! **Re-export:** STR-003; **fill in:** API-003, API-010.
 
-#[allow(dead_code)]
-const _: () = ();
+/// Top-level knobs: listen address, network id, bootstrap targets, etc.
+#[derive(Debug, Clone, Default)]
+pub struct GossipConfig {}
+
+/// Introducer host, registration policy, retry cadence.
+#[derive(Debug, Clone, Default)]
+pub struct IntroducerConfig {}
+
+/// Relay URL, credentials, reconnect policy.
+#[derive(Debug, Clone, Default)]
+pub struct RelayConfig {}

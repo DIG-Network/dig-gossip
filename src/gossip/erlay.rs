@@ -1,8 +1,11 @@
-//! ERLAY flood set + periodic reconciliation (minisketch / set-difference logic).
+//! ERLAY reconciliation state — feature `erlay`.
 //!
-//! **Feature:** `erlay` (see STR-001 / TRACKING notes on `minisketch-rs` omission).
-//! **STR-002:** compiled only when the feature is on.
-//! **Domain:** [`docs/requirements/domains/erlay/`](../../../docs/requirements/domains/erlay/).
+//! **Re-export:** STR-003 when `erlay` is enabled.
+//! **Note:** `minisketch-rs` is intentionally absent from `Cargo.toml` (STR-001 TRACKING);
+//! sketch math will use pure-Rust or an alternate crate when ERLAY specs are implemented.
 
-#[allow(dead_code)]
-const _: () = ();
+#[derive(Debug, Default)]
+pub struct ErlayState {}
+
+#[derive(Debug, Default)]
+pub struct ReconciliationSketch {}

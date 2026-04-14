@@ -1,7 +1,9 @@
-//! `VettedPeer`, `IntroducerPeers` — introducer-side vetting state machine.
+//! Introducer-side vetting types.
 //!
-//! **STR-002:** structural.
-//! **Behavior:** [`docs/requirements/domains/discovery/specs/DSC-012.md`](../../../docs/requirements/domains/discovery/specs/DSC-012.md).
+//! **Re-export:** STR-003; **state machine:** DSC-012.
 
-#[allow(dead_code)]
-const _: () = ();
+#[derive(Debug, Clone, Default)]
+pub struct VettedPeer {}
+
+#[derive(Debug, Clone, Default)]
+pub struct IntroducerPeers {}

@@ -1,7 +1,9 @@
-//! Relay protocol structs (`RelayMessage`, peer info, errors).
+//! Relay wire structs shared by client and service layers.
 //!
-//! **STR-002:** structural.
-//! **Behavior:** [`docs/requirements/domains/relay/`](../../../docs/requirements/domains/relay/) specs.
+//! **Re-export:** STR-003 (behind feature `relay` at crate root); **protocol:** RLY-* specs.
 
-#[allow(dead_code)]
-const _: () = ();
+#[derive(Debug, Clone, Default)]
+pub struct RelayPeerInfo {}
+
+#[derive(Debug, Clone, Default)]
+pub struct RelayMessage {}
