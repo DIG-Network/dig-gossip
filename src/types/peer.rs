@@ -179,7 +179,7 @@ pub struct PeerConnection {
     pub node_type: NodeType,
     /// Peer protocol version string.
     pub protocol_version: String,
-    /// Peer software version string (sanitized in CON-008).
+    /// Peer software version string (Cc/Cf stripped per CON-003 / CON-008 — Chia `ws_connection.py`).
     pub software_version: String,
     /// Peer-advertised server port from handshake.
     pub peer_server_port: u16,

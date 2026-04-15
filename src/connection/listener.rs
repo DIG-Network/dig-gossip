@@ -29,9 +29,9 @@
 //!
 //! ## `software_version` sanitization
 //!
-//! CON-008 will add [`sanitize_version`](../../../docs/requirements/domains/connection/specs/CON-008.md);
-//! until then we **pass through** the remote [`Handshake::software_version`] string when recording
-//! metadata (same interim choice as outbound CON-001 notes).
+//! CON-003 applies [`crate::connection::handshake::sanitize_software_version`] before accepting the
+//! peer; the sanitized string is stored on [`crate::service::state::LiveSlot`]. CON-008 remains the
+//! dedicated normative row for the same Chia `ws_connection.py` behavior — implementation is shared.
 
 #![allow(clippy::result_large_err)]
 
@@ -52,15 +52,10 @@ use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tokio_tungstenite::{accept_async, MaybeTlsStream, WebSocketStream};
 
+use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 use crate::connection::outbound::{network_id_handshake_string, spki_der_from_leaf_cert_der};
 use crate::service::state::{peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer};
 use crate::types::peer::{peer_id_from_tls_spki_der, PeerId, PeerInfo};
-
-/// Chia protocol string carried in [`Handshake::protocol_version`] for DIG acceptance tests.
-///
-/// **Rationale:** Matches [`crate::connection::outbound::connect_outbound_peer`] so mixed-version
-/// policy (CON-003) can tighten both directions from one constant later.
-const HANDSHAKE_PROTOCOL_VERSION: &str = "0.0.37";
 
 /// If the remote never sends [`ProtocolMessageTypes::Handshake`], drop the session (CON-002 notes).
 const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -308,13 +303,14 @@ async fn negotiate_inbound_over_ws(
     }
     let their_handshake = Handshake::from_bytes(&first.data)?;
     let net = network_id_handshake_string(state.config.network_id);
-    if their_handshake.network_id != net {
-        return Err(ClientError::WrongNetwork(net, their_handshake.network_id));
-    }
+    let remote_software_version_sanitized =
+        crate::connection::handshake::validate_remote_handshake(&their_handshake, &net)
+            .map_err(ClientError::from)?;
+    let remote_protocol_version = their_handshake.protocol_version.clone();
 
     let our_handshake = Handshake {
         network_id: net.clone(),
-        protocol_version: HANDSHAKE_PROTOCOL_VERSION.to_string(),
+        protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
         software_version: format!("dig-gossip/{}", env!("CARGO_PKG_VERSION")),
         server_port: listen_port_for_handshake(&state),
         node_type: NodeType::FullNode,
@@ -338,8 +334,7 @@ async fn negotiate_inbound_over_ws(
     .await
     .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
 
-    // CON-008 will sanitize; see module rustdoc.
-    let _software_version_stored = their_handshake.software_version.clone();
+    // CON-003: remote_software_version_sanitized computed before our Handshake reply.
 
     // CON-001 outbound `connect_to` issues `RequestPeers` immediately after the handshake exchange.
     let second = tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, read_next_wire_message(&mut ws))
@@ -400,7 +395,15 @@ async fn negotiate_inbound_over_ws(
         .peers
         .lock()
         .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
-    peers.insert(peer_id, PeerSlot::Live(LiveSlot { meta, peer }));
+    peers.insert(
+        peer_id,
+        PeerSlot::Live(LiveSlot {
+            meta,
+            peer,
+            remote_protocol_version,
+            remote_software_version_sanitized,
+        }),
+    );
     drop(peers);
 
     state

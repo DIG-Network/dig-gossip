@@ -39,6 +39,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use chia_sdk_client::{ClientError, Peer, PeerOptions};
 
+use crate::connection::handshake::{validate_remote_handshake, ADVERTISED_PROTOCOL_VERSION};
+
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 use chia_sdk_client::Connector;
 
@@ -52,6 +54,8 @@ pub struct OutboundConnectResult {
     pub their_handshake: Handshake,
     /// Raw SPKI DER bytes for [`crate::types::peer::peer_id_from_tls_spki_der`].
     pub remote_spki_der: Vec<u8>,
+    /// CON-003: [`Handshake::software_version`] after Cc/Cf strip (matches what we store on [`crate::service::state::LiveSlot`]).
+    pub remote_software_version_sanitized: String,
 }
 
 /// Build a TLS connector from persisted/generated [`ChiaCertificate`] (CON-001 / `tls.rs`).
@@ -147,7 +151,7 @@ pub(crate) async fn connect_outbound_peer(
 
     peer.send(Handshake {
         network_id: network_id.clone(),
-        protocol_version: "0.0.37".to_string(),
+        protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
         software_version: "0.0.0".to_string(),
         server_port: 0,
         node_type: NodeType::Wallet,
@@ -179,14 +183,14 @@ pub(crate) async fn connect_outbound_peer(
         ));
     }
 
-    if handshake.network_id != network_id {
-        return Err(ClientError::WrongNetwork(network_id, handshake.network_id));
-    }
+    let remote_software_version_sanitized =
+        validate_remote_handshake(&handshake, &network_id).map_err(ClientError::from)?;
 
     Ok(OutboundConnectResult {
         peer,
         inbound_rx: receiver,
         their_handshake: handshake,
         remote_spki_der,
+        remote_software_version_sanitized,
     })
 }

@@ -4,7 +4,9 @@
 //! **Outbound** connect uses `chia-sdk-client` TLS + WSS (CON-001) — see [`outbound`].
 //! **Related requirements:** `docs/requirements/domains/connection/`.
 
-pub mod listener;
+pub mod handshake;
 
 /// Outbound `wss://` + handshake + SPKI capture (CON-001).
 pub mod outbound;
+
+pub mod listener;

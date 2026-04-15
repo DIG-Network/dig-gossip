@@ -315,7 +315,15 @@ impl GossipHandle {
             .peers
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?;
-        peers.insert(peer_id, PeerSlot::Live(LiveSlot { meta, peer }));
+        peers.insert(
+            peer_id,
+            PeerSlot::Live(LiveSlot {
+                meta,
+                peer,
+                remote_protocol_version: out.their_handshake.protocol_version.clone(),
+                remote_software_version_sanitized: out.remote_software_version_sanitized,
+            }),
+        );
         drop(peers);
 
         self.inner
@@ -595,6 +603,20 @@ impl GossipHandle {
         let peers = self.inner.peers.lock().ok()?;
         let slot = peers.get(&peer_id)?;
         Some((slot.remote(), slot.is_outbound()))
+    }
+
+    /// CON-003: `(remote_protocol_version, remote_software_version_sanitized)` after
+    /// [`crate::connection::handshake::validate_remote_handshake`].
+    #[doc(hidden)]
+    pub fn __con003_peer_versions_for_tests(&self, peer_id: PeerId) -> Option<(String, String)> {
+        let peers = self.inner.peers.lock().ok()?;
+        match peers.get(&peer_id)? {
+            PeerSlot::Live(l) => Some((
+                l.remote_protocol_version.clone(),
+                l.remote_software_version_sanitized.clone(),
+            )),
+            PeerSlot::Stub(_) => None,
+        }
     }
 
     /// CON-002: snapshot of [`PeerId`] keys in the live/stub map (order not stable — use for single-peer asserts).

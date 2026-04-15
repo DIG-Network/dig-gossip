@@ -29,10 +29,15 @@ items:
   - id: CON-003
     section: "5.1, 5.2"
     summary: "Handshake validation"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#51-outbound-connection-reuses-chia-sdk-client"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_003_tests.rs
+    notes: >
+      connection/handshake.rs: sanitize_software_version (Unicode Cc/Cf via unicode-general-category),
+      protocol_version >= MIN_COMPATIBLE_PROTOCOL_VERSION, network_id match, 128-byte post-sanitize cap;
+      validate_remote_handshake shared by outbound.rs and listener.rs. LiveSlot stores remote_protocol_version
+      + remote_software_version_sanitized. GossipHandle::__con003_peer_versions_for_tests for integration proof.
   - id: CON-004
     section: "2.13"
     summary: "Keepalive via Ping/Pong"
