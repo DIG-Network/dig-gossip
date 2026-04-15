@@ -162,6 +162,11 @@ name = "con_009_tests"
 path = "tests/con_009_tests.rs"
 required-features = ["native-tls"]
 
+# DSC-001: AddressManager tried/new tables (`tests/dsc_001_tests.rs`).
+[[test]]
+name = "dsc_001_tests"
+path = "tests/dsc_001_tests.rs"
+
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
 [patch.crates-io]

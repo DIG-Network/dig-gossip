@@ -37,7 +37,7 @@ pub struct GossipStats {
     pub bytes_sent: u64,
     /// Total bytes received (cumulative). **CON-006:** live `bytes_read` sums + synthetic inject bytes.
     pub bytes_received: u64,
-    /// Entries in the address manager (DSC-001). Stub [`crate::discovery::address_manager::AddressManager`] → `0`.
+    /// Entries in the address manager (DSC-001) — [`AddressManager::size`](crate::discovery::address_manager::AddressManager::size).
     pub known_addresses: usize,
     /// Distinct message hashes currently tracked in the LRU seen set (API-003 `max_seen_messages` cap).
     pub seen_messages: usize,

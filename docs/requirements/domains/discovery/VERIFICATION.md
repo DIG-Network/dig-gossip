@@ -7,7 +7,7 @@
 
 | ID      | Status | Summary                                      | Verification Approach                                                                 |
 |---------|--------|----------------------------------------------|---------------------------------------------------------------------------------------|
-| DSC-001 | gap    | AddressManager with tried/new tables         | Unit tests for bucket allocation, eviction, and all public methods                    |
+| DSC-001 | verified | AddressManager with tried/new tables       | `tests/dsc_001_tests.rs` — buckets, penalty, mark_good/tried, collisions, select_peer, threading; heavy full-slot eviction `#[ignore]` |
 | DSC-002 | gap    | Address manager persistence (save/load)      | Round-trip test: populate manager, save to file, load from file, verify state matches |
 | DSC-003 | gap    | DNS seeding via Network::lookup_all()        | Integration test with mock DNS; verify addresses added to address manager             |
 | DSC-004 | gap    | Introducer query (get_peers)                 | Integration test with mock WebSocket introducer; verify peer list returned            |

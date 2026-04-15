@@ -74,6 +74,25 @@ pub const MIN_FAIL_DAYS: u32 = 7;
 /// Chia Python: `address_manager.py:33` (`MAX_FAILURES = 10`).
 pub const MAX_FAILURES: u32 = 10;
 
+/// Pending tried-slot collisions from `mark_good` when the target bucket is occupied (`address_manager.py:29`).
+pub const TRIED_COLLISION_SIZE: usize = 10;
+
+/// `log2(TRIED_BUCKET_COUNT)` — used by [`crate::discovery::address_manager::AddressManager`] sparse/dense
+/// random walk in `select_peer` (Chia `address_manager.py:31`).
+pub const LOG_TRIED_BUCKET_COUNT: u32 = 3;
+
+/// `log2(NEW_BUCKET_COUNT)` — Chia `address_manager.py:32`.
+pub const LOG_NEW_BUCKET_COUNT: u32 = 10;
+
+/// `log2(BUCKET_SIZE)` — Chia `address_manager.py:33`.
+pub const LOG_BUCKET_SIZE: u32 = 6;
+
+/// Maximum rows across all tried buckets (`TRIED_BUCKET_COUNT * BUCKET_SIZE`). DSC-001 / SPEC §6.3.
+pub const TRIED_TABLE_SIZE: usize = TRIED_BUCKET_COUNT * BUCKET_SIZE;
+
+/// Maximum rows across all new buckets. DSC-001 / SPEC §6.3.
+pub const NEW_TABLE_SIZE: usize = NEW_BUCKET_COUNT * BUCKET_SIZE;
+
 // ---------------------------------------------------------------------------
 // DIG network defaults
 //

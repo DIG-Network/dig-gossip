@@ -5,10 +5,14 @@ items:
   - id: DSC-001
     section: "6.3"
     summary: "AddressManager with tried/new tables"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#63-address-manager-rust-port-no-crate-exists"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_001_tests.rs
+    notes: >
+      discovery/address_manager.rs ports Chia address_manager.py (SHA-256 std_hash bucketing, tried/new matrices,
+      mark_good collisions, select_peer). Public API is synchronous Mutex-wrapped (call sites are sync).
+      Peers-file load/save is DSC-002; create() records path only today. One stress eviction test is #[ignore]d for CI speed.
   - id: DSC-002
     section: "6.3"
     summary: "Address manager persistence (save/load)"
