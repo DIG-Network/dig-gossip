@@ -26,6 +26,11 @@ use dig_gossip::connection::handshake::{
 };
 use dig_gossip::{NodeType, PeerId};
 
+/// Build a valid baseline [`Handshake`] for mutation in individual tests.
+///
+/// Defaults to protocol `0.0.37`, software `dig-gossip/0.1.0`, FullNode, port 8444.
+/// Each test overrides the field under test while keeping other fields valid, isolating
+/// the specific validation rule being exercised.
 fn sample_handshake_base(network_id: &str) -> Handshake {
     Handshake {
         network_id: network_id.to_string(),
@@ -52,7 +57,10 @@ fn test_reject_network_id_mismatch() {
     );
 }
 
-/// **Row:** empty `network_id` / `protocol_version` — CON-003 implementation notes; must fail fast.
+/// **Row:** `test_reject_empty_network_id` — empty `network_id` must fail fast.
+///
+/// CON-003 implementation notes require that empty strings are caught before any
+/// string comparison logic runs, preventing subtle bugs from comparing "" == "".
 #[test]
 fn test_reject_empty_network_id() {
     let net = common::test_network_id().to_string();
@@ -64,6 +72,9 @@ fn test_reject_empty_network_id() {
     ));
 }
 
+/// **Row:** `test_reject_empty_protocol_version` — whitespace-only version strings are rejected.
+///
+/// The validator trims before checking, so `"   "` should be treated as empty.
 #[test]
 fn test_reject_empty_protocol_version() {
     let net = common::test_network_id().to_string();

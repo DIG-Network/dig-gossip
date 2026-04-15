@@ -14,6 +14,8 @@ pub struct RateLimiter {
     period: u64,
     message_counts: HashMap<ProtocolMessageTypes, f64>,
     message_cumulative_sizes: HashMap<ProtocolMessageTypes, f64>,
+    dig_message_counts: HashMap<u8, f64>,
+    dig_message_sizes: HashMap<u8, f64>,
     limit_factor: f64,
     non_tx_count: f64,
     non_tx_size: f64,
@@ -33,6 +35,8 @@ impl RateLimiter {
             period: time() / reset_seconds,
             message_counts: HashMap::new(),
             message_cumulative_sizes: HashMap::new(),
+            dig_message_counts: HashMap::new(),
+            dig_message_sizes: HashMap::new(),
             limit_factor,
             non_tx_count: 0.0,
             non_tx_size: 0.0,
@@ -40,18 +44,55 @@ impl RateLimiter {
         }
     }
 
-    pub fn handle_message(&mut self, message: &Message) -> bool {
-        let size: u32 = message.data.len().try_into().expect("Message too large");
-        let size = f64::from(size);
+    fn sync_period(&mut self) {
         let period = time() / self.reset_seconds;
-
         if self.period != period {
             self.period = period;
             self.message_counts.clear();
             self.message_cumulative_sizes.clear();
+            self.dig_message_counts.clear();
+            self.dig_message_sizes.clear();
             self.non_tx_count = 0.0;
             self.non_tx_size = 0.0;
         }
+    }
+
+    /// Rate-check a DIG L2 wire discriminant (`DigMessageType as u8`, **200+**) that is not a
+    /// [`ProtocolMessageTypes`] variant on the Chia enum (dig-gossip CON-005).
+    ///
+    /// Uses the same 60-second rolling window and [`RateLimits::dig_wire`] entries as Chia
+    /// messages use for [`Self::handle_message`]. Unknown `wire_type` keys (no row in `dig_wire`)
+    /// return **`true`** (fail-open) until DIG assigns a limit for that opcode.
+    pub fn check_dig_extension(&mut self, wire_type: u8, data_len: u32) -> bool {
+        self.sync_period();
+        let size = f64::from(data_len);
+        let Some(limits) = self.rate_limits.dig_wire.get(&wire_type).copied() else {
+            return true;
+        };
+
+        let new_message_count = self.dig_message_counts.get(&wire_type).unwrap_or(&0.0) + 1.0;
+        let new_cumulative_size = self.dig_message_sizes.get(&wire_type).unwrap_or(&0.0) + size;
+        let max_total_size = limits
+            .max_total_size
+            .unwrap_or(limits.frequency * limits.max_size);
+
+        let passed = new_message_count <= limits.frequency * self.limit_factor
+            && size <= limits.max_size
+            && new_cumulative_size <= max_total_size * self.limit_factor;
+
+        if self.incoming || passed {
+            *self.dig_message_counts.entry(wire_type).or_default() = new_message_count;
+            *self.dig_message_sizes.entry(wire_type).or_default() = new_cumulative_size;
+        }
+
+        passed
+    }
+
+    pub fn handle_message(&mut self, message: &Message) -> bool {
+        self.sync_period();
+
+        let size: u32 = message.data.len().try_into().expect("Message too large");
+        let size = f64::from(size);
 
         let new_message_count = self.message_counts.get(&message.msg_type).unwrap_or(&0.0) + 1.0;
         let new_cumulative_size = self

@@ -182,21 +182,28 @@ fn test_reexport_dig_message_type() {
     assert_send_sync::<dig_gossip::DigMessageType>();
 }
 
+/// **Acceptance:** `AddressManager` (DIG-defined peer address book) is re-exported.
 #[test]
 fn test_reexport_address_manager() {
     assert_send_sync::<dig_gossip::AddressManager>();
 }
 
+/// **Acceptance:** `VettedPeer` (DIG-defined, API-011) is re-exported.
 #[test]
 fn test_reexport_vetted_peer() {
     assert_send_sync::<dig_gossip::VettedPeer>();
 }
 
+/// **Acceptance:** `ExtendedPeerInfo` (DIG-defined, API-011) is re-exported.
 #[test]
 fn test_reexport_extended_peer_info() {
     assert_send_sync::<dig_gossip::ExtendedPeerInfo>();
 }
 
+/// **Acceptance:** `DEFAULT_P2P_PORT` constant (9444) is re-exported.
+///
+/// Asserting the exact value 9444 locks the port assignment from SPEC to prevent
+/// accidental changes that would break network compatibility.
 #[test]
 fn test_reexport_constants() {
     assert_eq!(dig_gossip::DEFAULT_P2P_PORT, 9444);
@@ -207,12 +214,14 @@ fn test_reexport_constants() {
 fn test_full_import_set() {
     #![allow(unused_imports)]
     use dig_gossip::{
-        load_ssl_cert, peer_id_from_tls_spki_der, AddressManager, BackpressureConfig, Bytes32,
-        ChiaCertificate, ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType,
-        ExtendedPeerInfo, FullBlock, GossipConfig, GossipError, GossipHandle, GossipService,
-        GossipStats, Handshake, IntroducerClient, IntroducerConfig, IntroducerPeers, Message,
-        Network, NewPeak, NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection,
-        PeerId, PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
+        apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, load_ssl_cert,
+        peer_id_for_addr, peer_id_from_tls_spki_der, AddressManager, ServiceState,
+        BackpressureConfig, Bytes32, ChiaCertificate, ChiaProtocolMessage, Client, ClientError,
+        ClientState, DigMessageType, ExtendedPeerInfo, FullBlock, GossipConfig, GossipError,
+        GossipHandle, GossipService, GossipStats, gossip_inbound_rate_limits, Handshake,
+        IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, new_inbound_rate_limiter,
+        NewPeak, NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection, PeerId,
+        PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
         ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits, RelayConfig, RelayStats,
         RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
         RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
@@ -221,6 +230,9 @@ fn test_full_import_set() {
     };
 }
 
+/// **Acceptance:** Relay types (`RelayMessage`, `RelayPeerInfo`) are re-exported when `relay` feature is on.
+///
+/// These are only available under `#[cfg(feature = "relay")]` per STR-004 gating.
 #[cfg(feature = "relay")]
 #[test]
 fn test_reexport_relay_types() {
@@ -228,6 +240,10 @@ fn test_reexport_relay_types() {
     assert_send_sync::<dig_gossip::RelayPeerInfo>();
 }
 
+/// **Acceptance:** Compact-block types are re-exported when `compact-blocks` feature is on.
+///
+/// Includes `CompactBlock`, `ShortTxId`, `PrefilledTransaction`, and the
+/// request/response pair for block transaction retrieval (BIP-152 style).
 #[cfg(feature = "compact-blocks")]
 #[test]
 fn test_reexport_compact_block_types() {
@@ -238,6 +254,8 @@ fn test_reexport_compact_block_types() {
     assert_send_sync::<dig_gossip::RespondBlockTransactions>();
 }
 
+/// **Acceptance:** Erlay types (`ErlayState`, `ReconciliationSketch`, `ErlayConfig`) are
+/// re-exported when `erlay` feature is on.
 #[cfg(feature = "erlay")]
 #[test]
 fn test_reexport_erlay_types() {
@@ -246,28 +264,41 @@ fn test_reexport_erlay_types() {
     assert_send_sync::<dig_gossip::ErlayConfig>();
 }
 
+/// **Acceptance:** `StemTransaction` is re-exported when `dandelion` feature is on.
+///
+/// Dandelion++ stem-phase transactions before fluff broadcast.
 #[cfg(feature = "dandelion")]
 #[test]
 fn test_reexport_stem_transaction() {
     assert_send_sync::<dig_gossip::StemTransaction>();
 }
 
+/// **Acceptance:** `DandelionConfig` is re-exported when `dandelion` feature is on.
 #[cfg(feature = "dandelion")]
 #[test]
 fn test_reexport_dandelion_config() {
     assert_send_sync::<dig_gossip::DandelionConfig>();
 }
 
+/// **Acceptance:** `BackpressureConfig` (DIG-defined) is re-exported and `Send + Sync`.
+///
+/// Configures gossip fanout throttling to prevent message flooding.
 #[test]
 fn test_reexport_backpressure_config() {
     assert_send_sync::<dig_gossip::BackpressureConfig>();
 }
 
+/// **Acceptance:** `PeerIdRotationConfig` (DIG-defined) is re-exported.
+///
+/// Configures periodic PeerId rotation for privacy (optional subsystem).
 #[test]
 fn test_reexport_peer_id_rotation_config() {
     assert_send_sync::<dig_gossip::PeerIdRotationConfig>();
 }
 
+/// **Acceptance:** `TorConfig` is re-exported when `tor` feature is on.
+///
+/// Configuration for Tor circuit management via arti-client.
 #[cfg(feature = "tor")]
 #[test]
 fn test_reexport_tor_config() {

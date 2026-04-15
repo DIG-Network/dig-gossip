@@ -48,7 +48,7 @@ use chia_protocol::{
 };
 use chia_traits::Streamable;
 use std::any::TypeId;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
 use crate::constants::PENALTY_BAN_THRESHOLD;
@@ -58,7 +58,9 @@ use crate::types::reputation::PeerReputation;
 use crate::types::reputation::PenaltyReason;
 use crate::types::stats::{GossipStats, RelayStats};
 
-use super::state::{peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer};
+use super::state::{
+    apply_inbound_rate_limit_violation, peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer,
+};
 
 // ---------------------------------------------------------------------------
 // GossipHandle — the user-facing façade
@@ -455,19 +457,64 @@ impl GossipHandle {
             .address_manager
             .add_to_new_table(&respond.peer_list, &src, 0);
 
+        // CON-005: one inbound [`RateLimiter`] per live slot (insert **before** the forwarder).
+        let inbound_limiter = Arc::new(Mutex::new(
+            crate::connection::inbound_limits::new_inbound_rate_limiter(
+                self.inner.config.peer_options.rate_limit_factor,
+            ),
+        ));
+
+        let meta = StubPeer {
+            remote: addr,
+            node_type: out.their_handshake.node_type,
+            is_outbound: true,
+        };
+        let peer = out.peer;
+        let peer_for_keepalive = peer.clone();
+        let lim = Arc::clone(&inbound_limiter);
+        let mut peers = self
+            .inner
+            .peers
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?;
+        peers.insert(
+            peer_id,
+            PeerSlot::Live(LiveSlot {
+                meta,
+                peer,
+                remote_protocol_version: out.their_handshake.protocol_version.clone(),
+                remote_software_version_sanitized: out.remote_software_version_sanitized,
+                reputation: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::types::reputation::PeerReputation::default(),
+                )),
+                inbound_rate_limiter: Arc::clone(&inbound_limiter),
+            }),
+        );
+        drop(peers);
+
         // Answer inbound `RequestPeers` (keepalive / discovery) with correlated `RespondPeers`.
         // Upstream `Peer` routes `id: Some` messages through a local `RequestMap`; remote request
         // ids are forwarded on `inbound_rx` (see `vendor/chia-sdk-client` patch) and must be
         // replied to with [`Peer::send_protocol_message`].
-        let peer_inbound_rpc = out.peer.clone();
+        let peer_inbound_rpc = peer_for_keepalive.clone();
         if let Ok(g) = self.inner.inbound_tx.lock() {
             if let Some(tx) = g.as_ref() {
                 let tx = tx.clone();
                 let mut inbound_rx = out.inbound_rx;
                 let pid_task = peer_id;
                 let peer_rpc = peer_inbound_rpc;
+                let state_fwd = self.inner.clone();
+                let lim_fwd = lim;
                 tokio::spawn(async move {
                     while let Some(msg) = inbound_rx.recv().await {
+                        let allowed = lim_fwd
+                            .lock()
+                            .map(|mut g| g.handle_message(&msg))
+                            .unwrap_or(true);
+                        if !allowed {
+                            apply_inbound_rate_limit_violation(&state_fwd, pid_task);
+                            continue;
+                        }
                         if msg.msg_type == ProtocolMessageTypes::RequestPeers {
                             if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
                                 let reply = Message {
@@ -483,30 +530,6 @@ impl GossipHandle {
                 });
             }
         }
-
-        let meta = StubPeer {
-            remote: addr,
-            node_type: out.their_handshake.node_type,
-            is_outbound: true,
-        };
-        let peer = out.peer;
-        let peer_for_keepalive = peer.clone();
-        let mut peers = self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?;
-        peers.insert(
-            peer_id,
-            PeerSlot::Live(LiveSlot {
-                meta,
-                peer,
-                remote_protocol_version: out.their_handshake.protocol_version.clone(),
-                remote_software_version_sanitized: out.remote_software_version_sanitized,
-                reputation: std::sync::Mutex::new(crate::types::reputation::PeerReputation::default()),
-            }),
-        );
-        drop(peers);
 
         crate::connection::keepalive::spawn_keepalive_task(
             self.inner.clone(),

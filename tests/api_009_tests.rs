@@ -25,92 +25,114 @@ use dig_gossip::{
 // ---------------------------------------------------------------------------
 // Discriminant table (one test per row in API-009 verification matrix)
 // ---------------------------------------------------------------------------
+// Each test below asserts that a single `DigMessageType` variant has the exact
+// wire byte specified in the SPEC's DIG extension message table. These values
+// are placed in `Message::msg_type` on the wire, so any drift would break
+// interoperability with other DIG nodes.
 
+/// **Row:** `NewAttestation` = 200 -- first DIG extension opcode.
 #[test]
 fn test_new_attestation_value() {
     assert_eq!(DigMessageType::NewAttestation as u8, 200);
 }
 
+/// **Row:** `NewCheckpointProposal` = 201.
 #[test]
 fn test_new_checkpoint_proposal_value() {
     assert_eq!(DigMessageType::NewCheckpointProposal as u8, 201);
 }
 
+/// **Row:** `NewCheckpointSignature` = 202.
 #[test]
 fn test_new_checkpoint_signature_value() {
     assert_eq!(DigMessageType::NewCheckpointSignature as u8, 202);
 }
 
+/// **Row:** `RequestCheckpointSignatures` = 203.
 #[test]
 fn test_request_checkpoint_signatures_value() {
     assert_eq!(DigMessageType::RequestCheckpointSignatures as u8, 203);
 }
 
+/// **Row:** `RespondCheckpointSignatures` = 204.
 #[test]
 fn test_respond_checkpoint_signatures_value() {
     assert_eq!(DigMessageType::RespondCheckpointSignatures as u8, 204);
 }
 
+/// **Row:** `RequestStatus` = 205.
 #[test]
 fn test_request_status_value() {
     assert_eq!(DigMessageType::RequestStatus as u8, 205);
 }
 
+/// **Row:** `RespondStatus` = 206.
 #[test]
 fn test_respond_status_value() {
     assert_eq!(DigMessageType::RespondStatus as u8, 206);
 }
 
+/// **Row:** `NewCheckpointSubmission` = 207.
 #[test]
 fn test_new_checkpoint_submission_value() {
     assert_eq!(DigMessageType::NewCheckpointSubmission as u8, 207);
 }
 
+/// **Row:** `ValidatorAnnounce` = 208.
 #[test]
 fn test_validator_announce_value() {
     assert_eq!(DigMessageType::ValidatorAnnounce as u8, 208);
 }
 
+/// **Row:** `RequestBlockTransactions` = 209.
 #[test]
 fn test_request_block_transactions_value() {
     assert_eq!(DigMessageType::RequestBlockTransactions as u8, 209);
 }
 
+/// **Row:** `RespondBlockTransactions` = 210.
 #[test]
 fn test_respond_block_transactions_value() {
     assert_eq!(DigMessageType::RespondBlockTransactions as u8, 210);
 }
 
+/// **Row:** `ReconciliationSketch` = 211 (Erlay set reconciliation).
 #[test]
 fn test_reconciliation_sketch_value() {
     assert_eq!(DigMessageType::ReconciliationSketch as u8, 211);
 }
 
+/// **Row:** `ReconciliationResponse` = 212.
 #[test]
 fn test_reconciliation_response_value() {
     assert_eq!(DigMessageType::ReconciliationResponse as u8, 212);
 }
 
+/// **Row:** `StemTransaction` = 213 (Dandelion++ stem phase).
 #[test]
 fn test_stem_transaction_value() {
     assert_eq!(DigMessageType::StemTransaction as u8, 213);
 }
 
+/// **Row:** `PlumtreeLazyAnnounce` = 214 (Plumtree epidemic broadcast).
 #[test]
 fn test_plumtree_lazy_announce_value() {
     assert_eq!(DigMessageType::PlumtreeLazyAnnounce as u8, 214);
 }
 
+/// **Row:** `PlumtreePrune` = 215.
 #[test]
 fn test_plumtree_prune_value() {
     assert_eq!(DigMessageType::PlumtreePrune as u8, 215);
 }
 
+/// **Row:** `PlumtreeGraft` = 216.
 #[test]
 fn test_plumtree_graft_value() {
     assert_eq!(DigMessageType::PlumtreeGraft as u8, 216);
 }
 
+/// **Row:** `PlumtreeRequestByHash` = 217 -- last DIG extension opcode.
 #[test]
 fn test_plumtree_request_by_hash_value() {
     assert_eq!(DigMessageType::PlumtreeRequestByHash as u8, 217);

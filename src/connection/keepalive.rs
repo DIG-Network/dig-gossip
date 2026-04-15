@@ -1,5 +1,9 @@
 //! CON-004 — per-connection keepalive and RTT sampling.
 //!
+//! SPEC §5.1 step 7 — "Spawn per-connection message loop task" includes the keepalive
+//! responsibility. This module implements that loop: periodic probes, timeout-based
+//! teardown, and RTT sampling for latency-aware scoring.
+//!
 //! Maintains connection liveness by sending periodic probes to every connected peer.
 //! When a peer fails to respond within the configured timeout, the connection is torn
 //! down and a reputation penalty is applied. Successful probes also feed round-trip
@@ -7,6 +11,10 @@
 //! peer scoring (PRF-001 / PRF-002).
 //!
 //! ## Chia equivalents
+//!
+//! SPEC §1.6 #7 — "Timestamp update on message": outbound peer timestamps updated in the
+//! address manager on message receipt (`node_discovery.py:139-154`). DIG’s keepalive loop
+//! mirrors this dual purpose (liveness + address book refresh).
 //!
 //! In Chia’s Python networking stack the keepalive responsibility is split:
 //!
@@ -76,6 +84,8 @@ use std::time::Duration;
 use chia_protocol::{RequestPeers, RespondPeers};
 use chia_sdk_client::Peer;
 
+// SPEC §2.13 — PING_INTERVAL_SECS (default 30) and PEER_TIMEOUT_SECS (default 90)
+// are DIG-specific constants not present in Chia crates.
 use crate::constants::{PEER_TIMEOUT_SECS, PING_INTERVAL_SECS};
 use crate::service::state::{PeerSlot, ServiceState};
 use crate::types::peer::PeerId;
@@ -96,6 +106,10 @@ fn unix_secs() -> u64 {
 
 /// Spawn a detached Tokio task that periodically probes `peer` and disconnects on
 /// failure or staleness.
+///
+/// SPEC §5.1 step 7 — the per-connection message loop task includes keepalive.
+/// SPEC §1.8 #6 — latency-aware peer scoring: RTT samples recorded here feed the
+/// composite score `trust_score * (1 / avg_rtt_ms)` used for outbound peer preference.
 ///
 /// # When it is called
 ///
@@ -120,7 +134,9 @@ pub(crate) fn spawn_keepalive_task(state: Arc<ServiceState>, peer_id: PeerId, pe
     tokio::spawn(async move { keepalive_loop(state, peer_id, peer).await });
 }
 
-/// Core keepalive loop: sleep → check timeout → send probe → record RTT or disconnect.
+/// Core keepalive loop: sleep -> check timeout -> send probe -> record RTT or disconnect.
+///
+/// See SPEC §2.13 for timing constants (`PING_INTERVAL_SECS = 30`, `PEER_TIMEOUT_SECS = 90`).
 ///
 /// # Algorithm (CON-004 steps)
 ///
@@ -193,15 +209,21 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
             Ok(Ok(_)) => {
                 last_success = std::time::Instant::now();
                 let rtt_ms = start.elapsed().as_millis() as u64;
-                // Lock ordering: `peers` first, then `reputation` inside LiveSlot.
-                // Both are Mutex (not RwLock) so we hold them briefly.
-                if let Ok(mut peers) = state.peers.lock() {
-                    if let Some(PeerSlot::Live(live)) = peers.get_mut(&peer_id) {
-                        if let Ok(mut rep) = live.reputation.lock() {
-                            rep.record_rtt_ms(rtt_ms);
-                        }
-                    }
-                }
+                // Clone `Arc<Mutex<PeerReputation>>` while holding `peers`, then drop the
+                // peer-map guard before locking reputation — avoids rustc E0597 when nesting
+                // mutex guards derived from the same map lookup.
+                let rep_mtx = {
+                    let Ok(peers) = state.peers.lock() else {
+                        continue;
+                    };
+                    let Some(PeerSlot::Live(live)) = peers.get(&peer_id) else {
+                        continue;
+                    };
+                    Arc::clone(&live.reputation)
+                };
+                if let Ok(mut rep) = rep_mtx.lock() {
+                    rep.record_rtt_ms(rtt_ms);
+                };
             }
             // --- transport error: peer is alive but protocol failed ---
             Ok(Err(e)) => {
@@ -233,6 +255,10 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
 
 /// Remove the peer from the active set, close the TLS/WebSocket transport, and
 /// record a [`PenaltyReason::ConnectionIssue`] penalty in two places.
+///
+/// SPEC §1.5 #8 — peer ban/trust: `ClientState::ban()` / `is_banned()`. DIG extends
+/// this with numeric penalty accumulation; keepalive failure contributes 10 penalty
+/// points toward the SPEC §2.13 `PENALTY_BAN_THRESHOLD` (100).
 ///
 /// # Penalty dual-write (CON-004 / CON-007)
 ///

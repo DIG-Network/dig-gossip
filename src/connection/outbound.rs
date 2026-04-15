@@ -1,5 +1,22 @@
 //! Outbound peer establishment via `chia-sdk-client` TLS + WebSocket + Chia handshake.
 //!
+//! ## SPEC traceability
+//!
+//! - **SPEC §5.1** — full outbound connection sequence:
+//!   1. Load TLS cert via `load_ssl_cert()` / `ChiaCertificate::generate()`
+//!   2. Create connector via `create_native_tls_connector()` or `create_rustls_connector()`
+//!   3. Call `connect_peer(network_id, connector, socket_addr, options)`
+//!   4. Wrap in `PeerConnection` with gossip metadata
+//!   5. Add peer to address manager
+//!   6. Send `RequestPeers` for discovery (`node_discovery.py:135-136`)
+//!   7. Spawn per-connection message loop task
+//! - **SPEC §5.3** — mandatory mutual TLS via `chia-ssl`: both sides present certificates,
+//!   `PeerId = SHA256(remote_TLS_certificate_public_key)`.
+//! - **SPEC §1.5 #1** — handshake with capabilities via `connect_peer()`.
+//! - **SPEC §1.6 #1** — peer exchange on outbound connect: after connecting, send
+//!   `RequestPeers` to discover more peers (`node_discovery.py:135-136`).
+//! - **SPEC §1.4** — `Handshake`, `Message`, `NodeType` used directly from `chia-protocol`.
+//!
 //! **Normative:** [CON-001](../../../docs/requirements/domains/connection/specs/CON-001.md) /
 //! [NORMATIVE.md](../../../docs/requirements/domains/connection/NORMATIVE.md) — outbound MUST use
 //! `connect_peer()` semantics (TLS connector, `Handshake`, `FullNode` peer validation, DIG
@@ -46,6 +63,10 @@ use chia_sdk_client::Connector;
 
 /// Successful outbound dial: live [`Peer`], inbound wire channel, parsed remote handshake, SPKI DER.
 ///
+/// SPEC §5.1 step 4 — "Wrap in PeerConnection with gossip metadata." This struct carries
+/// the raw materials needed to build a [`crate::types::peer::PeerConnection`].
+/// SPEC §5.3 — `remote_spki_der` enables `PeerId = SHA256(remote SPKI DER)`.
+///
 /// `remote_spki_der` is the **SubjectPublicKeyInfo** raw bytes inside the peer’s leaf certificate
 /// (same slice API-005 tests take from `x509-parser`).
 pub struct OutboundConnectResult {
@@ -59,6 +80,13 @@ pub struct OutboundConnectResult {
 }
 
 /// Build a TLS connector from persisted/generated [`ChiaCertificate`] (CON-001 / `tls.rs`).
+///
+/// SPEC §5.1 step 2 — "Create connector via `create_native_tls_connector()` or
+/// `create_rustls_connector()`."
+/// SPEC §5.3 — "Outbound mTLS: `create_native_tls_connector()` or `create_rustls_connector()`
+/// creates a TLS connector that includes the node's own certificate (client cert) for mutual
+/// authentication. This connector is passed to `connect_peer()`."
+/// SPEC §1.5 #3 — TLS mutual authentication via `chia-ssl`.
 ///
 /// **Feature gating:** matches dig-gossip STR-004 — prefer `native-tls` when both features are
 /// enabled (default CI graph).
@@ -80,6 +108,11 @@ pub(crate) fn network_id_handshake_string(network_id: chia_protocol::Bytes32) ->
 }
 
 /// Extract remote **SubjectPublicKeyInfo DER** before [`Peer::from_websocket`] consumes the stream.
+///
+/// SPEC §5.3 — "Peer identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
+/// Because mTLS guarantees both sides present certificates, each side can derive the other's
+/// `PeerId` from the certificate exchanged during the TLS handshake. Matches Chia's
+/// `peer_node_id` derivation from certificate hash (`ws_connection.py:95`).
 ///
 /// **Rationale:** `Peer::from_websocket` splits the socket and spawns the reader; certificate
 /// inspection must happen on the intact [`WebSocketStream`] returned from
@@ -126,6 +159,12 @@ pub(crate) fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientE
 
 /// Full outbound flow: WSS dial, capture SPKI, Chia handshake, return handles.
 ///
+/// SPEC §5.1 — outbound connection via `connect_peer()`:
+///   step 1: TLS cert loaded before this call;
+///   step 2: connector passed in;
+///   step 3: WSS dial + handshake exchange;
+///   step 4-7: caller wraps result, adds to address manager, sends `RequestPeers`, spawns loop.
+///
 /// **Spec link:** CON-001 — equivalent to `connect_peer(network_id, connector, addr, options)` with
 /// extra return data for DIG wrappers.
 ///
@@ -149,6 +188,9 @@ pub(crate) async fn connect_outbound_peer(
     let remote_spki_der = remote_spki_der_from_ws(&ws)?;
     let (peer, mut receiver) = Peer::from_websocket(ws, options)?;
 
+    // SPEC §5.1 step 3 — "Sends chia-protocol::Handshake with DIG network_id."
+    // SPEC §1.5 #1 — "connect_peer() sends chia-protocol::Handshake with capabilities list."
+    // SPEC §1.4 — Handshake type used directly from chia-protocol (not redefined).
     peer.send(Handshake {
         network_id: network_id.clone(),
         protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
@@ -156,9 +198,9 @@ pub(crate) async fn connect_outbound_peer(
         server_port: 0,
         node_type: NodeType::Wallet,
         capabilities: vec![
-            (1, "1".to_string()),
-            (2, "1".to_string()),
-            (3, "1".to_string()),
+            (1, "1".to_string()),  // SPEC §1.5 #1 — BASE protocol capability
+            (2, "1".to_string()),  // BLOCK_HEADERS capability
+            (3, "1".to_string()),  // RATE_LIMITS_V2 capability
         ],
     })
     .await?;

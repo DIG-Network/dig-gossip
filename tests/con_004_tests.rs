@@ -22,12 +22,25 @@ use dig_gossip::{GossipHandle, GossipService, PeerOptions, PenaltyReason};
 use dig_gossip::{PeerId, PeerReputation};
 
 /// Short keepalive period for tests (seconds between probes).
+/// Production uses 30s (PING_INTERVAL_SECS); 1s here keeps test wall-time under 15s.
 const TEST_PING_SECS: u64 = 1;
+
 /// Allow several missed ticks before asserting staleness in RTT test.
+/// Set high enough that a healthy peer never times out during `test_keepalive_probe_records_rtt`.
 const TEST_TIMEOUT_SECS: u64 = 30;
-/// Shorter `keepalive_peer_timeout_secs` for the dead-peer test (`tokio::timeout` on each probe).
+
+/// Shorter `keepalive_peer_timeout_secs` for the dead-peer test.
+/// Must be long enough for at least one successful probe but short enough that the
+/// timeout-disconnect test completes in reasonable wall-time.
 const TEST_DISCONNECT_PEER_TIMEOUT_SECS: u64 = 8;
 
+/// Build a [`GossipService`] + [`GossipHandle`] with custom keepalive timings.
+///
+/// `ping` controls how often probes are sent; `timeout` controls how long we wait
+/// for a pong before declaring the peer dead. The rate limit factor is set high (20.0)
+/// to avoid `V2_RATE_LIMITS` throttling on rapid `RequestPeers` probes.
+///
+/// Used by: all `test_keepalive_*` and `test_timeout_*` tests.
 async fn service_with_keepalive(
     dir: &tempfile::TempDir,
     ping: u64,

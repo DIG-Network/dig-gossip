@@ -28,10 +28,13 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream};
 use x509_parser::pem::parse_x509_pem;
 
-/// Two [`Peer`] halves over a plain loopback WebSocket (STR-005 pattern — **not** production TLS).
+/// Two [`Peer`] halves over a plain loopback WebSocket (STR-005 pattern -- **not** production TLS).
 ///
 /// Returns `((server_peer, server_inbound), (client_peer, client_inbound))` so tests can send from one
-/// side and assert receive on the other.
+/// side and assert receive on the other. The `TcpListener` bind to `127.0.0.1:0` ensures an
+/// ephemeral port is assigned by the OS, avoiding conflicts with other tests.
+///
+/// Used by: `test_inbound_rx_receives_messages` to verify wire send/recv across paired handles.
 async fn loopback_ws_peers() -> (
     (Peer, tokio::sync::mpsc::Receiver<Message>),
     (Peer, tokio::sync::mpsc::Receiver<Message>),

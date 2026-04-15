@@ -15,8 +15,12 @@
 
 use dig_gossip::{ClientError, GossipError, PeerId};
 
+/// Build a deterministic non-default [`PeerId`] for Display output assertions.
+///
+/// Uses `0xAB` repeated 32 times so the hex representation is predictable and
+/// can be asserted against in Display tests (contains "ab"). Used by all
+/// `test_peer_*_display` tests below.
 fn sample_peer() -> PeerId {
-    // Deterministic non-default id so hex appears consistently in Display output.
     PeerId::from([0xABu8; 32])
 }
 
@@ -36,7 +40,10 @@ fn test_client_error_from() {
     }
 }
 
-/// **Row:** `test_peer_not_connected_display`
+/// **Row:** `test_peer_not_connected_display` -- Display includes peer hex for operator diagnostics.
+///
+/// The "peer not connected:" prefix is the stable API contract; the hex suffix varies by
+/// PeerId but must contain the expected bytes so operators can correlate with logs.
 #[test]
 fn test_peer_not_connected_display() {
     let g = GossipError::PeerNotConnected(sample_peer());
@@ -51,7 +58,7 @@ fn test_peer_not_connected_display() {
     );
 }
 
-/// **Row:** `test_peer_banned_display`
+/// **Row:** `test_peer_banned_display` -- banned-peer errors have a recognizable prefix.
 #[test]
 fn test_peer_banned_display() {
     let g = GossipError::PeerBanned(sample_peer());
@@ -59,14 +66,16 @@ fn test_peer_banned_display() {
     assert!(s.starts_with("peer banned:"), "unexpected display: {s}");
 }
 
-/// **Row:** `test_max_connections_display`
+/// **Row:** `test_max_connections_display` -- includes the numeric limit in the message.
+///
+/// The `(50)` suffix proves the limit value is embedded, not just a static string.
 #[test]
 fn test_max_connections_display() {
     let g = GossipError::MaxConnectionsReached(50);
     assert_eq!(g.to_string(), "max connections reached (50)");
 }
 
-/// **Row:** `test_duplicate_connection_display`
+/// **Row:** `test_duplicate_connection_display` -- includes peer identity in the message.
 #[test]
 fn test_duplicate_connection_display() {
     let g = GossipError::DuplicateConnection(sample_peer());
@@ -77,7 +86,7 @@ fn test_duplicate_connection_display() {
     );
 }
 
-/// **Row:** `test_self_connection_display`
+/// **Row:** `test_self_connection_display` -- exact string match (no dynamic content).
 #[test]
 fn test_self_connection_display() {
     assert_eq!(
@@ -86,13 +95,13 @@ fn test_self_connection_display() {
     );
 }
 
-/// **Row:** `test_request_timeout_display`
+/// **Row:** `test_request_timeout_display` -- exact string match.
 #[test]
 fn test_request_timeout_display() {
     assert_eq!(GossipError::RequestTimeout.to_string(), "request timeout");
 }
 
-/// **Row:** `test_introducer_not_configured_display`
+/// **Row:** `test_introducer_not_configured_display` -- returned when no IntroducerConfig is set.
 #[test]
 fn test_introducer_not_configured_display() {
     assert_eq!(
@@ -101,7 +110,7 @@ fn test_introducer_not_configured_display() {
     );
 }
 
-/// **Row:** `test_introducer_error_display`
+/// **Row:** `test_introducer_error_display` -- wraps an arbitrary inner message string.
 #[test]
 fn test_introducer_error_display() {
     assert_eq!(
@@ -110,7 +119,7 @@ fn test_introducer_error_display() {
     );
 }
 
-/// **Row:** `test_relay_not_configured_display`
+/// **Row:** `test_relay_not_configured_display` -- returned when no RelayConfig is set.
 #[test]
 fn test_relay_not_configured_display() {
     assert_eq!(
@@ -119,7 +128,7 @@ fn test_relay_not_configured_display() {
     );
 }
 
-/// **Row:** `test_relay_error_display`
+/// **Row:** `test_relay_error_display` -- wraps an arbitrary inner message string.
 #[test]
 fn test_relay_error_display() {
     assert_eq!(
@@ -128,7 +137,7 @@ fn test_relay_error_display() {
     );
 }
 
-/// **Row:** `test_service_not_started_display`
+/// **Row:** `test_service_not_started_display` -- returned by handle methods after stop().
 #[test]
 fn test_service_not_started_display() {
     assert_eq!(
@@ -137,13 +146,13 @@ fn test_service_not_started_display() {
     );
 }
 
-/// **Row:** `test_channel_closed_display`
+/// **Row:** `test_channel_closed_display` -- internal mpsc channel dropped.
 #[test]
 fn test_channel_closed_display() {
     assert_eq!(GossipError::ChannelClosed.to_string(), "channel closed");
 }
 
-/// **Row:** `test_io_error_display`
+/// **Row:** `test_io_error_display` -- wraps filesystem/network I/O error messages.
 #[test]
 fn test_io_error_display() {
     assert_eq!(
@@ -152,7 +161,7 @@ fn test_io_error_display() {
     );
 }
 
-/// **Row:** `test_sketch_error_display`
+/// **Row:** `test_sketch_error_display` -- Erlay minisketch error messages.
 #[test]
 fn test_sketch_error_display() {
     assert_eq!(
@@ -161,7 +170,7 @@ fn test_sketch_error_display() {
     );
 }
 
-/// **Row:** `test_sketch_decode_failed_display`
+/// **Row:** `test_sketch_decode_failed_display` -- no inner message, fixed string.
 #[test]
 fn test_sketch_decode_failed_display() {
     assert_eq!(
@@ -170,7 +179,10 @@ fn test_sketch_decode_failed_display() {
     );
 }
 
-/// **Row:** `test_error_is_debug`
+/// **Row:** `test_error_is_debug` -- `Debug` is derived so errors appear in `assert!` diagnostics.
+///
+/// The variant name "RequestTimeout" must appear in the debug output for operator
+/// log readability.
 #[test]
 fn test_error_is_debug() {
     let g = GossipError::RequestTimeout;
@@ -181,7 +193,10 @@ fn test_error_is_debug() {
     );
 }
 
-/// **Row:** `test_error_is_clone`
+/// **Row:** `test_error_is_clone` -- `Clone` is required for storing errors in multiple places.
+///
+/// Tests both a simple variant (`ChannelClosed`) and the `Arc`-wrapped `ClientError`
+/// variant to prove cloning works across all error shapes.
 #[test]
 fn test_error_is_clone() {
     let a = GossipError::ChannelClosed;
@@ -193,7 +208,11 @@ fn test_error_is_clone() {
     assert_eq!(c.to_string(), d.to_string());
 }
 
-/// **Row:** `test_question_mark_operator`
+/// **Row:** `test_question_mark_operator` -- `From<ClientError>` enables `?` propagation.
+///
+/// The inner function uses `Err(ClientError::UnsupportedTls)?` which requires
+/// `From<ClientError> for GossipError`. The outer match proves the conversion
+/// produces the expected `GossipError::ClientError` variant.
 #[test]
 fn test_question_mark_operator() {
     fn propagate() -> Result<(), GossipError> {

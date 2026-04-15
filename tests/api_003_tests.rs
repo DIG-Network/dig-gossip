@@ -32,13 +32,17 @@ use dig_gossip::{
 };
 
 // ----------------------------------------------------------------------------- test plan: all fields
+// These tests construct `GossipConfig` instances and verify field presence, types, and default
+// values match the API-003 specification. Each test name maps to a row in the spec's
+// “Verification / Test Plan” table.
 
-/// **Row:** `test_config_all_fields_exist` — construct with every field set (including `Some` for
+/// **Row:** `test_config_all_fields_exist` -- construct with every field set (including `Some` for
 /// nested option types where applicable).
 ///
 /// **Why it proves API-003:** acceptance criterion “Construct GossipConfig with all fields populated;
 /// compiles and all fields accessible”. Reading each field back ties the struct literal to the
-/// public API surface documented in API-003 / SPEC §2.10.
+/// public API surface documented in API-003 / SPEC §2.10. If any field is renamed, removed, or
+/// changes type, this test fails at compile time.
 #[test]
 fn test_config_all_fields_exist() {
     let dir = common::test_temp_dir();
@@ -101,8 +105,13 @@ fn test_config_all_fields_exist() {
 }
 
 // --------------------------------------------------------------------------- test plan: default rows
+// Each test below asserts one field of `GossipConfig::default()` matches the SPEC constant.
+// Together they lock the default configuration to prevent silent drift.
 
-/// **Row:** `test_config_default_listen_addr` — `Default::default().listen_addr == 0.0.0.0:9444`.
+/// **Row:** `test_config_default_listen_addr` -- `Default::default().listen_addr == 0.0.0.0:9444`.
+///
+/// Port 9444 (`DEFAULT_P2P_PORT`) is the standard DIG gossip port. Binding `0.0.0.0` means
+/// all interfaces, which is the correct production default for a public-facing node.
 #[test]
 fn test_config_default_listen_addr() {
     let c = GossipConfig::default();
@@ -113,7 +122,10 @@ fn test_config_default_listen_addr() {
     );
 }
 
-/// **Row:** `test_config_default_target_outbound` — default target outbound count is 8.
+/// **Row:** `test_config_default_target_outbound` -- default target outbound count is 8.
+///
+/// The service will actively seek up to 8 outbound peers. This value balances network
+/// connectivity against resource usage (Chia baseline).
 #[test]
 fn test_config_default_target_outbound() {
     assert_eq!(
@@ -122,25 +134,35 @@ fn test_config_default_target_outbound() {
     );
 }
 
-/// **Row:** `test_config_default_max_connections` — default cap is 50 (SPEC §2.10 / API-003 table).
+/// **Row:** `test_config_default_max_connections` -- default cap is 50 (SPEC §2.10 / API-003 table).
+///
+/// Total inbound + outbound connections cannot exceed this limit. This prevents
+/// resource exhaustion on constrained hosts.
 #[test]
 fn test_config_default_max_connections() {
     assert_eq!(GossipConfig::default().max_connections, 50);
 }
 
-/// **Row:** `test_config_default_peer_connect_interval` — default 10 seconds.
+/// **Row:** `test_config_default_peer_connect_interval` -- 10 seconds between connection attempts.
+///
+/// Controls how frequently the discovery loop tries to reach new outbound peers.
 #[test]
 fn test_config_default_peer_connect_interval() {
     assert_eq!(GossipConfig::default().peer_connect_interval, 10);
 }
 
-/// **Row:** `test_config_default_gossip_fanout` — default fanout 8.
+/// **Row:** `test_config_default_gossip_fanout` -- default fanout 8.
+///
+/// Each gossip message is forwarded to up to 8 randomly selected peers (epidemic broadcast).
 #[test]
 fn test_config_default_gossip_fanout() {
     assert_eq!(GossipConfig::default().gossip_fanout, 8);
 }
 
-/// **Row:** `test_config_default_max_seen_messages` — default 100_000 (`DEFAULT_MAX_SEEN_MESSAGES`).
+/// **Row:** `test_config_default_max_seen_messages` -- default 100_000 (`DEFAULT_MAX_SEEN_MESSAGES`).
+///
+/// The seen-set deduplication cache holds up to this many message hashes to prevent
+/// re-gossiping. Too small causes duplicate forwarding; too large wastes memory.
 #[test]
 fn test_config_default_max_seen_messages() {
     assert_eq!(
@@ -149,14 +171,16 @@ fn test_config_default_max_seen_messages() {
     );
 }
 
-/// **Row:** `test_config_optional_introducer` — `None` is valid.
+/// **Row:** `test_config_optional_introducer` -- `None` is valid (bootstrap-only mode).
+///
+/// Nodes can operate without an introducer by relying on bootstrap peers or DNS seeds.
 #[test]
 fn test_config_optional_introducer() {
     let c = GossipConfig::default();
     assert!(c.introducer.is_none());
 }
 
-/// **Row:** `test_config_optional_relay`.
+/// **Row:** `test_config_optional_relay` -- `None` is valid (direct-connect only).
 #[test]
 fn test_config_optional_relay() {
     let c = GossipConfig::default();

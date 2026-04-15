@@ -47,10 +47,10 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chia_protocol::{Message, NodeType};
-use chia_sdk_client::Peer;
+use chia_sdk_client::{Peer, RateLimiter};
 use chia_ssl::ChiaCertificate;
 use lru::LruCache;
 use tokio::sync::broadcast;
@@ -62,7 +62,7 @@ use chia_protocol::Bytes32;
 use crate::discovery::address_manager::AddressManager;
 use crate::types::config::GossipConfig;
 use crate::types::peer::PeerId;
-use crate::types::reputation::PeerReputation;
+use crate::types::reputation::{PeerReputation, PenaltyReason};
 
 /// Lifecycle state: service has been constructed but `start()` has not been called.
 /// Config is validated and TLS is loaded, but no tasks are running and no ports are bound.
@@ -116,6 +116,8 @@ pub(crate) struct StubPeer {
 /// * **CON-003** -- handshake validation decides which fields are retained.
 /// * **CON-004** -- [`PeerReputation`] is updated by
 ///   [`crate::connection::keepalive::spawn_keepalive_task`] with RTT samples.
+/// * **CON-005** -- [`RateLimiter`] (`incoming = true`, 60 s window) enforced on the inbound
+///   `mpsc` bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
 #[derive(Debug)]
 pub(crate) struct LiveSlot {
     /// Common metadata (direction, node type, remote address) shared with [`StubPeer`].
@@ -130,9 +132,19 @@ pub(crate) struct LiveSlot {
     /// reflects exactly what we accepted.
     pub remote_software_version_sanitized: String,
     /// Per-connection reputation state: RTT sliding window, penalty accumulator, and
-    /// latency score. Protected by its own `Mutex` because keepalive tasks (CON-004)
-    /// update it independently of the outer peer-map lock (API-006, SPEC §1.8 #6).
-    pub reputation: Mutex<PeerReputation>,
+    /// latency score.
+    ///
+    /// Wrapped in `Arc<Mutex<…>>` (not a bare `Mutex` inside the map slot) so callers can
+    /// [`Arc::clone`] the handle, **release** [`ServiceState::peers`], then lock reputation
+    /// without rustc’s nested-guard lifetime error (E0597). Same mutex still serializes
+    /// keepalive RTT updates vs penalties (CON-004 / API-006).
+    pub reputation: Arc<Mutex<PeerReputation>>,
+    /// Per-connection inbound [`RateLimiter`] (CON-005) — `V2_RATE_LIMITS` + DIG `dig_wire`.
+    ///
+    /// The accept/forwarder tasks currently hold their own `Arc` clone of the same limiter;
+    /// this field remains the **slot of record** for diagnostics and future introspection APIs.
+    #[allow(dead_code)]
+    pub inbound_rate_limiter: Arc<Mutex<RateLimiter>>,
 }
 
 /// A slot in the peer map: either a lightweight **test-only stub** or a **real** TLS peer.
@@ -184,44 +196,146 @@ impl PeerSlot {
     }
 }
 
-/// Arc-shared guts: configuration, TLS material, stub peer map, inbound fan-out, counters.
-pub(crate) struct ServiceState {
+/// The `Arc`-shared interior of [`GossipService`](super::gossip_service::GossipService)
+/// and [`GossipHandle`](super::gossip_handle::GossipHandle).
+///
+/// Contains every piece of mutable runtime state for the gossip subsystem: peer map,
+/// address manager, TLS material, broadcast channel, lifecycle flag, and cumulative
+/// stats counters. Each field is independently locked or atomic so concurrent tasks can
+/// operate without coarse-grained serialization (CNC-003).
+///
+/// # Who reads / writes each field
+///
+/// | Field | Writers | Readers |
+/// |-------|---------|---------|
+/// | `peers` | `connect_to`, accept loop, `disconnect`, `stop` | `broadcast`, `peer_count`, `get_connections`, `send_to`, `request` |
+/// | `banned` | `ban_peer`, `stop` | `connect_to`, accept loop |
+/// | `penalties` | `penalize_peer`, `stop` | `ban_peer` (threshold check) |
+/// | `lifecycle` | `start`, `stop` | every handle method (guard) |
+/// | `inbound_tx` | `start`, `stop` | accept loop, `test_inject_message` |
+/// | `messages_sent` | `broadcast`, `send_to` | `stats` |
+/// | `listen_bound_addr` | `start`, `stop` | `dial_targets_local_listen`, handshake builder |
+/// | `listener_stop` / `listener_task` | `start`, `stop` | (internal only) |
+///
+/// # Requirement traceability
+///
+/// * **CNC-003** -- choice of `Mutex` vs `AtomicU64` vs `broadcast`.
+/// * **API-008** -- stats counters.
+/// * **CON-002** -- listener fields.
+pub struct ServiceState {
+    /// Immutable after construction. Holds all user-supplied knobs (listen address,
+    /// connection limits, cert paths, timeouts, etc.). See [`GossipConfig`].
     pub config: GossipConfig,
+
+    /// TLS certificate + private key loaded (or generated) during construction.
+    /// Used by the outbound connector (`connect_peer()`) and the inbound TLS acceptor
+    /// (CON-002). Immutable after construction.
     #[allow(dead_code)]
     pub tls: ChiaCertificate,
+
+    /// Bitcoin/Chia-style address manager (tried/new bucket tables).
+    /// Manages known peer addresses for the discovery loop. Updated on successful
+    /// connect (`mark_good`), on peer exchange (`add_to_new_table`), and on connect
+    /// failure (`attempt`). See [`crate::discovery::address_manager::AddressManager`].
     pub address_manager: AddressManager,
+
+    /// LRU set for message deduplication (SPEC §8.1 step 2). Keyed by
+    /// `SHA256(msg_type || data)`. Capacity is set from
+    /// [`GossipConfig::max_seen_messages`](crate::types::config::GossipConfig::max_seen_messages).
+    /// Writers: broadcast path, inbound message handler.
+    /// Readers: broadcast path (contains check).
     #[allow(dead_code)]
     pub seen_messages: Mutex<LruCache<Bytes32, ()>>,
-    /// Connected peers — stubs ([`PeerSlot::Stub`]) or live TLS ([`PeerSlot::Live`]).
-    pub peers: Mutex<HashMap<PeerId, PeerSlot>>,
+
+    /// Map of currently connected peers (stubs for tests, live for real connections).
+    /// Keyed by [`PeerId`] (SHA256 of remote TLS public key for live peers, or
+    /// deterministic hash of `SocketAddr` for stubs).
+    /// Writers: `connect_to`, accept loop, `disconnect`, `stop`.
+    /// Readers: `broadcast`, `peer_count`, `get_connections`, `send_to`, `request`.
+    pub(crate) peers: Mutex<HashMap<PeerId, PeerSlot>>,
+
+    /// Set of banned [`PeerId`]s. Checked during `connect_to` and inbound accept to
+    /// reject known-bad peers. Cleared on `stop()`.
     pub banned: Mutex<HashSet<PeerId>>,
+
+    /// Accumulated penalty scores per peer. When a peer's score crosses
+    /// [`PENALTY_BAN_THRESHOLD`](crate::constants::PENALTY_BAN_THRESHOLD) it is moved
+    /// to `banned`. Cleared on `stop()`.
     pub penalties: Mutex<HashMap<PeerId, u32>>,
+
+    /// Three-state lifecycle flag: `LC_CONSTRUCTED` -> `LC_RUNNING` -> `LC_STOPPED`.
+    /// Every [`GossipHandle`](super::gossip_handle::GossipHandle) method checks this
+    /// at entry and returns [`GossipError::ServiceNotStarted`] if not `LC_RUNNING`.
+    /// Transitions are atomic CAS (in `start`) or unconditional swap (in `stop`).
     pub lifecycle: AtomicU8,
-    /// Inbound wire fan-out: SPEC §3.3 names `mpsc::Receiver`, but a [`broadcast`] channel is the
-    /// Rust-idiomatic way to keep [`GossipHandle: Clone`](super::gossip_handle::GossipHandle)
-    /// while allowing multiple subscribers (see `GossipHandle::inbound_receiver` rustdoc).
-    pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, Message)>>>,
-    /// Cumulative “messages sent” counter (API-008): broadcast adds per-recipient deliveries; `send_to` adds 1.
-    pub messages_sent: AtomicU64,
-    /// Cumulative inbound messages observed (stub: test inject path increments).
-    pub messages_received: AtomicU64,
-    /// Cumulative outbound / inbound bytes (stub: remain `0` until CON-* meters TLS payload sizes).
-    pub bytes_sent: AtomicU64,
-    pub bytes_received: AtomicU64,
-    /// Cumulative successful stub/live `connect` completions (never decremented on disconnect).
-    pub total_connections: AtomicU64,
-    /// OS-assigned listen socket after [`TcpListener::bind`](tokio::net::TcpListener::bind) (`127.0.0.1:0` in tests).
+
+    /// Inbound wire message fan-out channel.
     ///
-    /// **Why:** [`GossipConfig::listen_addr`](crate::types::config::GossipConfig::listen_addr) may use port `0`;
-    /// [`Handshake::server_port`](chia_protocol::Handshake::server_port) and self-dial checks need the resolved endpoint.
+    /// SPEC §3.3 describes this as `mpsc::Receiver`, but a [`broadcast`] channel is
+    /// the Rust-idiomatic way to allow multiple [`GossipHandle`] clones to each
+    /// subscribe independently. Created in `start()`, dropped (set to `None`) in
+    /// `stop()`.
+    ///
+    /// Writers: accept loop (CON-002), `test_inject_message` (API-002).
+    /// Readers: each handle's `inbound_receiver()` subscriber.
+    pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, Message)>>>,
+
+    /// Cumulative count of messages sent (API-008). `broadcast` adds one per recipient
+    /// that accepted the message; `send_to` adds 1. Never decremented.
+    pub messages_sent: AtomicU64,
+
+    /// Cumulative count of inbound messages observed (API-008). The accept loop
+    /// (CON-002) increments this; stub tests increment via `test_inject_message`.
+    pub messages_received: AtomicU64,
+
+    /// Cumulative outbound bytes. Remains `0` until the CON-* transport layer meters
+    /// TLS payload sizes. Placeholder for API-008 completeness.
+    pub bytes_sent: AtomicU64,
+    /// Cumulative inbound bytes. Same caveat as `bytes_sent`.
+    pub bytes_received: AtomicU64,
+
+    /// Cumulative successful `connect` completions (stubs + live). Monotonically
+    /// increasing -- never decremented on disconnect. Used by `GossipStats::total_connections`.
+    pub total_connections: AtomicU64,
+
+    /// OS-assigned listen socket address after
+    /// [`TcpListener::bind`](tokio::net::TcpListener::bind).
+    ///
+    /// **Why this exists:** [`GossipConfig::listen_addr`](crate::types::config::GossipConfig::listen_addr)
+    /// may use port `0` (tests); the resolved ephemeral port is needed for:
+    /// 1. [`Handshake::server_port`](chia_protocol::Handshake) sent to remotes,
+    /// 2. Self-dial guard in [`dial_targets_local_listen`](ServiceState::dial_targets_local_listen).
+    ///
+    /// Set in `start()`, cleared in `stop()`.
     pub listen_bound_addr: Mutex<Option<SocketAddr>>,
-    /// Signals [`crate::connection::listener::accept_loop`] to exit on [`GossipService::stop`](super::gossip_service::GossipService::stop).
+
+    /// [`Notify`] handle used to signal the CON-002 accept loop to exit gracefully
+    /// when [`GossipService::stop`](super::gossip_service::GossipService::stop) is called.
     pub(crate) listener_stop: Mutex<Option<std::sync::Arc<Notify>>>,
+
+    /// [`JoinHandle`] for the spawned accept-loop task. Stored so `stop()` can
+    /// `abort()` + `await` it for clean shutdown.
     pub(crate) listener_task: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// Deterministic [`PeerId`] from a remote socket (stub peers / tests only — live peers use TLS SPKI).
-pub(crate) fn peer_id_for_addr(addr: SocketAddr) -> PeerId {
+/// Derive a deterministic [`PeerId`] from a [`SocketAddr`].
+///
+/// **Stub / test use only.** Live peers derive their `PeerId` from
+/// `SHA256(remote_TLS_certificate_public_key)` (SPEC §5.3). This function exists so that
+/// unit tests that create stub peers without TLS can still produce unique, reproducible
+/// IDs keyed to the socket address.
+///
+/// # Layout of the 32-byte output
+///
+/// | Bytes | Content |
+/// |-------|---------|
+/// | 0..8 | `DefaultHasher` hash of the full `SocketAddr` |
+/// | 8..16 | Port number (zero-extended to 8 bytes) |
+/// | 16..20 (v4) or 16..32 (v6) | Raw IP octets |
+///
+/// This layout is *not* cryptographically meaningful; it is designed to be
+/// collision-resistant enough for test purposes.
+pub fn peer_id_for_addr(addr: SocketAddr) -> PeerId {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
@@ -241,7 +355,13 @@ pub(crate) fn peer_id_for_addr(addr: SocketAddr) -> PeerId {
 }
 
 impl ServiceState {
-    pub(crate) fn new(config: GossipConfig, tls: ChiaCertificate) -> Self {
+    /// Construct a fresh `ServiceState` in the `LC_CONSTRUCTED` lifecycle phase.
+    ///
+    /// All mutable containers start empty; counters start at zero. The LRU capacity for
+    /// `seen_messages` is clamped to at least 1 because [`LruCache::new`] panics on zero.
+    pub fn new(config: GossipConfig, tls: ChiaCertificate) -> Self {
+        // Clamp to 1 to satisfy `NonZeroUsize`; a capacity of 0 would be nonsensical
+        // for dedup anyway.
         let cap = NonZeroUsize::new(config.max_seen_messages.max(1)).expect("max 1+");
         Self {
             config,
@@ -264,11 +384,23 @@ impl ServiceState {
         }
     }
 
+    /// Returns `true` if the service is in the *running* lifecycle state.
+    ///
+    /// Used as the entry guard in every [`GossipHandle`](super::gossip_handle::GossipHandle)
+    /// method -- if this returns `false`, the method immediately returns
+    /// [`GossipError::ServiceNotStarted`].
     pub(crate) fn is_running(&self) -> bool {
         self.lifecycle.load(Ordering::SeqCst) == LC_RUNNING
     }
 
-    /// `true` when `addr` is our configured or bound P2P listen address (CON-002 / self-dial guard).
+    /// Self-dial guard: returns `true` when `addr` matches either the *configured*
+    /// listen address or the *bound* address (which differs when port `0` is used).
+    ///
+    /// Prevents the discovery loop or `connect_to` from opening a connection back to
+    /// ourselves, which would waste a connection slot and confuse the peer map.
+    ///
+    /// **Requirement:** CON-002 (inbound listener) -- the bound address is only known
+    /// after `start()` resolves it.
     pub(crate) fn dial_targets_local_listen(&self, addr: SocketAddr) -> bool {
         if addr == self.config.listen_addr {
             return true;
@@ -279,6 +411,29 @@ impl ServiceState {
             .and_then(|g| *g)
             .is_some_and(|b| b == addr)
     }
+}
+
+/// CON-005: apply [`PenaltyReason::RateLimitExceeded`] when an inbound wire frame fails
+/// [`RateLimiter::handle_message`].
+pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: PeerId) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let rep_mtx = {
+        let Ok(peers) = state.peers.lock() else {
+            return;
+        };
+        let Some(PeerSlot::Live(live)) = peers.get(&peer_id) else {
+            return;
+        };
+        Arc::clone(&live.reputation)
+    };
+    // Statement form (`if let` + `;`) ends the `lock()` temporary before `rep_mtx` drops — same
+    // drop-order fix as `match … ;` (avoids E0597); `clippy::single_match` prefers `if let`.
+    if let Ok(mut rep) = rep_mtx.lock() {
+        rep.apply_penalty(PenaltyReason::RateLimitExceeded, now);
+    };
 }
 
 impl fmt::Debug for ServiceState {
