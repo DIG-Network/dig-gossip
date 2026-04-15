@@ -28,13 +28,14 @@ pub struct GossipStats {
     pub inbound_connections: usize,
     /// Current outbound stub/live connection count.
     pub outbound_connections: usize,
-    /// Total messages sent (cumulative). Stub: broadcast sums per-peer deliveries; `send_to` adds one.
+    /// Total messages sent (cumulative). **CON-006:** sum of live-slot [`PeerConnectionWireMetrics`](crate::types::peer::PeerConnectionWireMetrics)
+    /// plus stub-only [`ServiceState::messages_sent`](crate::service::state::ServiceState) atomics.
     pub messages_sent: u64,
-    /// Total messages received (cumulative). Stub: incremented on synthetic inbound inject for tests.
+    /// Total messages received (cumulative). **CON-006:** live-slot sums + inject / stub atomics.
     pub messages_received: u64,
-    /// Total bytes sent (cumulative). Stub: `0` until send path meters bytes (CON-*).
+    /// Total bytes sent (cumulative). **CON-006:** live `bytes_written` sums map here; stubs meter via atomics.
     pub bytes_sent: u64,
-    /// Total bytes received (cumulative). Stub: `0` until receive path meters bytes (CON-*).
+    /// Total bytes received (cumulative). **CON-006:** live `bytes_read` sums + synthetic inject bytes.
     pub bytes_received: u64,
     /// Entries in the address manager (DSC-001). Stub [`crate::discovery::address_manager::AddressManager`] → `0`.
     pub known_addresses: usize,

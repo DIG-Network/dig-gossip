@@ -63,6 +63,9 @@ async fn loopback_ws_peers() -> (
 }
 
 /// **Row:** `test_peer_connection_all_fields` — every public field is readable (API-005 struct contract).
+/// SPEC §2.4 — `PeerConnection` fields: peer, peer_id, address, is_outbound, node_type,
+/// protocol_version, software_version, peer_server_port, capabilities, creation_time,
+/// bytes_read, bytes_written, last_message_time, reputation, inbound_rx.
 #[tokio::test]
 async fn test_peer_connection_all_fields() {
     let pc = common::mock_peer_connection(true).await;
@@ -78,6 +81,8 @@ async fn test_peer_connection_all_fields() {
     let _: u64 = pc.creation_time;
     let _: u64 = pc.bytes_read;
     let _: u64 = pc.bytes_written;
+    let _: u64 = pc.messages_sent;
+    let _: u64 = pc.messages_received;
     let _: u64 = pc.last_message_time;
     let _: PeerReputation = pc.reputation.clone();
     let _: tokio::sync::mpsc::Receiver<Message> = pc.inbound_rx;
@@ -89,6 +94,8 @@ async fn test_peer_connection_initial_bytes() {
     let pc = common::mock_peer_connection(false).await;
     assert_eq!(pc.bytes_read, 0);
     assert_eq!(pc.bytes_written, 0);
+    assert_eq!(pc.messages_sent, 0);
+    assert_eq!(pc.messages_received, 0);
 }
 
 /// **Row:** `test_peer_connection_initial_reputation`
@@ -137,6 +144,7 @@ async fn test_peer_connection_creation_time() {
 }
 
 /// **Row:** `test_peer_id_from_tls_key` — SHA256(SPKI DER) matches [`peer_id_from_tls_spki_der`].
+/// SPEC §2.4 — `PeerId = SHA256(TLS public key)` derived from certificate SPKI DER.
 #[test]
 fn test_peer_id_from_tls_key() {
     let cert = ChiaCertificate::generate().expect("ChiaCertificate::generate");

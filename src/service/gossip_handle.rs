@@ -16,6 +16,7 @@
 //! | API-002 | All messaging, peer-management, discovery, and stats methods |
 //! | API-008 | [`stats`](GossipHandle::stats), [`relay_stats`](GossipHandle::relay_stats) |
 //! | CON-001 | [`connect_to`](GossipHandle::connect_to) — outbound WSS + `RequestPeers` |
+//! | CON-006 | Per-live-slot [`PeerConnectionWireMetrics`](crate::types::peer::PeerConnectionWireMetrics) + [`stats`](GossipHandle::stats) aggregation |
 //! | CON-004 | [`penalize_peer`](GossipHandle::penalize_peer) (penalty accumulation path) |
 //!
 //! See: `docs/requirements/domains/crate_api/specs/API-002.md`
@@ -46,6 +47,7 @@ use chia_protocol::{
     ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
     TimestampedPeerInfo,
 };
+use chia_sdk_client::Peer;
 use chia_traits::Streamable;
 use std::any::TypeId;
 use std::sync::{Arc, Mutex};
@@ -53,13 +55,18 @@ use tokio::sync::broadcast;
 
 use crate::constants::PENALTY_BAN_THRESHOLD;
 use crate::error::GossipError;
-use crate::types::peer::{peer_id_from_tls_spki_der, PeerConnection, PeerId, PeerInfo};
+use crate::types::peer::{
+    message_wire_len, peer_id_from_tls_spki_der, metric_unix_timestamp_secs, PeerConnection,
+    PeerConnectionWireMetrics, PeerId, PeerInfo,
+};
 use crate::types::reputation::PeerReputation;
 use crate::types::reputation::PenaltyReason;
 use crate::types::stats::{GossipStats, RelayStats};
 
 use super::state::{
-    apply_inbound_rate_limit_violation, peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer,
+    apply_inbound_rate_limit_violation, peer_id_for_addr, record_live_peer_inbound_bytes,
+    record_live_peer_outbound_bytes, sum_live_peer_wire_metrics, LiveSlot, PeerSlot, ServiceState,
+    StubPeer,
 };
 
 // ---------------------------------------------------------------------------
@@ -172,13 +179,13 @@ impl GossipHandle {
     /// peers the return value is `Ok(0)` — this is explicitly **not** an error (API-002
     /// implementation notes: "broadcast with zero connected peers should return `Ok(0)`").
     ///
-    /// # Current stub behaviour
+    /// # Wire behaviour (CON-001+ / CON-006)
     ///
-    /// The message payload is currently **not** forwarded over the wire — the `message`
-    /// parameter is consumed but unused (see `let _ = message`). Once CON-* lands real
-    /// `Peer::send_raw` calls, this will iterate the peer map and push bytes. The
-    /// [`ServiceState::messages_sent`] counter is still incremented by `n` so that
-    /// [`stats()`](Self::stats) reflects expected semantics even in tests.
+    /// **Live** peers receive [`Peer::send_protocol_message`](chia_sdk_client::Peer::send_protocol_message)
+    /// with a cloned [`Message`]; each successful send increments that slot’s CON-006 counters by the
+    /// shared serialized length. **Stub** peers do not have a transport — the legacy
+    /// [`ServiceState::messages_sent`] / [`ServiceState::bytes_sent`] atomics record the same
+    /// fan-out counts so API-008 stub tests remain stable.
     ///
     /// # Parameters
     ///
@@ -198,32 +205,43 @@ impl GossipHandle {
         exclude: Option<PeerId>,
     ) -> Result<usize, GossipError> {
         self.require_running()?;
-        let _ = message; // TODO(CON-*): forward bytes to each `Peer::send_raw`.
-        let mut n = self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .len();
-        if let Some(e) = exclude {
-            // Second lock acquisition: acceptable because locks are short-held and
-            // non-reentrant on the same thread (std::sync::Mutex, not tokio::sync::Mutex).
-            if self
+        let wire_len = message_wire_len(&message).map_err(GossipError::from)?;
+        let (stub_deliveries, live_jobs): (usize, Vec<(Peer, PeerId, u64)>) = {
+            let peers = self
                 .inner
                 .peers
                 .lock()
-                .map_err(|_| GossipError::ChannelClosed)?
-                .contains_key(&e)
-            {
-                n = n.saturating_sub(1);
+                .map_err(|_| GossipError::ChannelClosed)?;
+            let mut stub_n = 0usize;
+            let mut live = Vec::new();
+            for (pid, slot) in peers.iter() {
+                if exclude.as_ref() == Some(pid) {
+                    continue;
+                }
+                match slot {
+                    PeerSlot::Stub(_) => stub_n += 1,
+                    PeerSlot::Live(l) => {
+                        live.push((l.peer.clone(), *pid, wire_len));
+                    }
+                }
             }
+            (stub_n, live)
+        };
+        self.inner.messages_sent.fetch_add(
+            stub_deliveries as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner.bytes_sent.fetch_add(
+            wire_len.saturating_mul(stub_deliveries as u64),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        for (peer, pid, wl) in live_jobs.iter() {
+            peer.send_protocol_message(message.clone())
+                .await
+                .map_err(GossipError::from)?;
+            record_live_peer_outbound_bytes(&self.inner, *pid, *wl);
         }
-        // Relaxed ordering is fine for a monotonic counter — no other state depends on this
-        // value being visible before subsequent stores.
-        self.inner
-            .messages_sent
-            .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
-        Ok(n)
+        Ok(stub_deliveries + live_jobs.len())
     }
 
     /// Type-safe broadcast: serialize `body` via [`Streamable`] then delegate to [`Self::broadcast`].
@@ -276,7 +294,8 @@ impl GossipHandle {
         self.require_running()?;
         // Validate serialization upfront — fail fast even for stub peers so callers
         // get consistent error behaviour regardless of the peer type.
-        let _ = encode_message(&body)?;
+        let msg = encode_message(&body)?;
+        let wire_len = message_wire_len(&msg).map_err(GossipError::from)?;
 
         // Ban check before touching the peer map — avoids leaking message data to a banned peer.
         if self
@@ -304,11 +323,18 @@ impl GossipHandle {
             }
         };
         if let Some(p) = maybe_live {
-            p.send(body).await?;
+            p.send(body).await.map_err(GossipError::from)?;
+            record_live_peer_outbound_bytes(&self.inner, peer_id, wire_len);
+        } else {
+            self.inner.messages_sent.fetch_add(
+                1,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            self.inner.bytes_sent.fetch_add(
+                wire_len,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
-        self.inner
-            .messages_sent
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -477,6 +503,7 @@ impl GossipHandle {
             .peers
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?;
+        let opened_at = metric_unix_timestamp_secs();
         peers.insert(
             peer_id,
             PeerSlot::Live(LiveSlot {
@@ -488,6 +515,7 @@ impl GossipHandle {
                     crate::types::reputation::PeerReputation::default(),
                 )),
                 inbound_rate_limiter: Arc::clone(&inbound_limiter),
+                traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(opened_at))),
             }),
         );
         drop(peers);
@@ -515,6 +543,9 @@ impl GossipHandle {
                             apply_inbound_rate_limit_violation(&state_fwd, pid_task);
                             continue;
                         }
+                        if let Ok(wl_in) = message_wire_len(&msg) {
+                            record_live_peer_inbound_bytes(&state_fwd, pid_task, wl_in);
+                        }
                         if msg.msg_type == ProtocolMessageTypes::RequestPeers {
                             if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
                                 let reply = Message {
@@ -522,7 +553,11 @@ impl GossipHandle {
                                     id: msg.id,
                                     data: body.into(),
                                 };
+                                let wl_out = message_wire_len(&reply).ok();
                                 let _ = peer_rpc.send_protocol_message(reply).await;
+                                if let Some(w) = wl_out {
+                                    record_live_peer_outbound_bytes(&state_fwd, pid_task, w);
+                                }
                             }
                         }
                         let _ = tx.send((pid_task, msg));
@@ -704,25 +739,32 @@ impl GossipHandle {
 
     /// Snapshot gossip observability (API-008 / SPEC §3.4).
     ///
-    /// Assembled from [`ServiceState`](super::state::ServiceState) with short mutex holds; byte counters stay
-    /// at `0` in the stub until CON-* meters wire traffic.
+    /// **CON-006:** `messages_*` / `bytes_*` are **`sum(live per-slot [`PeerConnectionWireMetrics`]) +
+    /// stub/synthetic atomics`** on [`ServiceState`] — live TLS paths meter exact serialized
+    /// [`Message`] sizes; stub [`PeerSlot::Stub`] rows and [`__inject_inbound_for_tests`] still
+    /// use the lock-free counters (API-008 pre-CON-006 behaviour preserved for tests).
     pub async fn stats(&self) -> GossipStats {
-        let messages_sent = self
-            .inner
-            .messages_sent
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let messages_received = self
-            .inner
-            .messages_received
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let bytes_sent = self
-            .inner
-            .bytes_sent
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let bytes_received = self
-            .inner
-            .bytes_received
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let (live_ms, live_mr, live_bw, live_br) = sum_live_peer_wire_metrics(&self.inner);
+        let messages_sent = live_ms
+            + self
+                .inner
+                .messages_sent
+                .load(std::sync::atomic::Ordering::Relaxed);
+        let messages_received = live_mr
+            + self
+                .inner
+                .messages_received
+                .load(std::sync::atomic::Ordering::Relaxed);
+        let bytes_sent = live_bw
+            + self
+                .inner
+                .bytes_sent
+                .load(std::sync::atomic::Ordering::Relaxed);
+        let bytes_received = live_br
+            + self
+                .inner
+                .bytes_received
+                .load(std::sync::atomic::Ordering::Relaxed);
         let total_connections = self
             .inner
             .total_connections
@@ -875,10 +917,15 @@ impl GossipHandle {
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?;
         let tx = g.as_ref().ok_or(GossipError::ServiceNotStarted)?;
+        let wl = message_wire_len(&message).unwrap_or(0);
         let _ = tx.send((sender, message));
         self.inner
             .messages_received
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.bytes_received.fetch_add(
+            wl,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         Ok(())
     }
 }

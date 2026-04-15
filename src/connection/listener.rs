@@ -79,9 +79,13 @@ use tokio_tungstenite::{accept_async, MaybeTlsStream, WebSocketStream};
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 use crate::connection::outbound::{network_id_handshake_string, spki_der_from_leaf_cert_der};
 use crate::service::state::{
-    apply_inbound_rate_limit_violation, peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer,
+    apply_inbound_rate_limit_violation, peer_id_for_addr, record_live_peer_inbound_bytes,
+    record_live_peer_outbound_bytes, LiveSlot, PeerSlot, ServiceState, StubPeer,
 };
-use crate::types::peer::{peer_id_from_tls_spki_der, PeerId, PeerInfo};
+use crate::types::peer::{
+    message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der, PeerConnectionWireMetrics,
+    PeerId, PeerInfo,
+};
 
 /// Maximum time we wait for the remote peer to send a [`ProtocolMessageTypes::Handshake`]
 /// message before we abort the inbound session.
@@ -600,6 +604,7 @@ async fn negotiate_inbound_over_ws(
         .peers
         .lock()
         .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
+    let opened_at = metric_unix_timestamp_secs();
     peers.insert(
         peer_id,
         PeerSlot::Live(LiveSlot {
@@ -611,6 +616,9 @@ async fn negotiate_inbound_over_ws(
                 crate::types::reputation::PeerReputation::default(),
             )),
             inbound_rate_limiter: Arc::clone(&inbound_limiter),
+            traffic: std::sync::Arc::new(std::sync::Mutex::new(PeerConnectionWireMetrics::new(
+                opened_at,
+            ))),
         }),
     );
     drop(peers);
@@ -635,6 +643,9 @@ async fn negotiate_inbound_over_ws(
                         apply_inbound_rate_limit_violation(&state_fwd, pid_task);
                         continue;
                     }
+                    if let Ok(wl_in) = message_wire_len(&msg) {
+                        record_live_peer_inbound_bytes(&state_fwd, pid_task, wl_in);
+                    }
                     if msg.msg_type == ProtocolMessageTypes::RequestPeers {
                         if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
                             let reply = Message {
@@ -642,7 +653,11 @@ async fn negotiate_inbound_over_ws(
                                 id: msg.id,
                                 data: body.into(),
                             };
+                            let wl_out = message_wire_len(&reply).ok();
                             let _ = peer_rpc.send_protocol_message(reply).await;
+                            if let Some(w) = wl_out {
+                                record_live_peer_outbound_bytes(&state_fwd, pid_task, w);
+                            }
                         }
                     }
                     // Ignore send errors: they mean all broadcast receivers have been dropped

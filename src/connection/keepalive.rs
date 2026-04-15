@@ -83,11 +83,12 @@ use std::time::Duration;
 
 use chia_protocol::{RequestPeers, RespondPeers};
 use chia_sdk_client::Peer;
+use chia_traits::Streamable;
 
 // SPEC §2.13 — PING_INTERVAL_SECS (default 30) and PEER_TIMEOUT_SECS (default 90)
 // are DIG-specific constants not present in Chia crates.
 use crate::constants::{PEER_TIMEOUT_SECS, PING_INTERVAL_SECS};
-use crate::service::state::{PeerSlot, ServiceState};
+use crate::service::state::{record_live_peer_inbound_bytes, PeerSlot, ServiceState};
 use crate::types::peer::PeerId;
 use crate::types::reputation::PenaltyReason;
 
@@ -203,10 +204,21 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
         // between `start` and success includes serialization, network, and
         // deserialization — giving a realistic end-to-end RTT sample.
         let start = std::time::Instant::now();
-        let probe = peer.request_infallible::<RespondPeers, _>(RequestPeers::new());
+        // `request_raw` returns the full wire [`Message`] so CON-006 can meter exact serialized
+        // inbound bytes (same framing as the forwarder path). `request_infallible` only yields the
+        // decoded body and would hide the length we need for `bytes_read`.
+        let probe = peer.request_raw(RequestPeers::new());
         match tokio::time::timeout(Duration::from_secs(timeout_secs), probe).await {
             // --- success: record RTT into PeerReputation (CON-004 step 4) ---
-            Ok(Ok(_)) => {
+            Ok(Ok(wire_msg)) => {
+                if RespondPeers::from_bytes(&wire_msg.data).is_err() {
+                    continue;
+                }
+                let wl = wire_msg
+                    .to_bytes()
+                    .map(|b| b.len() as u64)
+                    .unwrap_or(0);
+                record_live_peer_inbound_bytes(&state, peer_id, wl);
                 last_success = std::time::Instant::now();
                 let rtt_ms = start.elapsed().as_millis() as u64;
                 // Clone `Arc<Mutex<PeerReputation>>` while holding `peers`, then drop the

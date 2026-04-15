@@ -131,6 +131,8 @@ pub async fn mock_peer_connection(is_outbound: bool) -> PeerConnection {
         creation_time: unix_secs(),
         bytes_read: 0,
         bytes_written: 0,
+        messages_sent: 0,
+        messages_received: 0,
         last_message_time: unix_secs(),
         reputation: PeerReputation::default(),
         inbound_rx,
