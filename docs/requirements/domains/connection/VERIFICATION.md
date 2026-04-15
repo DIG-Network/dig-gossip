@@ -8,7 +8,7 @@
 | ID      | Status | Summary                                          | Verification Approach                                                                      |
 |---------|--------|--------------------------------------------------|--------------------------------------------------------------------------------------------|
 | CON-001 | verified | Outbound connection via connect_peer() | `tests/con_001_tests.rs`: TLS load/generate/connector; WSS harness handshake + RequestPeers; `GossipHandle::connect_to` + `AddressManager` batch; `ClientError` → `GossipError`; peer field wiring / creation_time |
-| CON-002 | gap    | Inbound connection listener                      | Integration test: start listener, connect client, verify handshake exchange and addr mgr    |
+| CON-002 | verified | Inbound connection listener                    | `tests/con_002_tests.rs`: bind `:0`, TLS+WSS+Handshake, wrong network_id reject, PeerConnection inbound metadata, AddressManager batch, RespondPeers relay to live peer, max_connections cap; self-connection reject on non-Windows (cert-based PeerId) |
 | CON-003 | gap    | Handshake validation                             | Unit tests: reject mismatched network_id, reject bad protocol_version, sanitize versions    |
 | CON-004 | gap    | Keepalive via Ping/Pong                          | Integration test: verify Ping sent at 30s, disconnect on Pong timeout after 90s             |
 | CON-005 | gap    | Per-connection rate limiting                      | Unit test: create RateLimiter per connection with V2_RATE_LIMITS, verify DIG types added    |

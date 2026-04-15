@@ -16,27 +16,32 @@ use chia_protocol::TimestampedPeerInfo;
 
 use crate::types::peer::PeerInfo;
 
-/// Port of Chia `address_manager.py` — CON-001 records outbound discovery batches; DSC-001 expands structure.
+/// Port of Chia `address_manager.py` — CON-001 / CON-002 record discovery batches; DSC-001 expands structure.
 #[derive(Debug)]
 pub struct AddressManager {
-    /// Last `add_to_new_table` call (test introspection / future metrics).
-    last_new_batch: Mutex<Option<(Vec<TimestampedPeerInfo>, PeerInfo)>>,
+    /// Append-only log of [`Self::add_to_new_table`] calls (CON-002 may run after CON-001 outbound).
+    ///
+    /// **Test hook:** [`Self::__last_new_table_batch_for_tests`] returns the final entry so CON-001
+    /// assertions stay unchanged.
+    new_table_log: Mutex<Vec<(Vec<TimestampedPeerInfo>, PeerInfo)>>,
 }
 
 impl Default for AddressManager {
     fn default() -> Self {
         Self {
-            last_new_batch: Mutex::new(None),
+            new_table_log: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl AddressManager {
-    /// Append peers learned from `RequestPeers` / `RespondPeers` into the **new** table.
+    /// Append peers learned from `RequestPeers` / `RespondPeers` (outbound) or inbound acceptance
+    /// (CON-002) into the **new** table.
     ///
     /// **Parameters (Chia `node_discovery.py:135-136` shape):**
-    /// - `peer_list` — addresses returned by the remote full node.
-    /// - `src` — our view of **who told us** (outbound target as [`PeerInfo`]).
+    /// - `peer_list` — addresses returned by the remote full node **or** a single inbound peer row.
+    /// - `src` — attribution: for outbound this is the dialed peer; for inbound CON-002 this is
+    ///   [`PeerInfo`] describing **this service’s** listen endpoint (see [`CON-002.md`](../../../docs/requirements/domains/connection/specs/CON-002.md)).
     /// - `_source_time` — reserved for timestamp / horizon policy (DSC-001); unused in stub.
     ///
     /// **Async in spec:** DSC-001 will await bucket locks; synchronous stub keeps call sites simple.
@@ -47,18 +52,19 @@ impl AddressManager {
         _source_time: u32,
     ) {
         let mut g = self
-            .last_new_batch
+            .new_table_log
             .lock()
-            .expect("address_manager last_new_batch mutex poisoned");
-        *g = Some((peer_list.to_vec(), src.clone()));
+            .expect("address_manager new_table_log mutex poisoned");
+        g.push((peer_list.to_vec(), src.clone()));
     }
 
     /// Test hook: snapshot the last [`Self::add_to_new_table`] invocation (CON-001 verification).
     #[doc(hidden)]
     pub fn __last_new_table_batch_for_tests(&self) -> Option<(Vec<TimestampedPeerInfo>, PeerInfo)> {
-        self.last_new_batch
+        self.new_table_log
             .lock()
-            .expect("address_manager last_new_batch mutex poisoned")
-            .clone()
+            .expect("address_manager new_table_log mutex poisoned")
+            .last()
+            .cloned()
     }
 }

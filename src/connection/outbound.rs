@@ -109,7 +109,8 @@ fn remote_spki_der_from_ws(
     }
 }
 
-fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientError> {
+/// Reused by CON-002 inbound TLS (server-side peer cert) and outbound SPKI capture (CON-001).
+pub(crate) fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientError> {
     let (_, x509) = x509_parser::parse_x509_certificate(der).map_err(|e| {
         ClientError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
