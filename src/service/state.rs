@@ -46,10 +46,18 @@ pub(crate) struct StubPeer {
 }
 
 /// Live [`Peer`] handle after CON-001 outbound `wss://` + handshake (chia-sdk-client `Arc` inside).
+///
+/// **CON-003:** We retain the remote’s wire [`Handshake`](chia_protocol::Handshake) strings after
+/// policy validation so a future [`crate::types::peer::PeerConnection`] snapshot matches what we
+/// accepted (sanitized software version only).
 #[derive(Debug)]
 pub(crate) struct LiveSlot {
     pub meta: StubPeer,
     pub peer: Peer,
+    /// Remote [`Handshake::protocol_version`] after [`crate::connection::handshake::validate_remote_handshake`].
+    pub remote_protocol_version: String,
+    /// Remote [`Handshake::software_version`] after Cc/Cf strip (same bytes as [`PeerConnection::software_version`]).
+    pub remote_software_version_sanitized: String,
 }
 
 /// Either a **test-only stub** row or a **real** TLS peer (CON-001+).

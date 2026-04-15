@@ -230,7 +230,13 @@ fn test_cargo_toml_has_serde_deps() {
 fn test_cargo_toml_has_utility_deps() {
     let manifest = load_cargo_toml();
     let deps = dependencies_table(&manifest);
-    for name in ["tracing", "thiserror", "rand", "lru"] {
+    for name in [
+        "tracing",
+        "thiserror",
+        "rand",
+        "lru",
+        "unicode-general-category",
+    ] {
         assert!(
             deps.contains_key(name),
             "{name} must be declared in [dependencies]"
@@ -240,6 +246,10 @@ fn test_cargo_toml_has_utility_deps() {
     assert_eq!(dep_version(deps.get("thiserror").unwrap()), "2");
     assert_eq!(dep_version(deps.get("rand").unwrap()), "0.8");
     assert_eq!(dep_version(deps.get("lru").unwrap()), "0.12");
+    assert_eq!(
+        dep_version(deps.get("unicode-general-category").unwrap()),
+        "1.1"
+    );
 }
 
 #[test]

@@ -73,6 +73,9 @@ arti-client = { version = "0.41", optional = true, default-features = false, fea
 # SOCKS5 for Tor and hybrid outbound (feature `tor`).
 tokio-socks = { version = "0.5", optional = true }
 
+# CON-003 / CON-008 — Unicode General_Category **Cc** + **Cf** filtering (`sanitize_software_version`).
+unicode-general-category = "1.1"
+
 # ERLAY (SPEC Section 8.3) normally relies on a Minisketch binding. The
 # canonical crates.io release (`minisketch-rs`) pulls `bindgen`, which collides at
 # the Cargo **links** layer with `chia-sdk-client`’s optional `rustls` → `aws-lc-rs`
@@ -132,4 +135,10 @@ tor = ["dep:arti-client", "dep:tokio-socks"]
 [[test]]
 name = "con_002_tests"
 path = "tests/con_002_tests.rs"
+required-features = ["native-tls"]
+
+# CON-003 includes `connect_to` ↔ listener integration (`test_validation_both_directions`).
+[[test]]
+name = "con_003_tests"
+path = "tests/con_003_tests.rs"
 required-features = ["native-tls"]

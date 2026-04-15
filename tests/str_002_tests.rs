@@ -150,10 +150,18 @@ fn test_service_module_structure() {
 
 #[test]
 fn test_connection_module_structure() {
-    for f in ["src/connection/mod.rs", "src/connection/listener.rs"] {
+    for f in [
+        "src/connection/mod.rs",
+        "src/connection/handshake.rs",
+        "src/connection/outbound.rs",
+        "src/connection/listener.rs",
+    ] {
         assert_path_exists(f);
     }
-    assert_mod_rs_declares_pub_children("src/connection/mod.rs", &["listener"]);
+    assert_mod_rs_declares_pub_children(
+        "src/connection/mod.rs",
+        &["handshake", "outbound", "listener"],
+    );
 }
 
 #[test]
