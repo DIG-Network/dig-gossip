@@ -11,7 +11,10 @@ use dig_gossip::{
     PeerReputation, PenaltyReason, BAN_DURATION_SECS, PENALTY_BAN_THRESHOLD, RTT_WINDOW_SIZE,
 };
 
-/// **Row:** `test_reputation_default`
+/// **Row:** `test_reputation_default` -- fresh reputation has zero penalties, no ban, no RTT.
+///
+/// This proves the initial state for a newly connected peer: clean slate with neutral score.
+/// All subsequent reputation changes are relative to this baseline.
 #[test]
 fn test_reputation_default() {
     let r = PeerReputation::default();
@@ -25,7 +28,10 @@ fn test_reputation_default() {
     assert_eq!(r.as_number, None);
 }
 
-/// **Row:** `test_penalty_accumulation`
+/// **Row:** `test_penalty_accumulation` -- repeated penalties of the same type stack additively.
+///
+/// Two `ConnectionIssue` penalties (10 points each per CON-007) should yield 20 total.
+/// This proves the accumulation model is additive, not replacing or maxing.
 #[test]
 fn test_penalty_accumulation() {
     let mut r = PeerReputation::default();
@@ -37,7 +43,11 @@ fn test_penalty_accumulation() {
     );
 }
 
-/// **Row:** `test_auto_ban_at_threshold`
+/// **Row:** `test_auto_ban_at_threshold` -- crossing `PENALTY_BAN_THRESHOLD` triggers auto-ban.
+///
+/// Ten `ConnectionIssue` penalties (10 * 10 = 100 points) should cross the threshold,
+/// setting `is_banned = true` and `ban_until` to `t0 + BAN_DURATION_SECS`. This is the
+/// primary mechanism for ejecting misbehaving peers automatically.
 #[test]
 fn test_auto_ban_at_threshold() {
     let mut r = PeerReputation::default();
@@ -50,7 +60,11 @@ fn test_auto_ban_at_threshold() {
     assert!(r.penalty_points >= PENALTY_BAN_THRESHOLD);
 }
 
-/// **Row:** `test_ban_expiry`
+/// **Row:** `test_ban_expiry` -- bans are time-limited, not permanent.
+///
+/// After `InvalidBlock` (100 points, instant ban), `refresh_ban_status` at the exact
+/// `ban_until` boundary should still show banned (inclusive), but one second later the
+/// ban lifts. This proves the timed-ban model: peers get a second chance after cooling off.
 #[test]
 fn test_ban_expiry() {
     let mut r = PeerReputation::default();
@@ -65,7 +79,10 @@ fn test_ban_expiry() {
     assert_eq!(r.ban_until, None);
 }
 
-/// **Row:** `test_rtt_single_measurement`
+/// **Row:** `test_rtt_single_measurement` -- a single RTT sample sets `avg_rtt_ms` directly.
+///
+/// With one data point, the average equals the sample. This baseline is needed before
+/// testing the rolling window behavior.
 #[test]
 fn test_rtt_single_measurement() {
     let mut r = PeerReputation::default();
@@ -73,7 +90,11 @@ fn test_rtt_single_measurement() {
     assert_eq!(r.avg_rtt_ms, Some(42));
 }
 
-/// **Row:** `test_rtt_rolling_average`
+/// **Row:** `test_rtt_rolling_average` -- filling the window with identical values yields that value.
+///
+/// RTT_WINDOW_SIZE samples of 100ms each should produce avg=100ms and a full buffer.
+/// This proves the window caps at the expected size and the average calculation is correct
+/// for the uniform case.
 #[test]
 fn test_rtt_rolling_average() {
     let mut r = PeerReputation::default();
@@ -84,7 +105,11 @@ fn test_rtt_rolling_average() {
     assert_eq!(r.rtt_history.len(), RTT_WINDOW_SIZE);
 }
 
-/// **Row:** `test_rtt_circular_buffer`
+/// **Row:** `test_rtt_circular_buffer` -- oldest sample is evicted when window is full.
+///
+/// After filling with 1000ms samples, one 2000ms sample replaces the oldest entry.
+/// Sum = 9*1000 + 2000 = 11000, mean = 1100. This proves FIFO eviction and that the
+/// buffer never grows beyond `RTT_WINDOW_SIZE`.
 #[test]
 fn test_rtt_circular_buffer() {
     let mut r = PeerReputation::default();
@@ -99,7 +124,11 @@ fn test_rtt_circular_buffer() {
     assert_eq!(r.avg_rtt_ms, Some(1100));
 }
 
-/// **Row:** `test_score_computation`
+/// **Row:** `test_score_computation` -- score = trust_factor / avg_rtt_ms.
+///
+/// With a single 20ms RTT sample and implicit trust factor of 1.0, score = 1/20 = 0.05.
+/// Lower RTT = higher score, incentivizing fast peers. The tolerance `1e-9` handles
+/// floating-point imprecision.
 #[test]
 fn test_score_computation() {
     let mut r = PeerReputation::default();
@@ -111,7 +140,9 @@ fn test_score_computation() {
     );
 }
 
-/// **Row:** `test_score_zero_rtt`
+/// **Row:** `test_score_zero_rtt` -- zero RTT does not cause division-by-zero; score stays 0.
+///
+/// This edge case (loopback or broken clock) must not panic or produce infinity/NaN.
 #[test]
 fn test_score_zero_rtt() {
     let mut r = PeerReputation::default();
@@ -120,7 +151,11 @@ fn test_score_zero_rtt() {
     assert_eq!(r.score, 0.0);
 }
 
-/// **Row:** `test_penalty_points_saturating`
+/// **Row:** `test_penalty_points_saturating` -- points saturate at `u32::MAX` instead of wrapping.
+///
+/// Starting near `u32::MAX`, an `InvalidBlock` penalty (100 points) should clamp to MAX
+/// rather than overflowing. This prevents a wrap-around bug where a heavily penalized
+/// peer could suddenly appear clean.
 #[test]
 fn test_penalty_points_saturating() {
     let mut r = PeerReputation {
@@ -131,7 +166,10 @@ fn test_penalty_points_saturating() {
     assert_eq!(r.penalty_points, u32::MAX);
 }
 
-/// **Row:** `test_as_number_caching`
+/// **Row:** `test_as_number_caching` -- ASN slot stores and returns the cached value.
+///
+/// AS number is used for "one outbound per ASN" diversity policy. Storing 64512
+/// (a private ASN) proves the `Option<u32>` field works for both populated and empty states.
 #[test]
 fn test_as_number_caching() {
     let r = PeerReputation {
@@ -141,7 +179,10 @@ fn test_as_number_caching() {
     assert_eq!(r.as_number, Some(64_512));
 }
 
-/// **Row:** `test_penalty_reason_variants`
+/// **Row:** `test_penalty_reason_variants` -- all eight penalty reasons are constructible.
+///
+/// This exhaustiveness test ensures no variant was accidentally removed or renamed.
+/// If a new reason is added to the enum, this test should be updated to include it.
 #[test]
 fn test_penalty_reason_variants() {
     let _ = [
@@ -168,7 +209,10 @@ fn test_penalty_reason_clone_copy() {
     assert_eq!(a, c);
 }
 
-/// **Row:** `test_last_penalty_reason_updated`
+/// **Row:** `test_last_penalty_reason_updated` -- `apply_penalty` records the most recent reason.
+///
+/// Operators need to know *why* a peer was last penalized for debugging and ban review.
+/// The `last_penalty_reason` field provides this diagnostic breadcrumb.
 #[test]
 fn test_last_penalty_reason_updated() {
     let mut r = PeerReputation::default();

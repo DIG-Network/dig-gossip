@@ -103,11 +103,20 @@ fn assert_cargo_check(extra: &[&str]) {
     );
 }
 
+/// **Acceptance:** `src/lib.rs` exists -- the crate root is the first file STR-002 mandates.
+///
+/// Without it, nothing else in the module hierarchy can compile.
 #[test]
 fn test_lib_rs_exists() {
     assert_path_exists("src/lib.rs");
 }
 
+/// **Acceptance:** `src/types/` contains all STR-002 required files AND `mod.rs` declares
+/// each as `pub mod`.
+///
+/// Types module holds shared data structures (peer, config, stats, reputation, dig_messages)
+/// that are re-exported via STR-003 at the crate root. Missing files here mean broken
+/// re-exports downstream.
 #[test]
 fn test_types_module_structure() {
     for f in [
@@ -126,16 +135,22 @@ fn test_types_module_structure() {
     );
 }
 
+/// **Acceptance:** `src/constants.rs` exists -- holds crate-wide numeric constants
+/// (ports, thresholds, timeouts) referenced by API-003, API-006, CON-004, etc.
 #[test]
 fn test_constants_module_exists() {
     assert_path_exists("src/constants.rs");
 }
 
+/// **Acceptance:** `src/error.rs` exists -- the `GossipError` enum (API-004) lives here.
 #[test]
 fn test_error_module_exists() {
     assert_path_exists("src/error.rs");
 }
 
+/// **Acceptance:** `src/service/` contains `gossip_service.rs` and `gossip_handle.rs`,
+/// wired via `mod.rs`. This is where API-001 (constructor/lifecycle) and API-002
+/// (runtime handle) implementations live.
 #[test]
 fn test_service_module_structure() {
     for f in [
@@ -148,11 +163,14 @@ fn test_service_module_structure() {
     assert_mod_rs_declares_pub_children("src/service/mod.rs", &["gossip_service", "gossip_handle"]);
 }
 
+/// **Acceptance:** `src/connection/` contains handshake, keepalive, inbound limits, outbound,
+/// and listener submodules (CON-001..CON-005 surface area).
 #[test]
 fn test_connection_module_structure() {
     for f in [
         "src/connection/mod.rs",
         "src/connection/handshake.rs",
+        "src/connection/inbound_limits.rs",
         "src/connection/keepalive.rs",
         "src/connection/outbound.rs",
         "src/connection/listener.rs",
@@ -161,10 +179,13 @@ fn test_connection_module_structure() {
     }
     assert_mod_rs_declares_pub_children(
         "src/connection/mod.rs",
-        &["handshake", "keepalive", "listener", "outbound"],
+        &["handshake", "inbound_limits", "keepalive", "listener", "outbound"],
     );
 }
 
+/// **Acceptance:** `src/discovery/` contains the address manager, its persistent store,
+/// node discovery logic, introducer client, and introducer peers. These implement DSC-*
+/// requirements for peer discovery and address book management.
 #[test]
 fn test_discovery_module_structure() {
     for f in [
@@ -189,6 +210,9 @@ fn test_discovery_module_structure() {
     );
 }
 
+/// **Acceptance:** `src/relay/` contains relay client, service, and types -- all behind
+/// the `relay` feature gate (STR-004). These handle relay-assisted connectivity for
+/// NAT-traversal scenarios.
 #[test]
 fn test_relay_module_structure() {
     for f in [
@@ -205,6 +229,11 @@ fn test_relay_module_structure() {
     );
 }
 
+/// **Acceptance:** `src/gossip/` contains all gossip-layer submodules: plumtree epidemic
+/// broadcast, compact block relay, erlay set reconciliation, priority scheduling,
+/// backpressure control, broadcaster, seen-set deduplication, and message cache.
+/// Feature-gated submodules (`compact_block`, `erlay`) are verified separately in
+/// `test_gossip_mod_rs_feature_gates_optional_subsystems`.
 #[test]
 fn test_gossip_module_structure() {
     for f in [
@@ -235,6 +264,8 @@ fn test_gossip_module_structure() {
     );
 }
 
+/// **Acceptance:** `src/util/` contains IP address helpers, AS-number lookup, and latency
+/// measurement utilities used across the crate for peer scoring and grouping.
 #[test]
 fn test_util_module_structure() {
     for f in [
@@ -288,14 +319,20 @@ fn test_gossip_mod_rs_feature_gates_optional_subsystems() {
     );
 }
 
+/// **Acceptance:** `cargo check` with default features compiles the full STR-002 tree.
+///
+/// Default features include relay + erlay + compact-blocks + dandelion, so this exercises
+/// every module in the hierarchy. Failure means the layout is broken for production builds.
 #[test]
 fn test_module_compilation_default_features() {
-    // Default feature set includes relay + erlay + compact-blocks — exercises the full STR-002 tree.
     assert_cargo_check(&[]);
 }
 
+/// **Acceptance:** `cargo check` with only `rustls` (no relay/erlay/compact-blocks/dandelion).
+///
+/// Ensures cfg-split modules never assume optional features are always on. A failure here
+/// means some module has an unconditional `use` of a feature-gated type.
 #[test]
 fn test_module_compilation_tls_only_minimal_features() {
-    // Ensures cfg-split modules never assume relay/erlay/compact-blocks are always on.
     assert_cargo_check(&["--no-default-features", "--features", "rustls"]);
 }

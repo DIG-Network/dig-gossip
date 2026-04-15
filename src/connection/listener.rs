@@ -1,4 +1,26 @@
-//! Inbound P2P acceptance: [`tokio::net::TcpListener`] → TLS → WebSocket → [`chia_sdk_client::Peer`].
+//! Inbound P2P acceptance: [`tokio::net::TcpListener`] -> TLS -> WebSocket -> [`chia_sdk_client::Peer`].
+//!
+//! ## SPEC traceability
+//!
+//! - **SPEC §5.2** — full inbound connection sequence:
+//!   1. `TcpListener::accept()`
+//!   2. TLS handshake (using `chia-ssl` certificate)
+//!   3. `tokio_tungstenite::accept_async()`
+//!   4. `Peer::from_websocket(ws, options)`
+//!   5. Receive Handshake, validate `network_id`
+//!   6. Send Handshake response
+//!   7. Wrap in `PeerConnection`
+//!   8. Add to address manager "new" table (`node_discovery.py:120-125`)
+//!   9. Relay peer info (`node_discovery.py:126-127`)
+//! - **SPEC §5.3** — mandatory mutual TLS (mTLS) via `chia-ssl`:
+//!   "ALL peer-to-peer connections MUST use mutual TLS. Both client and server present
+//!   certificates." Matches Chia `server.py:54-71`, `server.py:67 verify_mode = ssl.CERT_REQUIRED`.
+//! - **SPEC §1.7 #4** — "Inbound connection listener": `chia-sdk-client`'s `Peer` only does
+//!   outbound connections; we add a `TcpListener` accepting inbound.
+//! - **SPEC §1.6 #2** — "Inbound peer relay": when an inbound connection arrives, add peer
+//!   to address manager and relay to other peers (`node_discovery.py:112-127`).
+//! - **SPEC §1.5 #8** — peer ban/trust: `ClientState::ban()` / `is_banned()` checked before
+//!   accepting inbound connections.
 //!
 //! **Normative:** [CON-002](../../../docs/requirements/domains/connection/specs/CON-002.md) /
 //! [NORMATIVE.md](../../../docs/requirements/domains/connection/NORMATIVE.md).
@@ -38,7 +60,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chia_protocol::{
@@ -56,7 +78,9 @@ use tokio_tungstenite::{accept_async, MaybeTlsStream, WebSocketStream};
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 use crate::connection::outbound::{network_id_handshake_string, spki_der_from_leaf_cert_der};
-use crate::service::state::{peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer};
+use crate::service::state::{
+    apply_inbound_rate_limit_violation, peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer,
+};
 use crate::types::peer::{peer_id_from_tls_spki_der, PeerId, PeerInfo};
 
 /// Maximum time we wait for the remote peer to send a [`ProtocolMessageTypes::Handshake`]
@@ -87,6 +111,10 @@ use native_tls::Identity;
 use tokio_native_tls::TlsAcceptor as TokioNativeTlsAcceptor;
 
 /// Build a [`TokioNativeTlsAcceptor`] from the node's [`ChiaCertificate`] (PEM key + cert).
+///
+/// SPEC §5.3 — "Certificate management: exclusively via `chia-ssl`. `ChiaCertificate::generate()`
+/// creates new node certificates on first run. `load_ssl_cert()` loads existing certificates."
+/// See also SPEC §1.5 #3 — TLS mutual authentication via `chia-ssl`.
 ///
 /// This is the **server-side** TLS identity used when accepting inbound connections on
 /// [`crate::types::config::GossipConfig::listen_addr`]. The certificate is typically generated
@@ -120,6 +148,9 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
 
 /// Extract the remote peer's **SubjectPublicKeyInfo** (SPKI) DER bytes from a server-side
 /// `native_tls` TLS stream after the TLS handshake completes.
+///
+/// SPEC §5.3 — "Peer identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
+/// Matches Chia's `peer_node_id` derivation from certificate hash (`ws_connection.py:95`).
 ///
 /// The SPKI is the raw ASN.1 blob containing the peer's public key algorithm + key material.
 /// We feed it into [`peer_id_from_tls_spki_der`] to derive the deterministic [`PeerId`]
@@ -231,7 +262,8 @@ async fn handle_inbound_native_inner(
         }
     };
 
-    // Step 3: Self-connection guard — Chia `full_node_server.py` drops connections to self.
+    // Step 3: Self-connection guard — SPEC §4 `GossipError::SelfConnection`.
+    // Chia `full_node_server.py` drops connections to self.
     if peer_id == state.config.peer_id {
         return Err(ClientError::Io(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
@@ -340,7 +372,12 @@ fn unix_secs_u64() -> u64 {
         .as_secs()
 }
 
-/// Relay the inbound peer’s [`TimestampedPeerInfo`] to every **existing** live connection (CON-002 §Peer Info Relay).
+/// Relay the inbound peer’s [`TimestampedPeerInfo`] to every **existing** live connection (CON-002 Peer Info Relay).
+///
+/// SPEC §1.6 #2 — "Inbound peer relay: When an inbound connection arrives, add peer to
+/// address manager and relay to other peers" (`node_discovery.py:112-127`).
+/// SPEC §1.1 — "Peer sharing via gossip": connected peers exchange peer lists periodically
+/// via `chia-protocol`’s `RequestPeers`/`RespondPeers`.
 ///
 /// **Mechanism:** Chia nodes often learn addresses via [`RespondPeers`]; we push a one-row list so
 /// address managers on already-connected peers can merge the newcomer (see Python `node_discovery.py`
@@ -521,6 +558,8 @@ async fn negotiate_inbound_over_ws(
     }
 
     // --- Phase 5: Register in the address manager (DSC-001 new-table bucketing) ---
+    // SPEC §5.2 step 8 — "Add to address manager 'new' table (node_discovery.py:120-125)."
+    // SPEC §6.3 — AddressManager (Rust port of address_manager.py, tried/new tables).
     let ts = unix_secs_u64();
     let new_row = TimestampedPeerInfo::new(
         remote_addr.ip().to_string(),
@@ -534,6 +573,7 @@ async fn negotiate_inbound_over_ws(
         .add_to_new_table(std::slice::from_ref(&new_row), &src, 0);
 
     // --- Phase 6: Relay the newcomer's address to all existing live peers ---
+    // SPEC §5.2 step 9 — "Relay peer info (node_discovery.py:126-127)."
     relay_new_peer_to_live_peers(&state, new_row).await?;
 
     // --- Phase 7: Upgrade to `Peer` (chia_sdk_client managed reader/writer) ---
@@ -541,17 +581,60 @@ async fn negotiate_inbound_over_ws(
     // the `Peer` handle (send) and the `inbound_rx` channel (receive).
     let (peer, mut inbound_rx) = Peer::from_websocket(ws, opts)?;
 
-    // --- Phase 8: Bridge inbound wire messages into the service broadcast channel ---
-    // This spawns a background task that reads from the per-connection `inbound_rx` and
-    // re-publishes `(PeerId, Message)` tuples on the shared broadcast channel that
-    // `GossipHandle` subscribers (API-002) consume.
+    // --- Phase 8: Per-connection inbound rate limiter (CON-005) + peer map insert ---
+    // SPEC §5.4 — "Inbound: create a separate RateLimiter for each connection"
+    // using `V2_RATE_LIMITS` from `chia-sdk-client`.
+    // [`LiveSlot`] must exist **before** the forwarder runs so rate-limit violations can update
+    // [`PeerReputation`] via [`apply_inbound_rate_limit_violation`].
+    let inbound_limiter = Arc::new(Mutex::new(
+        crate::connection::inbound_limits::new_inbound_rate_limiter(opts.rate_limit_factor),
+    ));
+    let meta = StubPeer {
+        remote: remote_addr,
+        node_type: their_handshake.node_type,
+        is_outbound: false, // This is the *inbound* path; outbound has its own insertion logic.
+    };
+    let peer_for_keepalive = peer.clone();
+    let lim = Arc::clone(&inbound_limiter);
+    let mut peers = state
+        .peers
+        .lock()
+        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
+    peers.insert(
+        peer_id,
+        PeerSlot::Live(LiveSlot {
+            meta,
+            peer,
+            remote_protocol_version,
+            remote_software_version_sanitized,
+            reputation: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::types::reputation::PeerReputation::default(),
+            )),
+            inbound_rate_limiter: Arc::clone(&inbound_limiter),
+        }),
+    );
+    drop(peers);
+
+    // --- Phase 9: Bridge inbound wire messages into the service broadcast channel ---
+    // CON-005: [`RateLimiter::handle_message`] must approve each frame before CON-004 keepalive
+    // auto-replies and before the `(PeerId, Message)` publish.
     if let Ok(guard) = state.inbound_tx.lock() {
         if let Some(tx_b) = guard.as_ref() {
             let tx: broadcast::Sender<(PeerId, Message)> = tx_b.clone();
             let pid_task = peer_id;
-            let peer_rpc = peer.clone();
+            let peer_rpc = peer_for_keepalive.clone();
+            let state_fwd = state.clone();
+            let lim_fwd = lim;
             tokio::spawn(async move {
                 while let Some(msg) = inbound_rx.recv().await {
+                    let allowed = lim_fwd
+                        .lock()
+                        .map(|mut g| g.handle_message(&msg))
+                        .unwrap_or(true);
+                    if !allowed {
+                        apply_inbound_rate_limit_violation(&state_fwd, pid_task);
+                        continue;
+                    }
                     if msg.msg_type == ProtocolMessageTypes::RequestPeers {
                         if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
                             let reply = Message {
@@ -570,30 +653,6 @@ async fn negotiate_inbound_over_ws(
         }
     }
 
-    // --- Phase 9: Insert the fully-negotiated peer into the peer map ---
-    let meta = StubPeer {
-        remote: remote_addr,
-        node_type: their_handshake.node_type,
-        is_outbound: false, // This is the *inbound* path; outbound has its own insertion logic.
-    };
-    let peer_for_keepalive = peer.clone(); // Clone the Arc<Peer> before moving into LiveSlot.
-    let mut peers = state
-        .peers
-        .lock()
-        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
-    peers.insert(
-        peer_id,
-        PeerSlot::Live(LiveSlot {
-            meta,
-            peer,
-            remote_protocol_version,
-            remote_software_version_sanitized,
-            reputation: std::sync::Mutex::new(crate::types::reputation::PeerReputation::default()),
-        }),
-    );
-    // Drop the lock before spawning async work to avoid holding it across an await point.
-    drop(peers);
-
     // --- Phase 10: Start the keepalive loop for this connection (CON-004) ---
     crate::connection::keepalive::spawn_keepalive_task(state.clone(), peer_id, peer_for_keepalive);
 
@@ -605,6 +664,10 @@ async fn negotiate_inbound_over_ws(
 }
 
 /// Main accept loop: one OS listener, many spawned per-connection tasks (CON-002 acceptance matrix).
+///
+/// SPEC §5.2 — inbound connection flow starts at `TcpListener::accept()`.
+/// SPEC §2.10 — `GossipConfig::max_connections` caps total peer slots; new TCP connections
+/// are dropped if this limit is reached.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 pub(crate) async fn accept_loop(
     state: Arc<ServiceState>,

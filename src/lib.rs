@@ -100,6 +100,10 @@ pub use types::config::{
     DEFAULT_INTRODUCER_NETWORK_ID,
 };
 pub use types::dig_messages::{DigMessageType, UnknownDigMessageType};
+/// CON-005 — inbound [`RateLimits`](chia_sdk_client::RateLimits) (`V2` + DIG `dig_wire`) and ctor.
+pub use connection::inbound_limits::{
+    dig_extension_rate_limits_map, gossip_inbound_rate_limits, new_inbound_rate_limiter,
+};
 pub use types::peer::{
     peer_id_from_tls_spki_der, ExtendedPeerInfo, PeerConnection, PeerId, PeerInfo,
 };
@@ -114,6 +118,14 @@ pub use error::GossipError;
 
 pub use service::gossip_handle::GossipHandle;
 pub use service::gossip_service::GossipService;
+/// CON-005 / STR-005 — deterministic stub [`PeerId`], shared runtime state, and inbound rate-limit penalty hook.
+///
+/// [`ServiceState`] is normally owned inside [`GossipService`]; it is exported so integration
+/// tests can assert defensive paths (e.g. rate-limit violation on a missing peer id) without
+/// private-module `pub use` gymnastics.
+pub use service::state::{
+    apply_inbound_rate_limit_violation, peer_id_for_addr, ServiceState,
+};
 
 /// Relay protocol types — only when `relay` feature is enabled (matches STR-003 notes).
 #[cfg(feature = "relay")]

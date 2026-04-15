@@ -149,10 +149,10 @@ impl PenaltyReason {
 ///
 /// # Ownership
 ///
-/// Each [`crate::service::state::LiveSlot`] owns a `Mutex<PeerReputation>`. The mutex
-/// is locked briefly by the keepalive task (to record RTT) and by penalty paths (to
-/// accumulate points). There is no cross-peer locking — each peer's reputation is
-/// independent.
+/// Each [`crate::service::state::LiveSlot`] holds `Arc<Mutex<PeerReputation>>` so code can
+/// clone the `Arc`, release the peer-map lock, then update reputation without nested-guard
+/// lifetime errors. The mutex is locked briefly by the keepalive task (RTT) and penalty
+/// paths. There is no cross-peer locking — each peer's reputation is independent.
 ///
 /// # Invariants
 ///

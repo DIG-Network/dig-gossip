@@ -52,10 +52,14 @@ items:
   - id: CON-005
     section: "5.3"
     summary: "Per-connection rate limiting"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#53-rate-limiting"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_005_tests.rs
+    notes: >
+      connection/inbound_limits.rs: V2_RATE_LIMITS clone + dig_wire 200–208; vendor RateLimiter dig extension path;
+      LiveSlot.inbound_rate_limiter + reputation Arc<Mutex> for nested-lock safety; listener + gossip_handle forwarders
+      gate on handle_message before broadcast; apply_inbound_rate_limit_violation → RateLimitExceeded penalty.
   - id: CON-006
     section: "2.4"
     summary: "Connection metrics tracking"

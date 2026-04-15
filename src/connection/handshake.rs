@@ -1,5 +1,14 @@
 //! CON-003 — validate remote [`Handshake`] before accepting a P2P session.
 //!
+//! ## SPEC traceability
+//!
+//! - **SPEC §5.1 step 3** — outbound: `connect_peer()` “receives and validates Handshake response”.
+//! - **SPEC §5.2 step 5** — inbound: “Receive Handshake, validate `network_id`.”
+//! - **SPEC §1.5 #1** — capabilities negotiated via `chia-protocol::Handshake` (`connect_peer()`
+//!   sends capabilities list). Validation here ensures the remote meets DIG compatibility.
+//! - **SPEC §1.5 #7** — `connect_peer()` rejects peers with mismatched `network_id`.
+//! - **SPEC §1.4** — `Handshake` type used directly from `chia-protocol` (not redefined).
+//!
 //! ## Normative trace
 //!
 //! - [`CON-003.md`](../../../docs/requirements/domains/connection/specs/CON-003.md) (test plan + acceptance criteria)
@@ -47,7 +56,11 @@ pub const MIN_COMPATIBLE_PROTOCOL_VERSION: &str = "0.0.30";
 pub const ADVERTISED_PROTOCOL_VERSION: &str = "0.0.37";
 
 /// Sanitize [`Handshake::software_version`] by removing Unicode **Cc** (control) and **Cf** (format)
-/// characters — mirrors Chia `ws_connection.py` behavior referenced in CON-003 / CON-008.
+/// characters — mirrors Chia `ws_connection.py:61-63` behavior referenced in CON-003 / CON-008.
+///
+/// SPEC §1.6 #1 — "Peer exchange on outbound connect" implies the handshake carries metadata
+/// whose `software_version` must be sanitized before storage. Chia equivalent:
+/// `ws_connection.py:61-63` strips control characters from the version string.
 ///
 /// ## Empty result
 ///
@@ -78,6 +91,9 @@ fn parse_protocol_triple(version: &str) -> Option<(u32, u32, u32)> {
 
 /// `true` if `version` parses and is **≥** [`MIN_COMPATIBLE_PROTOCOL_VERSION`] lexicographically
 /// as a `(major, minor, patch)` triple.
+///
+/// SPEC §1.5 #7 — `connect_peer()` rejects peers with mismatched `network_id`; this function
+/// extends that gate to protocol version compatibility so DIG can reject outdated peers.
 pub fn is_compatible_protocol_version(version: &str) -> bool {
     let Some(peer) = parse_protocol_triple(version) else {
         return false;
@@ -90,6 +106,10 @@ pub fn is_compatible_protocol_version(version: &str) -> bool {
 }
 
 /// Structured failure before the connection is accepted — converted to [`ClientError`] at the edge.
+///
+/// SPEC §5.1 step 3 / §5.2 step 5 — handshake validation can fail for network mismatch,
+/// incompatible protocol version, or oversized software version. Each variant maps to a
+/// specific wire-level rejection reason.
 ///
 /// **Tests:** unit tests match on this enum; production code maps into [`ClientError`] immediately.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -136,6 +156,11 @@ impl From<HandshakeValidationError> for ClientError {
 
 /// Validate `their_handshake` against our expected network id string (hex genesis id from
 /// [`crate::connection::outbound::network_id_handshake_string`]).
+///
+/// SPEC §5.1 step 3 — “Receives and validates Handshake response” (outbound path).
+/// SPEC §5.2 step 5 — “Receive Handshake, validate `network_id`” (inbound path).
+/// SPEC §1.1 — “Chia protocol parity”: the handshake, message framing, and peer exchange
+/// protocols match Chia's networking protocol.
 ///
 /// Returns the **sanitized** software version string for storage on [`crate::service::state::LiveSlot`]
 /// / future [`crate::types::peer::PeerConnection`] (CON-003 acceptance: “stored sanitized”).

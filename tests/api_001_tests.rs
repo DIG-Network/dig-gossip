@@ -17,6 +17,9 @@ use dig_gossip::{Bytes32, GossipError, GossipService};
 
 /// **Row:** `test_new_with_valid_config` — construct with a coherent harness config.
 ///
+/// Proves SPEC §3.1 — `GossipService::new(config) -> Result<Self, GossipError>`.
+/// SPEC §5.3 — TLS is set up via chia-ssl (load_ssl_cert / ChiaCertificate::generate()).
+///
 /// **Why it proves API-001:** acceptance requires `GossipService::new(config) -> Result<Self, GossipError>`
 /// and successful allocation of internal placeholders (TLS + maps) without panicking.
 #[test]
@@ -32,10 +35,15 @@ fn test_new_with_valid_config() {
     );
 }
 
-/// **Row:** `test_new_generates_cert_when_missing` — PEM files absent under fresh paths.
+/// **Row:** `test_new_generates_cert_when_missing` -- PEM files absent under fresh paths.
+///
+/// Proves SPEC §5.3 — certificate management: ChiaCertificate::generate() creates new node
+/// certificates on first run. load_ssl_cert() loads existing certificates on subsequent runs.
 ///
 /// **Why:** [`chia_sdk_client::load_ssl_cert`] generates when reads fail; API-001 requires that
-/// policy to persist PEMs for later runs (upstream writes in `tls.rs`).
+/// policy to persist PEMs for later runs (upstream writes in `tls.rs`). The test verifies
+/// that after `GossipService::new`, the cert and key files exist on disk, proving the
+/// auto-generation path works for first-run scenarios.
 #[test]
 fn test_new_generates_cert_when_missing() {
     let dir = common::test_temp_dir();
@@ -51,7 +59,12 @@ fn test_new_generates_cert_when_missing() {
     assert!(std::path::Path::new(&dir.path().join("fresh.key")).exists());
 }
 
-/// **Row:** `test_new_loads_existing_cert` — reuse PEMs written by the harness.
+/// **Row:** `test_new_loads_existing_cert` -- reuse PEMs written by the harness.
+///
+/// SPEC §5.3 — load_ssl_cert() loads existing certificates on subsequent runs.
+///
+/// Creates a service, drops it, then creates a second service with the same cert paths.
+/// Both must succeed, proving that existing PEM files are loaded rather than overwritten.
 #[test]
 fn test_new_loads_existing_cert() {
     let dir = common::test_temp_dir();
@@ -65,7 +78,13 @@ fn test_new_loads_existing_cert() {
     drop(second);
 }
 
-/// **Row:** `test_new_invalid_cert_path` — cert path unusable (directory), expect stable I/O error.
+/// **Row:** `test_new_invalid_cert_path` -- cert path unusable (directory), expect stable I/O error.
+///
+/// SPEC §4 — GossipError::IoError wraps filesystem/network I/O error messages.
+///
+/// Using the temp directory itself as the "cert file" forces a read/write failure that is
+/// distinct from "missing file" (which triggers generation). This ensures the error
+/// propagation path produces a `GossipError::IoError` rather than panicking.
 #[test]
 fn test_new_invalid_cert_path() {
     let dir = common::test_temp_dir();
@@ -99,6 +118,9 @@ fn test_new_does_not_start_networking() {
 }
 
 /// **Row:** `test_start_returns_handle` — `start().await` yields a usable [`dig_gossip::GossipHandle`].
+///
+/// Proves SPEC §3.2 — `GossipService::start() -> Result<GossipHandle, GossipError>`.
+/// SPEC §3.3 — GossipHandle is the cheaply cloneable runtime interface.
 #[tokio::test]
 async fn test_start_returns_handle() {
     let dir = common::test_temp_dir();
@@ -121,7 +143,9 @@ async fn test_start_twice_fails() {
     assert!(matches!(err, GossipError::AlreadyStarted));
 }
 
-/// **Row:** `test_stop_disconnects_peers` — with zero peers (pre–CON-001), `stop` completes cleanly.
+/// **Row:** `test_stop_disconnects_peers` — with zero peers (pre-CON-001), `stop` completes cleanly.
+///
+/// Proves SPEC §3.2 — `GossipService::stop()`: gracefully disconnect all peers, stop discovery, close relay.
 ///
 /// **Future:** extend with mock peers once connection map is populated.
 #[tokio::test]
@@ -136,6 +160,8 @@ async fn test_stop_disconnects_peers() {
 
 /// **Row:** `test_handle_after_stop` — [`dig_gossip::GossipHandle::health_check`] returns
 /// [`GossipError::ServiceNotStarted`] after [`GossipService::stop`].
+///
+/// SPEC §4 — GossipError::ServiceNotStarted: returned when handle methods called after stop().
 #[tokio::test]
 async fn test_handle_after_stop() {
     let dir = common::test_temp_dir();
@@ -149,6 +175,12 @@ async fn test_handle_after_stop() {
 }
 
 /// **Extra:** invalid `network_id` (all zero) must fail fast with [`GossipError::InvalidConfig`].
+///
+/// SPEC §2.10 — GossipConfig.network_id (e.g., SHA256("dig_mainnet")).
+/// SPEC §1.5#7 — network_id validation: connect_peer() rejects peers with mismatched network_id.
+///
+/// A zeroed-out network_id (Bytes32::default) is invalid because it could cause the node
+/// to accidentally connect to peers on any network. The constructor must reject this upfront.
 #[test]
 fn test_new_rejects_zero_network_id() {
     let dir = common::test_temp_dir();
@@ -160,6 +192,12 @@ fn test_new_rejects_zero_network_id() {
 }
 
 /// **Extra:** outbound target cannot exceed connection cap (API-001 validation bullet).
+///
+/// SPEC §2.10 — GossipConfig.target_outbound_count (default: 8), max_connections (default: 50).
+///
+/// Setting `target_outbound_count = 100` with `max_connections = 10` is contradictory:
+/// the node would try to maintain 100 outbound connections but can only hold 10 total.
+/// The constructor catches this and returns `InvalidConfig`.
 #[test]
 fn test_new_rejects_bad_connection_limits() {
     let dir = common::test_temp_dir();
