@@ -24,6 +24,7 @@ use chia_protocol::{
 };
 use chia_ssl::ChiaCertificate;
 use chia_traits::Streamable;
+use dig_gossip::{RequestPeersIntroducer, RespondPeersIntroducer};
 use futures_util::{SinkExt, StreamExt};
 use native_tls::{Identity, TlsAcceptor};
 use tokio::net::TcpListener;
@@ -164,6 +165,113 @@ pub async fn spawn_one_shot_full_node(
         let tls = acceptor.accept(tcp).await.map_err(|e| e.to_string())?;
         let ws = accept_async(tls).await.map_err(|e| e.to_string())?;
         serve_one_client(ws, &network_id, peer_list).await
+    });
+    (addr, jh)
+}
+
+/// One-shot **introducer** acceptor for DSC-004: handshake, then `RequestPeersIntroducer` → `RespondPeersIntroducer`.
+///
+/// * `client_expected_network_id` — must match the client’s outbound [`Handshake::network_id`].
+/// * `server_handshake_network_id` — placed in the server’s [`Handshake`] reply; use a **different**
+///   string than `client_expected_network_id` to force a [`chia_sdk_client::ClientError::WrongNetwork`]
+///   failure path in tests.
+/// * `stall_after_request_peers_introducer` — after reading [`RequestPeersIntroducer`], sleep instead
+///   of replying so client-side timeouts can be exercised.
+async fn serve_introducer_one_client(
+    mut ws: Ws,
+    client_expected_network_id: &str,
+    server_handshake_network_id: &str,
+    peer_list: Vec<TimestampedPeerInfo>,
+    stall_after_request_peers_introducer: bool,
+) -> Result<(), String> {
+    let first = next_chia_message(&mut ws).await?;
+    if first.msg_type != ProtocolMessageTypes::Handshake {
+        return Err(format!("expected Handshake, got {:?}", first.msg_type));
+    }
+    let hs = Handshake::from_bytes(&first.data).map_err(|e| e.to_string())?;
+    if hs.network_id != client_expected_network_id {
+        return Err(format!(
+            "client network_id mismatch: got {} expect {}",
+            hs.network_id, client_expected_network_id
+        ));
+    }
+
+    let reply_hs = Handshake {
+        network_id: server_handshake_network_id.to_string(),
+        protocol_version: "0.0.37".to_string(),
+        software_version: "dig-gossip-test-introducer/0".to_string(),
+        server_port: 0,
+        node_type: NodeType::FullNode,
+        capabilities: vec![],
+    };
+    let out = Message {
+        msg_type: ProtocolMessageTypes::Handshake,
+        id: None,
+        data: reply_hs.to_bytes().map_err(|e| e.to_string())?.into(),
+    };
+    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let third = next_chia_message(&mut ws).await?;
+    if third.msg_type != ProtocolMessageTypes::RequestPeersIntroducer {
+        return Err(format!(
+            "expected RequestPeersIntroducer, got {:?}",
+            third.msg_type
+        ));
+    }
+    let _req = RequestPeersIntroducer::from_bytes(&third.data).map_err(|e| e.to_string())?;
+
+    if stall_after_request_peers_introducer {
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        return Ok(());
+    }
+
+    let resp = RespondPeersIntroducer::new(peer_list);
+    let out = Message {
+        msg_type: ProtocolMessageTypes::RespondPeersIntroducer,
+        id: third.id,
+        data: resp.to_bytes().map_err(|e| e.to_string())?.into(),
+    };
+    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Bind `127.0.0.1:0`, accept one TLS+WS client, run the DSC-004 introducer wire sequence.
+///
+/// Returns the bound [`SocketAddr`] (use `wss://127.0.0.1:{port}/ws` on the client) and a join handle
+/// for the server task.
+pub async fn spawn_one_shot_introducer(
+    cert: ChiaCertificate,
+    client_expected_network_id: String,
+    server_handshake_network_id: String,
+    peer_list: Vec<TimestampedPeerInfo>,
+    stall_after_request_peers_introducer: bool,
+) -> (SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind introducer test listener");
+    let addr = listener.local_addr().expect("local_addr");
+    let jh = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let identity = Identity::from_pkcs8(cert.cert_pem.as_bytes(), cert.key_pem.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let acceptor = TlsAcceptor::builder(identity)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let acceptor = TokioTlsAcceptor::from(acceptor);
+        let tls = acceptor.accept(tcp).await.map_err(|e| e.to_string())?;
+        let ws = accept_async(tls).await.map_err(|e| e.to_string())?;
+        serve_introducer_one_client(
+            ws,
+            &client_expected_network_id,
+            &server_handshake_network_id,
+            peer_list,
+            stall_after_request_peers_introducer,
+        )
+        .await
     });
     (addr, jh)
 }

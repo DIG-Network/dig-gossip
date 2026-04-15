@@ -65,8 +65,9 @@ pub mod privacy;
 // ---------------------------------------------------------------------------
 // Chia crates (NOT reimplemented)
 // ---------------------------------------------------------------------------
-// Introducer opcodes (`RequestPeersIntroducer`, `RespondPeersIntroducer`) live on
-// [`ProtocolMessageTypes`] in `chia-protocol` 0.26 — they are not standalone structs.
+// Introducer request/response **wire types** (opcodes 63/64) are defined in-tree — see
+// [`discovery::introducer_wire`](crate::discovery::introducer_wire) — `chia-protocol` 0.26 exposes
+// only [`ProtocolMessageTypes::RequestPeersIntroducer`] / [`RespondPeersIntroducer`] enum variants.
 pub use chia_protocol::{
     Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
     NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
@@ -86,6 +87,7 @@ pub use chia_sdk_client::{
 };
 pub use chia_ssl::ChiaCertificate;
 pub use chia_traits::Streamable;
+pub use discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
 
 // ---------------------------------------------------------------------------
 // DIG-specific (implemented here)

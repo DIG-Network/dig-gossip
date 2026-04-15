@@ -72,17 +72,17 @@ fn test_reexport_protocol_message_types() {
     assert_send_sync::<dig_gossip::ProtocolMessageTypes>();
 }
 
-/// **Acceptance:** Introducer operations are accessible as `ProtocolMessageTypes` variants.
+/// **Acceptance:** Introducer opcodes are visible on [`ProtocolMessageTypes`] **and** wire structs
+/// exist at the crate root for DSC-004 (`dig_gossip::{RequestPeersIntroducer, RespondPeersIntroducer}`).
 ///
-/// The SPEC lists `RequestPeersIntroducer` / `RespondPeersIntroducer` as types; in
-/// `chia-protocol` 0.26 they are enum *variants*, not standalone structs. This test
-/// proves STR-003's intent (introducer ops available to downstream) is satisfied by
-/// the variant path rather than a free-standing re-export.
+/// `chia-protocol` 0.26 names opcodes **63** / **64** only on the enum; DIG defines streamable bodies
+/// in `src/discovery/introducer_wire.rs` (re-exported per STR-003) so `Peer::request_infallible` can run.
 #[test]
 fn test_introducer_ops_are_protocol_message_variants() {
     use dig_gossip::ProtocolMessageTypes as M;
     let _ = M::RequestPeersIntroducer;
     let _ = M::RespondPeersIntroducer;
+    let _: dig_gossip::RequestPeersIntroducer = dig_gossip::RequestPeersIntroducer::new();
 }
 
 /// **Acceptance:** `Peer` (chia-sdk-client WebSocket handle) is re-exported.
@@ -215,20 +215,20 @@ fn test_full_import_set() {
     #![allow(unused_imports)]
     use dig_gossip::{
         aggregate_peer_connection_io, apply_inbound_rate_limit_violation,
-        dig_extension_rate_limits_map, load_ssl_cert, message_wire_len, metric_unix_timestamp_secs,
-        peer_id_for_addr, peer_id_from_tls_spki_der, AddressManager, PeerConnectionWireMetrics,
-        ServiceState,
-        BackpressureConfig, Bytes32, ChiaCertificate, ChiaProtocolMessage, Client, ClientError,
-        ClientState, DigMessageType, ExtendedPeerInfo, FullBlock, GossipConfig, GossipError,
-        GossipHandle, GossipService, GossipStats, gossip_inbound_rate_limits, Handshake,
-        IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, new_inbound_rate_limiter,
-        NewPeak, NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection, PeerId,
-        PeerIdRotationConfig, PeerInfo, PeerOptions, PeerReputation, PenaltyReason,
-        ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits, RelayConfig, RelayStats,
-        RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
-        RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
-        RespondUnfinishedBlock, SpendBundle, Streamable, TimestampedPeerInfo,
-        UnknownDigMessageType, VettedPeer, DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
+        dig_extension_rate_limits_map, gossip_inbound_rate_limits, load_ssl_cert, message_wire_len,
+        metric_unix_timestamp_secs, new_inbound_rate_limiter, peer_id_for_addr,
+        peer_id_from_tls_spki_der, AddressManager, BackpressureConfig, Bytes32, ChiaCertificate,
+        ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType, ExtendedPeerInfo,
+        FullBlock, GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
+        IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, NewPeak,
+        NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection,
+        PeerConnectionWireMetrics, PeerId, PeerIdRotationConfig, PeerInfo, PeerOptions,
+        PeerReputation, PenaltyReason, ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits,
+        RelayConfig, RelayStats, RequestBlock, RequestBlocks, RequestMempoolTransactions,
+        RequestPeers, RequestTransaction, RequestUnfinishedBlock, RespondBlock, RespondBlocks,
+        RespondPeers, RespondTransaction, RespondUnfinishedBlock, ServiceState, SpendBundle,
+        Streamable, TimestampedPeerInfo, UnknownDigMessageType, VettedPeer,
+        DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
     };
 }
 

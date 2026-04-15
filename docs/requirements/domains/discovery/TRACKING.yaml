@@ -36,10 +36,14 @@ items:
   - id: DSC-004
     section: "6.5"
     summary: "Introducer query (get_peers)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#65-introducer-client-dig-extension"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_004_tests.rs
+    notes: >
+      introducer_client.rs: IntroducerClient::query_peers (WSS+mTLS, Handshake, request_infallible RequestPeersIntroducer);
+      introducer_wire.rs: streamable wire types for opcodes 63/64; GossipHandle::discover_from_introducer delegates here.
+      STR-005 wss_full_node::spawn_one_shot_introducer for integration tests.
   - id: DSC-005
     section: "6.5"
     summary: "Introducer registration (register_peer)"
