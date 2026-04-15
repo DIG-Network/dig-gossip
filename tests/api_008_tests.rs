@@ -22,6 +22,12 @@ use dig_gossip::{
     NodeType, RelayConfig, RelayStats, RequestPeers, Streamable,
 };
 
+/// Spin up a [`GossipService`] with harness defaults and return both the service (for
+/// lifecycle control) and the [`GossipHandle`] (for stats queries and stub-peer
+/// registration).
+///
+/// Binds `127.0.0.1:0` (OS-assigned port), uses freshly generated TLS certs, and has
+/// no relay configured. Used by every integration test in this file.
 async fn running_handle() -> (GossipService, GossipHandle) {
     let dir = common::test_temp_dir();
     let _ = common::generate_test_certs(dir.path());
@@ -31,11 +37,23 @@ async fn running_handle() -> (GossipService, GossipHandle) {
     (svc, h)
 }
 
+/// Build a minimal [`NewPeak`] message for broadcast counter tests.
+///
+/// All hash fields are zeroed; height/weight are non-zero so the message is
+/// distinguishable from default. The exact values are irrelevant — only the
+/// serialized byte count matters for `bytes_sent` verification, and the message
+/// type (`ProtocolMessageTypes::NewPeak`) matters for `messages_sent`.
+/// Used by: `test_stats_cumulative_messages`.
 fn sample_new_peak() -> NewPeak {
     let z = Bytes32::default();
     NewPeak::new(z, 1, 1, 0, z)
 }
 
+/// Field-by-field equality check for [`GossipStats`].
+///
+/// Why not `assert_eq!(a, b)`? `GossipStats` derives `Clone` and `Debug` but the
+/// test plan explicitly requires per-field assertions so each field mismatch produces
+/// a targeted error message. Used by: `test_gossip_stats_clone`.
 fn assert_gossip_stats_equal(a: &GossipStats, b: &GossipStats) {
     assert_eq!(a.total_connections, b.total_connections);
     assert_eq!(a.connected_peers, b.connected_peers);
@@ -51,6 +69,10 @@ fn assert_gossip_stats_equal(a: &GossipStats, b: &GossipStats) {
     assert_eq!(a.relay_peer_count, b.relay_peer_count);
 }
 
+/// Field-by-field equality check for [`RelayStats`].
+///
+/// Same rationale as [`assert_gossip_stats_equal`] — each field gets a distinct failure
+/// message. Used by: `test_relay_stats_clone`, `test_relay_stats_some_with_relay`.
 fn assert_relay_stats_equal(a: &RelayStats, b: &RelayStats) {
     assert_eq!(a.connected, b.connected);
     assert_eq!(a.messages_sent, b.messages_sent);
@@ -63,7 +85,25 @@ fn assert_relay_stats_equal(a: &RelayStats, b: &RelayStats) {
     assert_eq!(a.latency_ms, b.latency_ms);
 }
 
-/// **Row:** `test_gossip_stats_default` — API-008 default field values.
+/// **Row:** `test_gossip_stats_default` — every field of `GossipStats::default()` matches
+/// the zero/false baseline mandated by SPEC Section 3.4 and the `Default` derive.
+///
+/// **Acceptance criterion:** "GossipStats::default() has all numeric fields at 0, bools
+/// at false" (API-008 spec).
+/// **How setup creates precondition:** `GossipStats::default()` — no service needed; this
+/// is a pure struct test.
+/// **What each assertion proves:**
+/// - `total_connections == 0`: cumulative counter starts at zero.
+/// - `connected_peers == 0`: snapshot counter starts at zero.
+/// - `inbound_connections == 0` / `outbound_connections == 0`: direction split starts empty.
+/// - `messages_sent == 0` / `messages_received == 0`: cumulative I/O counters start at zero.
+/// - `bytes_sent == 0` / `bytes_received == 0`: byte counters start at zero.
+/// - `known_addresses == 0`: address manager is empty.
+/// - `seen_messages == 0`: dedup set is empty.
+/// - `relay_connected == false`: relay is not active.
+/// - `relay_peer_count == 0`: no relay peers known.
+/// **Why sufficient:** Exercises every public field in one shot; if a field were missing
+/// or had a non-zero default, this test would fail at compile time or assertion time.
 #[test]
 fn test_gossip_stats_default() {
     let s = GossipStats::default();
@@ -77,7 +117,7 @@ fn test_gossip_stats_default() {
     assert_eq!(s.bytes_received, 0);
     assert_eq!(s.known_addresses, 0);
     assert_eq!(s.seen_messages, 0);
-    assert!(!s.relay_connected);
+    assert!(!s.relay_connected); // false, not true — relay is inactive by default
     assert_eq!(s.relay_peer_count, 0);
 }
 

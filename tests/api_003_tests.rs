@@ -70,6 +70,8 @@ fn test_config_all_fields_exist() {
         #[cfg(feature = "erlay")]
         erlay: Some(ErlayConfig::default()),
         backpressure: Some(BackpressureConfig::default()),
+        keepalive_ping_interval_secs: Some(7),
+        keepalive_peer_timeout_secs: Some(42),
     };
 
     assert_eq!(cfg.listen_addr, "192.0.2.1:9000".parse().unwrap());
@@ -94,6 +96,8 @@ fn test_config_all_fields_exist() {
     #[cfg(feature = "erlay")]
     assert!(cfg.erlay.is_some());
     assert!(cfg.backpressure.is_some());
+    assert_eq!(cfg.keepalive_ping_interval_secs, Some(7));
+    assert_eq!(cfg.keepalive_peer_timeout_secs, Some(42));
 }
 
 // --------------------------------------------------------------------------- test plan: default rows
@@ -172,6 +176,8 @@ fn test_config_default_optional_subsystems_none() {
     #[cfg(feature = "erlay")]
     assert!(c.erlay.is_none());
     assert!(c.backpressure.is_none());
+    assert!(c.keepalive_ping_interval_secs.is_none());
+    assert!(c.keepalive_peer_timeout_secs.is_none());
 }
 
 /// **Row:** `test_config_peer_options_type` — field is `chia_sdk_client::PeerOptions`.

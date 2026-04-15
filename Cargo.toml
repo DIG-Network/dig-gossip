@@ -142,3 +142,14 @@ required-features = ["native-tls"]
 name = "con_003_tests"
 path = "tests/con_003_tests.rs"
 required-features = ["native-tls"]
+
+# CON-004 keepalive + RTT + disconnect hooks (`tests/con_004_tests.rs`).
+[[test]]
+name = "con_004_tests"
+path = "tests/con_004_tests.rs"
+required-features = ["native-tls"]
+
+# Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
+# application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
+[patch.crates-io]
+chia-sdk-client = { path = "vendor/chia-sdk-client" }

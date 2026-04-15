@@ -153,6 +153,7 @@ fn test_connection_module_structure() {
     for f in [
         "src/connection/mod.rs",
         "src/connection/handshake.rs",
+        "src/connection/keepalive.rs",
         "src/connection/outbound.rs",
         "src/connection/listener.rs",
     ] {
@@ -160,7 +161,7 @@ fn test_connection_module_structure() {
     }
     assert_mod_rs_declares_pub_children(
         "src/connection/mod.rs",
-        &["handshake", "outbound", "listener"],
+        &["handshake", "keepalive", "listener", "outbound"],
     );
 }
 

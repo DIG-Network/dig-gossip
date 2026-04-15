@@ -33,16 +33,26 @@ use std::path::PathBuf;
 use std::process::Command;
 use toml::Value;
 
+/// Returns the crate root directory (where `Cargo.toml` lives).
+///
+/// Used by all helpers in this file to resolve relative paths against the workspace.
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Parse `Cargo.toml` into a TOML [`Value`] tree for manifest-level assertions.
+///
+/// Used by: every `test_feature_*` and `test_default_*` test to inspect `[features]` and
+/// `[dependencies]` tables without running `cargo metadata` (simpler, faster).
 fn load_cargo_toml() -> Value {
     let path = workspace_root().join("Cargo.toml");
     let raw = fs::read_to_string(&path).expect("read Cargo.toml");
     raw.parse().expect("parse Cargo.toml")
 }
 
+/// Extract the `[features]` table from a parsed manifest.
+///
+/// Panics if the table is absent, which would itself be a STR-004 failure.
 fn features_table(manifest: &Value) -> &toml::value::Table {
     manifest
         .get("features")
@@ -50,6 +60,9 @@ fn features_table(manifest: &Value) -> &toml::value::Table {
         .expect("[features]")
 }
 
+/// Extract the `[dependencies]` table from a parsed manifest.
+///
+/// Used to verify optional dependency declarations (e.g. `siphasher`, `arti-client`).
 fn dependencies_table(manifest: &Value) -> &toml::value::Table {
     manifest
         .get("dependencies")
@@ -57,6 +70,10 @@ fn dependencies_table(manifest: &Value) -> &toml::value::Table {
         .expect("[dependencies]")
 }
 
+/// Run `cargo check` with the given extra arguments and assert it succeeds.
+///
+/// Used by the compile-matrix tests to prove each feature combination resolves without errors.
+/// Failure output includes both stdout and stderr for CI diagnostics.
 fn assert_cargo_check(args: &[&str]) {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root());
@@ -72,12 +89,21 @@ fn assert_cargo_check(args: &[&str]) {
     );
 }
 
+/// Read a UTF-8 source file relative to the workspace root.
+///
+/// Used by cfg-anchor tests (`test_lib_rs_cfg_gates_*`, `test_gossip_mod_rs_*`,
+/// `test_privacy_mod_rs_*`) to grep for `#[cfg(feature = …)]` patterns.
 fn read_source(rel: &str) -> String {
     fs::read_to_string(workspace_root().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
 // ---- Manifest-driven tests (STR-004 acceptance) ----
 
+/// **Row:** `test_feature_native_tls_forwards_to_chia_sdk_client`
+///
+/// Verifies the `native-tls` feature activates `chia-sdk-client/native-tls`.
+/// This ensures downstream consumers who enable `native-tls` on `dig-gossip`
+/// automatically get TLS support from the underlying SDK without extra flags.
 #[test]
 fn test_feature_native_tls_forwards_to_chia_sdk_client() {
     let m = load_cargo_toml();
@@ -93,6 +119,11 @@ fn test_feature_native_tls_forwards_to_chia_sdk_client() {
     );
 }
 
+/// **Row:** `test_feature_rustls_forwards_to_chia_sdk_client`
+///
+/// Verifies the `rustls` feature activates `chia-sdk-client/rustls`, providing
+/// a pure-Rust TLS backend as an alternative to `native-tls`. This proves the
+/// forwarding declared in STR-004 NORMATIVE so CI can validate rustls-only builds.
 #[test]
 fn test_feature_rustls_forwards_to_chia_sdk_client() {
     let m = load_cargo_toml();
@@ -108,6 +139,11 @@ fn test_feature_rustls_forwards_to_chia_sdk_client() {
     );
 }
 
+/// **Row:** `test_feature_relay_has_no_extra_deps`
+///
+/// The `relay` feature is a pure cfg gate with no additional dependency activations.
+/// Relay logic lives entirely in `src/relay/` and only needs types already in the
+/// base dependency set. An empty feature array proves no accidental dep leakage.
 #[test]
 fn test_feature_relay_has_no_extra_deps() {
     let m = load_cargo_toml();
@@ -116,6 +152,11 @@ fn test_feature_relay_has_no_extra_deps() {
     assert!(v.is_empty(), "relay must be empty feature list, got {v:?}");
 }
 
+/// **Row:** `test_feature_dandelion_has_no_extra_deps`
+///
+/// Like `relay`, the `dandelion` feature is a pure cfg gate. Dandelion++ stem/fluff
+/// logic uses only core types already present in the dependency graph. An empty
+/// feature array confirms no transitive crates are pulled in.
 #[test]
 fn test_feature_dandelion_has_no_extra_deps() {
     let m = load_cargo_toml();
@@ -130,6 +171,13 @@ fn test_feature_dandelion_has_no_extra_deps() {
     );
 }
 
+/// **Row:** `test_feature_erlay_is_cfg_gate_without_minisketch`
+///
+/// Erlay reconciliation would ideally use `minisketch-rs`, but that crate's C
+/// bindgen chain conflicts with `chia-sdk-client`'s resolver graph (STR-001
+/// deviation). This test encodes the policy: the `erlay` feature MUST be empty
+/// (no deps) AND `minisketch-rs` MUST NOT appear in `[dependencies]` at all.
+/// The feature name still gates `src/gossip/erlay.rs` via `#[cfg]`.
 #[test]
 fn test_feature_erlay_is_cfg_gate_without_minisketch() {
     let m = load_cargo_toml();
@@ -146,6 +194,12 @@ fn test_feature_erlay_is_cfg_gate_without_minisketch() {
     );
 }
 
+/// **Row:** `test_feature_compact_blocks_enables_siphasher`
+///
+/// Compact block relay (BIP-152 style) uses SipHash for short transaction IDs.
+/// The `compact-blocks` feature MUST activate `dep:siphasher` (Cargo 2.x syntax),
+/// and `siphasher` itself MUST be declared as `optional = true` so it stays out
+/// of the default dependency graph when compact blocks are not needed.
 #[test]
 fn test_feature_compact_blocks_enables_siphasher() {
     let m = load_cargo_toml();
@@ -167,6 +221,12 @@ fn test_feature_compact_blocks_enables_siphasher() {
     assert_eq!(opt, Some(true));
 }
 
+/// **Row:** `test_feature_tor_enables_arti_and_tokio_socks`
+///
+/// The `tor` feature MUST activate both `dep:arti-client` (Tor circuit manager)
+/// and `dep:tokio-socks` (SOCKS5 proxy for outbound connections). Both crates
+/// MUST be `optional = true` so they are excluded from non-Tor builds. Tor stays
+/// opt-in per NORMATIVE (not in `default` features).
 #[test]
 fn test_feature_tor_enables_arti_and_tokio_socks() {
     let m = load_cargo_toml();
@@ -189,6 +249,12 @@ fn test_feature_tor_enables_arti_and_tokio_socks() {
     }
 }
 
+/// **Row:** `test_default_features_match_normative`
+///
+/// The `default` feature set MUST include `native-tls`, `relay`, `erlay`,
+/// `compact-blocks`, and `dandelion` -- matching the production shape described
+/// in NORMATIVE. Critically, `tor` MUST NOT be in defaults (opt-in only) because
+/// it pulls heavy dependencies and has network-policy implications.
 #[test]
 fn test_default_features_match_normative() {
     let m = load_cargo_toml();
@@ -214,7 +280,14 @@ fn test_default_features_match_normative() {
 }
 
 // ---- Source cfg anchors ----
+// These tests verify that actual `#[cfg(feature = …)]` attributes exist in source files,
+// ensuring optional code is not compiled into unrelated builds.
 
+/// **Row:** `test_lib_rs_cfg_gates_relay_privacy`
+///
+/// `src/lib.rs` MUST contain `#[cfg(feature = "relay")] pub mod relay;` so the entire
+/// relay subtree is excluded from non-relay builds. Similarly, `privacy` MUST be gated
+/// on `dandelion OR tor` since both stem routing and Tor transport live there.
 #[test]
 fn test_lib_rs_cfg_gates_relay_privacy() {
     let lib = read_source("src/lib.rs");
@@ -229,6 +302,11 @@ fn test_lib_rs_cfg_gates_relay_privacy() {
     );
 }
 
+/// **Row:** `test_gossip_mod_rs_cfg_gates_submodules`
+///
+/// `src/gossip/mod.rs` MUST gate `compact_block` behind `compact-blocks` and
+/// `erlay` behind `erlay`. Without these gates, optional code would be compiled
+/// unconditionally, defeating the purpose of feature flags.
 #[test]
 fn test_gossip_mod_rs_cfg_gates_submodules() {
     let g = read_source("src/gossip/mod.rs");
@@ -238,6 +316,11 @@ fn test_gossip_mod_rs_cfg_gates_submodules() {
     assert!(g.contains("#[cfg(feature = \"erlay\")]") && g.contains("pub mod erlay;"));
 }
 
+/// **Row:** `test_privacy_mod_rs_cfg_gates_submodules`
+///
+/// `src/privacy/mod.rs` MUST gate `dandelion` and `tor` submodules behind their
+/// respective features. This prevents Dandelion stem/fluff code from compiling
+/// when only Tor is enabled and vice versa.
 #[test]
 fn test_privacy_mod_rs_cfg_gates_submodules() {
     let p = read_source("src/privacy/mod.rs");
@@ -252,17 +335,34 @@ fn test_privacy_mod_rs_cfg_gates_submodules() {
 }
 
 // ---- Cargo check matrix (integration) ----
+// Each test invokes `cargo check` with a specific feature combination to prove the
+// dependency graph resolves cleanly. These are slow (spawns a subprocess) but catch
+// cfg-conditional compilation errors that unit tests cannot.
 
+/// **Row:** `test_check_default_features` -- the production default feature set compiles.
+///
+/// This is the baseline: `native-tls + relay + erlay + compact-blocks + dandelion`.
+/// If this fails, the crate is broken for all default consumers.
 #[test]
 fn test_check_default_features() {
     assert_cargo_check(&[]);
 }
 
+/// **Row:** `test_check_native_tls_only_minimal_graph`
+///
+/// Minimal build: only `native-tls`, no relay/erlay/compact-blocks/dandelion.
+/// Proves that cfg-gated modules do not introduce unconditional references to
+/// optional types that would break a stripped-down build.
 #[test]
 fn test_check_native_tls_only_minimal_graph() {
     assert_cargo_check(&["--no-default-features", "--features", "native-tls"]);
 }
 
+/// **Row:** `test_check_rustls_only_minimal_graph`
+///
+/// Minimal build with pure-Rust TLS backend. Ensures `rustls` feature forwarding
+/// to `chia-sdk-client/rustls` compiles without `native-tls` present, proving the
+/// two TLS backends are genuinely independent alternatives.
 #[test]
 fn test_check_rustls_only_minimal_graph() {
     assert_cargo_check(&["--no-default-features", "--features", "rustls"]);
@@ -274,11 +374,18 @@ fn test_check_native_tls_and_relay() {
     assert_cargo_check(&["--no-default-features", "--features", "native-tls,relay"]);
 }
 
+/// **Row:** `test_check_native_tls_erlay` -- TLS + erlay without relay/compact-blocks/dandelion.
+///
+/// Proves erlay's cfg gate compiles independently of the other optional subsystems.
 #[test]
 fn test_check_native_tls_erlay() {
     assert_cargo_check(&["--no-default-features", "--features", "native-tls,erlay"]);
 }
 
+/// **Row:** `test_check_native_tls_compact_blocks` -- TLS + compact-blocks (siphasher activated).
+///
+/// Proves the `dep:siphasher` activation in `compact-blocks` resolves and the
+/// compact block module compiles when it is the only optional subsystem enabled.
 #[test]
 fn test_check_native_tls_compact_blocks() {
     assert_cargo_check(&[
@@ -288,6 +395,10 @@ fn test_check_native_tls_compact_blocks() {
     ]);
 }
 
+/// **Row:** `test_check_native_tls_dandelion` -- TLS + dandelion only.
+///
+/// Proves the `privacy` module compiles with just `dandelion` (no `tor`), verifying
+/// the `#[cfg(any(feature = "dandelion", feature = "tor"))]` gate in `lib.rs`.
 #[test]
 fn test_check_native_tls_dandelion() {
     assert_cargo_check(&[
@@ -297,30 +408,56 @@ fn test_check_native_tls_dandelion() {
     ]);
 }
 
+/// **Row:** `test_check_native_tls_tor` -- TLS + tor (arti-client + tokio-socks activated).
+///
+/// Proves the heaviest optional dependency set resolves. `tor` pulls `arti-client`
+/// and `tokio-socks` as optional deps; this check catches link/bindgen issues early.
 #[test]
 fn test_check_native_tls_tor() {
     assert_cargo_check(&["--no-default-features", "--features", "native-tls,tor"]);
 }
 
+/// **Row:** `test_check_all_features` -- every feature enabled simultaneously.
+///
+/// The superset build MUST compile without conflicts. This catches any mutual
+/// exclusion bugs between features (e.g. `native-tls` + `rustls` coexistence,
+/// `tor` + `dandelion` both enabling `privacy` module).
 #[test]
 fn test_check_all_features() {
     assert_cargo_check(&["--all-features"]);
 }
 
 // ---- Optional symbol smoke (proves gated re-exports resolve when features on) ----
+// These tests use `PhantomData::<T>` to verify that feature-gated types are
+// accessible at the crate root when their feature is active, without needing
+// to construct real instances (which may require runtime state).
 
+/// **Row:** `smoke_relay_types_at_root_when_feature_on`
+///
+/// When `relay` is enabled, `dig_gossip::RelayMessage` MUST be a valid type at
+/// the crate root. `PhantomData` usage proves the type resolves at compile time
+/// without requiring construction of the actual relay message.
 #[cfg(feature = "relay")]
 #[test]
 fn smoke_relay_types_at_root_when_feature_on() {
     let _ = std::marker::PhantomData::<dig_gossip::RelayMessage>;
 }
 
+/// **Row:** `smoke_tor_transport_config_at_root`
+///
+/// When `tor` is enabled, `dig_gossip::TorTransportConfig` MUST be re-exported
+/// at the crate root. This is the Tor-specific counterpart to the relay smoke test.
 #[cfg(feature = "tor")]
 #[test]
 fn smoke_tor_transport_config_at_root() {
     let _ = std::marker::PhantomData::<dig_gossip::TorTransportConfig>;
 }
 
+/// **Row:** `smoke_dandelion_without_tor_module_still_compiles`
+///
+/// When `dandelion` is on but `tor` is off, `dig_gossip::StemTransaction` MUST
+/// still be available. This proves the `privacy` module's `any(dandelion, tor)`
+/// gate works correctly for the dandelion-only case without pulling Tor deps.
 #[cfg(all(feature = "dandelion", not(feature = "tor")))]
 #[test]
 fn smoke_dandelion_without_tor_module_still_compiles() {

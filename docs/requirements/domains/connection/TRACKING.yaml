@@ -41,10 +41,14 @@ items:
   - id: CON-004
     section: "2.13"
     summary: "Keepalive via Ping/Pong"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#213-constants"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_004_tests.rs
+    notes: >
+      connection/keepalive.rs: periodic RequestPeers/RespondPeers probe (chia-protocol 0.26 has no wire Ping/Pong);
+      PING_INTERVAL_SECS / PEER_TIMEOUT_SECS with GossipConfig overrides for tests; RTT via PeerReputation::record_rtt_ms;
+      disconnect + ConnectionIssue penalty on failure or staleness. spawn on outbound connect and inbound listener path.
   - id: CON-005
     section: "5.3"
     summary: "Per-connection rate limiting"
