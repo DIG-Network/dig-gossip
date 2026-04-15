@@ -45,6 +45,12 @@ pub const MAX_PEERS_RECEIVED_PER_REQUEST: usize = 1000;
 /// SPEC §1.6#11.
 pub const MAX_TOTAL_PEERS_RECEIVED: usize = 3000;
 
+/// Average interval between feeler connections (Poisson distribution, seconds).
+/// Feelers test reachability of "new" table addresses and promote to "tried" on success.
+/// Chia: `node_discovery.py:245` (`avg_interval_seconds=240`).
+/// SPEC §6.4 item 4, §2.13.
+pub const FEELER_INTERVAL_SECS: u64 = 240;
+
 // ---------------------------------------------------------------------------
 // Address manager constants
 //

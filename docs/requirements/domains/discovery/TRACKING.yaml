@@ -86,10 +86,16 @@ items:
   - id: DSC-008
     section: "6.4"
     summary: "Feeler connections on Poisson schedule"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_008_tests.rs
+    notes: >
+      node_discovery.rs: poisson_next_interval() generates exponential distribution intervals.
+      run_feeler_loop() selects from new table (select_peer(true)), calls mark_good() on success.
+      FEELER_INTERVAL_SECS=240 in constants.rs. FeelerAction enum for test observability.
+      Feelers don't participate in gossip — connection closed after promotion.
+      Actual TCP/TLS connect deferred to DSC-009 (parallel connection establishment).
   - id: DSC-009
     section: "6.4"
     summary: "Parallel connection establishment"
