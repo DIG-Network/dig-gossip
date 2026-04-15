@@ -471,14 +471,22 @@ impl GossipHandle {
             host: addr.ip().to_string(),
             port: addr.port(),
         };
+        // DSC-007: Request peers from the outbound peer and add to address manager.
+        // SPEC §6.6, Chia node_discovery.py:135-136 — "send RequestPeers on outbound connect."
         let respond: RespondPeers = out
             .peer
             .request_infallible(RequestPeers::new())
             .await
             .map_err(GossipError::from)?;
-        self.inner
-            .address_manager
-            .add_to_new_table(&respond.peer_list, &src, 0);
+
+        // DSC-007: Cap received peers per SPEC §1.6#10 (1000/request) and §1.6#11 (3000 total).
+        let capped = crate::discovery::node_discovery::cap_received_peers(
+            &respond.peer_list,
+            &self.inner.total_peers_received,
+        );
+        if !capped.is_empty() {
+            self.inner.address_manager.add_to_new_table(capped, &src, 0);
+        }
 
         // CON-005: one inbound [`RateLimiter`] per live slot (insert **before** the forwarder).
         let inbound_limiter = Arc::new(Mutex::new(

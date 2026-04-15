@@ -346,6 +346,12 @@ pub struct ServiceState {
     /// increasing -- never decremented on disconnect. Used by `GossipStats::total_connections`.
     pub total_connections: AtomicU64,
 
+    /// Cumulative peers received via `RespondPeers` across all peer exchange rounds.
+    /// DSC-007: capped at [`MAX_TOTAL_PEERS_RECEIVED`](crate::constants::MAX_TOTAL_PEERS_RECEIVED) (3000).
+    /// When this counter reaches the cap, further `RespondPeers` peer lists are silently discarded.
+    /// SPEC §1.6#11, Chia `node_discovery.py:35`.
+    pub total_peers_received: AtomicU64,
+
     /// OS-assigned listen socket address after
     /// [`TcpListener::bind`](tokio::net::TcpListener::bind).
     ///
@@ -431,6 +437,7 @@ impl ServiceState {
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             total_connections: AtomicU64::new(0),
+            total_peers_received: AtomicU64::new(0),
             listen_bound_addr: Mutex::new(None),
             listener_stop: Mutex::new(None),
             listener_task: Mutex::new(None),

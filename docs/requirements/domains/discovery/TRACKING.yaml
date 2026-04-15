@@ -72,8 +72,15 @@ items:
   - id: DSC-007
     section: "6.6"
     summary: "Peer exchange (RequestPeers/RespondPeers)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#66-peer-exchange-via-gossip"
+    tests:
+      - tests/dsc_007_tests.rs
+    notes: >
+      cap_received_peers() in node_discovery.rs applies SPEC §1.6#10 (1000/request) and §1.6#11 (3000 total).
+      gossip_handle.rs connect_to() calls cap_received_peers before add_to_new_table.
+      ServiceState.total_peers_received AtomicU64 counter for global cap tracking.
+      Constants MAX_PEERS_RECEIVED_PER_REQUEST=1000, MAX_TOTAL_PEERS_RECEIVED=3000 in constants.rs.
     tests: []
     notes: ""
   - id: DSC-008

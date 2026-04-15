@@ -125,6 +125,76 @@ pub async fn dns_seed_resolve_and_merge(
 }
 
 // =========================================================================
+// DSC-007 — Peer exchange helpers
+// =========================================================================
+//
+// SPEC §6.6 — Peer Exchange via Gossip.
+// Chia `node_discovery.py:135-136` — send RequestPeers on outbound connect.
+// Chia `node_discovery.py:34-35` — caps on received peers.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Cap a `RespondPeers` peer list per DSC-007 acceptance criteria.
+///
+/// 1. Truncate to [`MAX_PEERS_RECEIVED_PER_REQUEST`] (1000) — SPEC §1.6#10.
+/// 2. Check `total_peers_received` against [`MAX_TOTAL_PEERS_RECEIVED`] (3000) — SPEC §1.6#11.
+///    If the global cap is reached, return an empty slice.
+///
+/// Returns the (possibly truncated) subslice of `peers` that should be added to the
+/// address manager, and updates `total_peers_received` atomically.
+///
+/// # Arguments
+///
+/// - `peers` — the `peer_list` from a `RespondPeers` message.
+/// - `total_peers_received` — shared atomic counter across all peer exchange rounds (ServiceState).
+///
+/// # SPEC references
+///
+/// - SPEC §6.6 — Peer Exchange via Gossip
+/// - SPEC §1.6#10 — MAX_PEERS_RECEIVED_PER_REQUEST (1000)
+/// - SPEC §1.6#11 — MAX_TOTAL_PEERS_RECEIVED (3000)
+/// - Chia `node_discovery.py:34-35`
+pub fn cap_received_peers<'a>(
+    peers: &'a [TimestampedPeerInfo],
+    total_peers_received: &AtomicU64,
+) -> &'a [TimestampedPeerInfo] {
+    use crate::constants::{MAX_PEERS_RECEIVED_PER_REQUEST, MAX_TOTAL_PEERS_RECEIVED};
+
+    // Step 1: per-request cap (SPEC §1.6#10).
+    let capped = if peers.len() > MAX_PEERS_RECEIVED_PER_REQUEST {
+        tracing::debug!(
+            "DSC-007: capping RespondPeers from {} to {} peers (per-request limit)",
+            peers.len(),
+            MAX_PEERS_RECEIVED_PER_REQUEST
+        );
+        &peers[..MAX_PEERS_RECEIVED_PER_REQUEST]
+    } else {
+        peers
+    };
+
+    // Step 2: global total cap (SPEC §1.6#11).
+    let current_total = total_peers_received.load(Ordering::Relaxed);
+    if current_total >= MAX_TOTAL_PEERS_RECEIVED as u64 {
+        tracing::debug!(
+            "DSC-007: total peers received ({}) >= cap ({}), discarding {} peers",
+            current_total,
+            MAX_TOTAL_PEERS_RECEIVED,
+            capped.len()
+        );
+        return &capped[..0]; // empty slice
+    }
+
+    // How many more can we accept?
+    let remaining = (MAX_TOTAL_PEERS_RECEIVED as u64).saturating_sub(current_total) as usize;
+    let accepted = capped.len().min(remaining);
+
+    // Update the global counter.
+    total_peers_received.fetch_add(accepted as u64, Ordering::Relaxed);
+
+    &capped[..accepted]
+}
+
+// =========================================================================
 // DSC-006 — Discovery loop
 // =========================================================================
 //
