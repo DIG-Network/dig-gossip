@@ -54,7 +54,10 @@ fn test_separate_limiter_per_connection() {
     let handshake = || m(ProtocolMessageTypes::Handshake);
     assert!(a.handle_message(&handshake()));
     assert!(!a.handle_message(&handshake()));
-    assert!(b.handle_message(&handshake()), "B must still accept first handshake");
+    assert!(
+        b.handle_message(&handshake()),
+        "B must still accept first handshake"
+    );
 }
 
 /// **Row:** `test_dig_message_types_added` — merged limits include CON-005 table entries `200..=208`.
@@ -158,7 +161,7 @@ fn test_apply_inbound_rate_limit_violation_no_panic() {
     let _ = common::generate_test_certs(dir.path());
     let cfg = common::test_gossip_config(dir.path());
     let tls = load_ssl_cert(&cfg.cert_path, &cfg.key_path).expect("load test tls");
-    let state = Arc::new(ServiceState::new(cfg, tls));
+    let state = Arc::new(ServiceState::new(cfg, tls).expect("ServiceState::new"));
     let ghost = peer_id_for_addr("127.0.0.1:59999".parse().unwrap());
     apply_inbound_rate_limit_violation(&state, ghost);
 }
@@ -226,7 +229,10 @@ fn test_check_dig_extension_limits() {
     for _ in 0..100 {
         assert!(lim.check_dig_extension(t, 100));
     }
-    assert!(!lim.check_dig_extension(t, 100), "101st attestation exceeds frequency=100");
+    assert!(
+        !lim.check_dig_extension(t, 100),
+        "101st attestation exceeds frequency=100"
+    );
 }
 
 /// Unknown DIG opcode has no `dig_wire` row — must fail-open (`true`) until a limit is registered.

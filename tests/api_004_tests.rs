@@ -25,6 +25,7 @@ fn sample_peer() -> PeerId {
 }
 
 /// **Row:** `test_client_error_from` — [`From`] / [`GossipError::ClientError`].
+/// SPEC §4 — `ClientError` wrapping: `GossipError::ClientError(#[from] ClientError)`.
 ///
 /// **Why:** API-004 requires `ClientError` → `GossipError` conversion; integration tests use a variant
 /// that does not need I/O (`UnsupportedTls`).
@@ -41,6 +42,7 @@ fn test_client_error_from() {
 }
 
 /// **Row:** `test_peer_not_connected_display` -- Display includes peer hex for operator diagnostics.
+/// SPEC §4 — `PeerNotConnected` error variant with `PeerId` in display message.
 ///
 /// The "peer not connected:" prefix is the stable API contract; the hex suffix varies by
 /// PeerId but must contain the expected bytes so operators can correlate with logs.
@@ -158,6 +160,20 @@ fn test_io_error_display() {
     assert_eq!(
         GossipError::IoError("file not found".to_string()).to_string(),
         "I/O error: file not found"
+    );
+}
+
+/// **Row:** `test_address_manager_store_display` — DSC-002 peers-file load/save failures.
+///
+/// API-004’s variant matrix includes discovery persistence errors surfaced as
+/// [`GossipError::AddressManagerStore`]. The stable `address manager store:` prefix keeps logs
+/// greppable; the suffix carries store validation or decode detail from
+/// [`dig_gossip::discovery::address_manager_store`].
+#[test]
+fn test_address_manager_store_display() {
+    assert_eq!(
+        GossipError::AddressManagerStore("version mismatch".to_string()).to_string(),
+        "address manager store: version mismatch"
     );
 }
 

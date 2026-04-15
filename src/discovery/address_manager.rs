@@ -21,9 +21,9 @@
 //! - **Sync API:** DSC-001 prose shows `async fn`; gossip call sites ([`GossipHandle`](crate::service::gossip_handle::GossipHandle),
 //!   [`listener`](crate::connection::listener)) invoke ingestion **synchronously**. This type uses
 //!   one [`Mutex`] (`std::sync`, not `tokio::sync`) so `add_to_new_table` stays non-`.await`.
-//! - **Persistence:** [`Self::create`] returns empty tables today; loading `deserialize_bytes` is
-//!   **DSC-002** ([`address_manager_store`](super::address_manager_store)). `peers_file_path` is
-//!   retained on [`Inner`] for that follow-up.
+//! - **Persistence (DSC-002):** [`Self::create`] loads a [`super::address_manager_store::AddressManagerState`]
+//!   snapshot when [`Inner::peers_file_path`] exists and is non-empty; [`Self::save`] writes atomically
+//!   via [`super::address_manager_store::AddressManagerStore`].
 //! - **Private addresses:** Chia skips RFC1918 unless `allow_private_subnets`; tests and localnets
 //!   call [`Self::set_allow_private_subnets`].
 //!
@@ -48,6 +48,10 @@ use crate::constants::{
 };
 use crate::error::GossipError;
 use crate::types::peer::{metric_unix_timestamp_secs, ExtendedPeerInfo, PeerInfo};
+
+use super::address_manager_store::{
+    AddressManagerState, AddressManagerStore, ADDRESS_MANAGER_STATE_VERSION,
+};
 
 type NodeId = u32;
 const EMPTY: i32 = -1;
@@ -633,6 +637,140 @@ impl Inner {
         }
         self.map_info.get(&(old_id as NodeId)).cloned()
     }
+
+    /// Recompute [`Inner::used_new_matrix_positions`] / [`Inner::used_tried_matrix_positions`] from matrices.
+    fn rebuild_used_positions(&mut self) {
+        self.used_new_matrix_positions.clear();
+        self.used_tried_matrix_positions.clear();
+        for bucket in 0..NEW_BUCKET_COUNT {
+            for pos in 0..BUCKET_SIZE {
+                if self.new_matrix[bucket][pos] != EMPTY {
+                    self.used_new_matrix_positions.insert((bucket, pos));
+                }
+            }
+        }
+        for bucket in 0..TRIED_BUCKET_COUNT {
+            for pos in 0..BUCKET_SIZE {
+                if self.tried_matrix[bucket][pos] != EMPTY {
+                    self.used_tried_matrix_positions.insert((bucket, pos));
+                }
+            }
+        }
+    }
+
+    fn to_address_manager_state(&self) -> AddressManagerState {
+        let mut pairs: Vec<(NodeId, ExtendedPeerInfo)> =
+            self.map_info.iter().map(|(&k, v)| (k, v.clone())).collect();
+        pairs.sort_by_key(|(k, _)| *k);
+        let node_ids: Vec<NodeId> = pairs.iter().map(|(k, _)| *k).collect();
+        let entries: Vec<ExtendedPeerInfo> = pairs.iter().map(|(_, v)| v.clone()).collect();
+        let id_to_idx: HashMap<NodeId, usize> = node_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| (id, i))
+            .collect();
+        let idx = |nid: NodeId| -> usize { *id_to_idx.get(&nid).expect("snapshot node id") };
+
+        let mut tried_table = vec![vec![None; BUCKET_SIZE]; TRIED_BUCKET_COUNT];
+        for b in 0..TRIED_BUCKET_COUNT {
+            for p in 0..BUCKET_SIZE {
+                let c = self.tried_matrix[b][p];
+                if c != EMPTY {
+                    tried_table[b][p] = Some(idx(c as NodeId));
+                }
+            }
+        }
+        let mut new_table = vec![vec![None; BUCKET_SIZE]; NEW_BUCKET_COUNT];
+        for b in 0..NEW_BUCKET_COUNT {
+            for p in 0..BUCKET_SIZE {
+                let c = self.new_matrix[b][p];
+                if c != EMPTY {
+                    new_table[b][p] = Some(idx(c as NodeId));
+                }
+            }
+        }
+        let random_pos: Vec<usize> = self.random_pos.iter().map(|&nid| idx(nid)).collect();
+        let tried_collision_indices: Vec<usize> =
+            self.tried_collisions.iter().map(|&nid| idx(nid)).collect();
+
+        AddressManagerState {
+            version: ADDRESS_MANAGER_STATE_VERSION,
+            key: self.key,
+            node_ids,
+            entries,
+            tried_table,
+            new_table,
+            random_pos,
+            last_good: self.last_good,
+            tried_collision_indices,
+            allow_private_subnets: self.allow_private_subnets,
+            id_count: self.id_count,
+            tried_count: self.tried_count,
+            new_count: self.new_count,
+        }
+    }
+
+    fn from_address_manager_state(
+        state: AddressManagerState,
+        peers_file_path: PathBuf,
+    ) -> Result<Self, GossipError> {
+        AddressManagerStore::validate_snapshot(&state)?;
+        let mut inner = Inner::new(state.key, peers_file_path);
+        inner.allow_private_subnets = state.allow_private_subnets;
+        inner.last_good = state.last_good;
+        inner.id_count = state.id_count;
+        inner.tried_count = state.tried_count;
+        inner.new_count = state.new_count;
+
+        if state.entries.is_empty() {
+            inner.rebuild_used_positions();
+            return Ok(inner);
+        }
+
+        for i in 0..state.entries.len() {
+            let nid = state.node_ids[i];
+            let info = state.entries[i].clone();
+            inner.map_addr.insert(info.peer_info.host.clone(), nid);
+            inner.map_info.insert(nid, info);
+        }
+
+        for b in 0..TRIED_BUCKET_COUNT {
+            for p in 0..BUCKET_SIZE {
+                inner.tried_matrix[b][p] = match state.tried_table[b][p] {
+                    None => EMPTY,
+                    Some(ix) => state.node_ids[ix] as i32,
+                };
+            }
+        }
+        for b in 0..NEW_BUCKET_COUNT {
+            for p in 0..BUCKET_SIZE {
+                inner.new_matrix[b][p] = match state.new_table[b][p] {
+                    None => EMPTY,
+                    Some(ix) => state.node_ids[ix] as i32,
+                };
+            }
+        }
+
+        inner.random_pos = state
+            .random_pos
+            .iter()
+            .map(|&ix| state.node_ids[ix])
+            .collect();
+        inner.tried_collisions = state
+            .tried_collision_indices
+            .iter()
+            .map(|&ix| state.node_ids[ix])
+            .collect();
+
+        for (pos, &nid) in inner.random_pos.iter().enumerate() {
+            if let Some(info) = inner.map_info.get_mut(&nid) {
+                info.random_pos = Some(pos);
+            }
+        }
+
+        inner.rebuild_used_positions();
+        Ok(inner)
+    }
 }
 
 /// Port of Chia `address_manager.py` / Bitcoin `CAddrMan` — DSC-001.
@@ -653,26 +791,80 @@ impl Default for AddressManager {
 }
 
 impl AddressManager {
-    /// Empty manager with a random 256-bit key (Chia `randbits(256)`).
-    ///
-    /// **DSC-002:** [`Inner::peers_file_path`] is recorded; load/save is not implemented here.
-    pub fn new() -> Self {
+    fn new_inner_random_key(peers_file_path: PathBuf) -> Self {
         let mut key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut key);
         Self {
-            inner: Mutex::new(Inner::new(key, PathBuf::new())),
+            inner: Mutex::new(Inner::new(key, peers_file_path)),
         }
     }
 
-    /// Construct with random key; `peers_file_path` is stored for **DSC-002** persistence.
+    /// Empty manager with a random 256-bit key (Chia `randbits(256)`).
     ///
-    /// Currently always succeeds (no disk read — see module docs).
+    /// **DSC-002:** Uses an empty [`PathBuf`] peers path — [`Self::save`] becomes a no-op until a
+    /// path is supplied via [`Self::create`].
+    pub fn new() -> Self {
+        Self::new_inner_random_key(PathBuf::new())
+    }
+
+    /// Construct from disk when `peers_file_path` exists and is non-empty; otherwise fresh tables.
+    ///
+    /// **DSC-002:** Delegates to [`AddressManagerStore::load_blocking`]. Corrupt snapshots return
+    /// [`GossipError::AddressManagerStore`]; callers may map that to a fresh manager if desired.
+    /// An **empty** path string skips disk I/O (same as [`Self::new`]).
     pub fn create(peers_file_path: &Path) -> Result<Self, GossipError> {
+        let path = peers_file_path.to_path_buf();
+        if path.as_os_str().is_empty() {
+            return Ok(Self::new_inner_random_key(path));
+        }
+        let inner = if !path.exists() {
+            Self::fresh_inner(path)
+        } else {
+            let meta = std::fs::metadata(&path).map_err(|e| GossipError::IoError(e.to_string()))?;
+            if meta.len() == 0 {
+                Self::fresh_inner(path)
+            } else {
+                match AddressManagerStore::load_blocking(&path)? {
+                    Some(state) => Inner::from_address_manager_state(state, path)?,
+                    None => Self::fresh_inner(path),
+                }
+            }
+        };
+        Ok(Self {
+            inner: Mutex::new(inner),
+        })
+    }
+
+    fn fresh_inner(peers_file_path: PathBuf) -> Inner {
         let mut key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut key);
-        Ok(Self {
-            inner: Mutex::new(Inner::new(key, peers_file_path.to_path_buf())),
-        })
+        Inner::new(key, peers_file_path)
+    }
+
+    /// Serialize current tables to [`Inner::peers_file_path`] (DSC-002).
+    ///
+    /// No-op when the path is empty (in-memory-only managers from [`Self::new`]).
+    pub async fn save(&self) -> Result<(), GossipError> {
+        let (state, path) = {
+            let g = self.inner.lock().expect("address_manager mutex poisoned");
+            if g.peers_file_path.as_os_str().is_empty() {
+                return Ok(());
+            }
+            (g.to_address_manager_state(), g.peers_file_path.clone())
+        };
+        AddressManagerStore::save(&state, &path).await
+    }
+
+    /// Blocking save for tests and non-async call sites.
+    pub fn save_blocking(&self) -> Result<(), GossipError> {
+        let (state, path) = {
+            let g = self.inner.lock().expect("address_manager mutex poisoned");
+            if g.peers_file_path.as_os_str().is_empty() {
+                return Ok(());
+            }
+            (g.to_address_manager_state(), g.peers_file_path.clone())
+        };
+        AddressManagerStore::save_blocking(&state, &path)
     }
 
     /// Allow RFC1918 / loopback-style private addresses in tables (Chia `make_private_subnets_valid`).
@@ -852,6 +1044,15 @@ impl AddressManager {
     pub fn __set_last_good_for_tests(&self, v: u64) {
         let mut g = self.inner.lock().expect("poisoned");
         g.last_good = v;
+    }
+
+    /// DSC-002 / tests — bincode snapshot of the live [`Inner`].
+    #[doc(hidden)]
+    pub fn __snapshot_for_tests(&self) -> AddressManagerState {
+        self.inner
+            .lock()
+            .expect("poisoned")
+            .to_address_manager_state()
     }
 
     /// Snapshot row by **host** key (Chia `map_addr` is host-only).

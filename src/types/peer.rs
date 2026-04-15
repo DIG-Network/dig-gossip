@@ -65,7 +65,7 @@ pub fn peer_id_from_tls_spki_der(spki_der: &[u8]) -> PeerId {
 /// methods fall back to **deterministic SHA-256** of the host string (and for [`Self::get_key`],
 /// append the port in big-endian), per API-007 implementation notes — avoids `std` hasher
 /// instability across Rust versions.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PeerInfo {
     /// Hostname or IP literal (e.g. `"192.168.1.5"`, `"2001:db8::1"`, `"seed.example.com"`).
     pub host: String,
@@ -144,7 +144,7 @@ fn hostname_key_bytes(host: &str, port: u16) -> Vec<u8> {
 ///
 /// Uses this crate’s [`PeerInfo`] (API-007), **not** [`chia_protocol::TimestampedPeerInfo`], so
 /// [`get_group`](PeerInfo::get_group) / [`get_key`](PeerInfo::get_key) stay available for bucketing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExtendedPeerInfo {
     /// Address we would dial or learned from the network.
     pub peer_info: PeerInfo,

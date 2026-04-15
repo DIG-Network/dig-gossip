@@ -74,6 +74,7 @@ use tokio::task::JoinHandle;
 use chia_protocol::Bytes32;
 
 use crate::discovery::address_manager::AddressManager;
+use crate::error::GossipError;
 use crate::types::config::GossipConfig;
 use crate::types::peer::{PeerConnectionWireMetrics, PeerId};
 use crate::types::reputation::{PeerReputation, PenaltyReason};
@@ -406,14 +407,18 @@ impl ServiceState {
     ///
     /// All mutable containers start empty; counters start at zero. The LRU capacity for
     /// `seen_messages` is clamped to at least 1 because [`LruCache::new`] panics on zero.
-    pub fn new(config: GossipConfig, tls: ChiaCertificate) -> Self {
+    ///
+    /// **DSC-002:** [`AddressManager::create`](crate::discovery::address_manager::AddressManager::create)
+    /// loads a persisted peers file from [`GossipConfig::peers_file_path`] when present.
+    pub fn new(config: GossipConfig, tls: ChiaCertificate) -> Result<Self, GossipError> {
         // Clamp to 1 to satisfy `NonZeroUsize`; a capacity of 0 would be nonsensical
         // for dedup anyway.
         let cap = NonZeroUsize::new(config.max_seen_messages.max(1)).expect("max 1+");
-        Self {
+        let address_manager = AddressManager::create(&config.peers_file_path)?;
+        Ok(Self {
             config,
             tls,
-            address_manager: AddressManager::default(),
+            address_manager,
             seen_messages: Mutex::new(LruCache::new(cap)),
             peers: Mutex::new(HashMap::new()),
             banned: Mutex::new(HashMap::new()),
@@ -429,7 +434,7 @@ impl ServiceState {
             listen_bound_addr: Mutex::new(None),
             listener_stop: Mutex::new(None),
             listener_task: Mutex::new(None),
-        }
+        })
     }
 
     /// Returns `true` if the service is in the *running* lifecycle state.

@@ -124,7 +124,7 @@ impl GossipService {
         validate_gossip_config(&config)?;
         ensure_parent_dirs(&config.cert_path, &config.key_path)?;
         let tls = load_tls_material(&config)?;
-        let inner = Arc::new(ServiceState::new(config, tls));
+        let inner = Arc::new(ServiceState::new(config, tls)?);
         Ok(Self { inner })
     }
 
