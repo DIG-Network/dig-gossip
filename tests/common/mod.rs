@@ -170,6 +170,8 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         peer_id: random_peer_id(),
         network_id: test_network_id(),
         network: test_network(),
+        dns_seed_timeout: std::time::Duration::from_secs(5),
+        dns_seed_batch_size: 2,
         target_outbound_count: 2,
         max_connections: 10,
         bootstrap_peers: Vec::new(),

@@ -172,6 +172,11 @@ path = "tests/dsc_001_tests.rs"
 name = "dsc_002_tests"
 path = "tests/dsc_002_tests.rs"
 
+# DSC-003: DNS seeding via Network::lookup_all (`tests/dsc_003_tests.rs`).
+[[test]]
+name = "dsc_003_tests"
+path = "tests/dsc_003_tests.rs"
+
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
 [patch.crates-io]

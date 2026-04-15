@@ -26,10 +26,13 @@ items:
   - id: DSC-003
     section: "6.2"
     summary: "DNS seeding via Network::lookup_all()"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#62-dns-seeding-reuses-chia-sdk-clientnetwork"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_003_tests.rs
+    notes: >
+      node_discovery.rs: dns_lookup_seed_addrs -> Network::lookup_all; GossipConfig dns_seed_timeout / dns_seed_batch_size;
+      timestamped_peer_infos_from_dns_addrs + merge_dns_seed_addrs_into_address_manager + dns_seed_resolve_and_merge.
   - id: DSC-004
     section: "6.5"
     summary: "Introducer query (get_peers)"
