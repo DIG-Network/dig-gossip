@@ -8,7 +8,7 @@
 | ID      | Status | Summary                                      | Verification Approach                                                                 |
 |---------|--------|----------------------------------------------|---------------------------------------------------------------------------------------|
 | DSC-001 | verified | AddressManager with tried/new tables       | `tests/dsc_001_tests.rs` — buckets, penalty, mark_good/tried, collisions, select_peer, threading; heavy full-slot eviction `#[ignore]` |
-| DSC-002 | gap    | Address manager persistence (save/load)      | Round-trip test: populate manager, save to file, load from file, verify state matches |
+| DSC-002 | verified | Address manager persistence (save/load)    | `tests/dsc_002_tests.rs` — round-trip empty/populated, atomic tmp+rename, corrupt file → `AddressManagerStore`, version field/mismatch, `create` reload vs fresh, async save |
 | DSC-003 | gap    | DNS seeding via Network::lookup_all()        | Integration test with mock DNS; verify addresses added to address manager             |
 | DSC-004 | gap    | Introducer query (get_peers)                 | Integration test with mock WebSocket introducer; verify peer list returned            |
 | DSC-005 | gap    | Introducer registration (register_peer)      | Integration test with mock WebSocket introducer; verify register_ack received         |

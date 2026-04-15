@@ -167,6 +167,11 @@ required-features = ["native-tls"]
 name = "dsc_001_tests"
 path = "tests/dsc_001_tests.rs"
 
+# DSC-002: AddressManager peers-file persistence (`tests/dsc_002_tests.rs`).
+[[test]]
+name = "dsc_002_tests"
+path = "tests/dsc_002_tests.rs"
+
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
 [patch.crates-io]

@@ -90,6 +90,10 @@ pub use chia_traits::Streamable;
 // ---------------------------------------------------------------------------
 // DIG-specific (implemented here)
 // ---------------------------------------------------------------------------
+/// CON-005 — inbound [`RateLimits`](chia_sdk_client::RateLimits) (`V2` + DIG `dig_wire`) and ctor.
+pub use connection::inbound_limits::{
+    dig_extension_rate_limits_map, gossip_inbound_rate_limits, new_inbound_rate_limiter,
+};
 pub use gossip::backpressure::BackpressureConfig;
 #[cfg(feature = "dandelion")]
 pub use types::config::DandelionConfig;
@@ -100,10 +104,6 @@ pub use types::config::{
     DEFAULT_INTRODUCER_NETWORK_ID,
 };
 pub use types::dig_messages::{DigMessageType, UnknownDigMessageType};
-/// CON-005 — inbound [`RateLimits`](chia_sdk_client::RateLimits) (`V2` + DIG `dig_wire`) and ctor.
-pub use connection::inbound_limits::{
-    dig_extension_rate_limits_map, gossip_inbound_rate_limits, new_inbound_rate_limiter,
-};
 pub use types::peer::{
     aggregate_peer_connection_io, message_wire_len, metric_unix_timestamp_secs,
     peer_id_from_tls_spki_der, ExtendedPeerInfo, PeerConnection, PeerConnectionWireMetrics, PeerId,
@@ -113,6 +113,9 @@ pub use types::reputation::{PeerReputation, PenaltyReason};
 pub use types::stats::{GossipStats, RelayStats};
 
 pub use discovery::address_manager::AddressManager;
+pub use discovery::address_manager_store::{
+    AddressManagerState, AddressManagerStore, ADDRESS_MANAGER_STATE_VERSION,
+};
 pub use discovery::introducer_client::IntroducerClient;
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
 
@@ -125,9 +128,7 @@ pub use service::gossip_service::GossipService;
 /// [`ServiceState`] is normally owned inside [`GossipService`]; it is exported so integration
 /// tests can assert defensive paths (e.g. rate-limit violation on a missing peer id) without
 /// private-module `pub use` gymnastics.
-pub use service::state::{
-    apply_inbound_rate_limit_violation, peer_id_for_addr, ServiceState,
-};
+pub use service::state::{apply_inbound_rate_limit_violation, peer_id_for_addr, ServiceState};
 
 /// Relay protocol types — only when `relay` feature is enabled (matches STR-003 notes).
 #[cfg(feature = "relay")]

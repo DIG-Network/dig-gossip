@@ -12,14 +12,17 @@ items:
     notes: >
       discovery/address_manager.rs ports Chia address_manager.py (SHA-256 std_hash bucketing, tried/new matrices,
       mark_good collisions, select_peer). Public API is synchronous Mutex-wrapped (call sites are sync).
-      Peers-file load/save is DSC-002; create() records path only today. One stress eviction test is #[ignore]d for CI speed.
+      Peers-file load/save is DSC-002 (create loads non-empty snapshot). One stress eviction test is #[ignore]d for CI speed.
   - id: DSC-002
     section: "6.3"
     summary: "Address manager persistence (save/load)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#63-address-manager-rust-port-no-crate-exists"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_002_tests.rs
+    notes: >
+      address_manager_store.rs: bincode v1 snapshot with atomic write; AddressManager::create restores from peers file;
+      GossipError::AddressManagerStore on corrupt/version mismatch. ServiceState::new propagates load errors.
   - id: DSC-003
     section: "6.2"
     summary: "DNS seeding via Network::lookup_all()"

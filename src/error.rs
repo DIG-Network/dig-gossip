@@ -56,7 +56,6 @@ use crate::types::peer::PeerId;
 #[derive(Debug, Clone, Error)]
 pub enum GossipError {
     // -- Transport / wire errors -----------------------------------------------
-
     /// Errors originating from `chia-sdk-client` internals: `connect_peer()`,
     /// TLS connector creation, WebSocket I/O, rate-limiter rejection, etc.
     ///
@@ -86,7 +85,6 @@ pub enum GossipError {
     IoError(String),
 
     // -- Lifecycle errors ------------------------------------------------------
-
     /// Configuration validation failed *before* any networking (API-001 §Construction).
     ///
     /// **When:** `GossipService::new()` detects an invalid config field (zero `network_id`,
@@ -118,7 +116,6 @@ pub enum GossipError {
     AlreadyStarted,
 
     // -- Peer-management errors ------------------------------------------------
-
     /// The specified peer is not in the connection map.
     ///
     /// **When:** `send_to`, `request`, `disconnect`, `ban_peer`, or `penalize_peer`
@@ -176,7 +173,6 @@ pub enum GossipError {
     RequestTimeout,
 
     // -- Discovery errors ------------------------------------------------------
-
     /// No [`IntroducerConfig`](crate::types::config::IntroducerConfig) was provided.
     ///
     /// **When:** `discover_from_introducer` or `register_with_introducer` is called but
@@ -214,8 +210,16 @@ pub enum GossipError {
     #[error("relay error: {0}")]
     RelayError(String),
 
-    // -- Channel / internal errors ---------------------------------------------
+    /// Address manager peers-file snapshot failed (DSC-002 — corrupt bincode, version mismatch, or invariant violation).
+    ///
+    /// **When:** [`crate::discovery::address_manager_store::AddressManagerStore::load`] /
+    /// [`AddressManagerStore::save`](crate::discovery::address_manager_store::AddressManagerStore::save),
+    /// or [`crate::discovery::address_manager::AddressManager::create`](crate::discovery::address_manager::AddressManager::create)
+    /// while reading an existing peers file.
+    #[error("address manager store: {0}")]
+    AddressManagerStore(String),
 
+    // -- Channel / internal errors ---------------------------------------------
     /// An internal `mpsc` or `broadcast` channel has been closed unexpectedly.
     ///
     /// **When:** The service is shutting down or a background task panicked.
@@ -225,7 +229,6 @@ pub enum GossipError {
     ChannelClosed,
 
     // -- ERLAY / sketch errors -------------------------------------------------
-
     /// Minisketch encoding or parameter error during ERLAY set reconciliation
     /// (SPEC §8.3).
     ///
