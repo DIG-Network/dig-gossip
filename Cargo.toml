@@ -61,6 +61,9 @@ bincode = "1"
 # `StreamExt` / `SinkExt` for raw WebSocket framing in CON-002 (before [`chia_sdk_client::Peer`]).
 futures-util = "0.3"
 
+# Cancellation tokens for task lifecycle (DSC-006 discovery loop, CNC-004 shutdown).
+tokio-util = { version = "0.7", features = ["rt"] }
+
 # Utilities — structured logs, error derives, randomness, LRU caches.
 tracing = "0.1"
 thiserror = "2"
@@ -91,6 +94,10 @@ unicode-general-category = "1.1"
 # code (see domain specs under `docs/requirements/domains/erlay/`).
 
 [dev-dependencies]
+# Tokio with test-util for time manipulation in discovery loop tests (DSC-006).
+tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
+# CancellationToken for discovery loop tests (DSC-006).
+tokio-util = { version = "0.7", features = ["rt"] }
 # Used by STR-001 tests to parse and assert on this manifest declaratively.
 toml = "0.8"
 # Reserved for STR-005 harness / future integration tests.

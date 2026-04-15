@@ -59,10 +59,16 @@ items:
   - id: DSC-006
     section: "6.4"
     summary: "Discovery loop with DNS-first and backoff"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_006_tests.rs
+    notes: >
+      node_discovery.rs: run_discovery_loop (async, CancellationToken, action_log channel).
+      DNS-first seeding via dns_seed_resolve_and_merge. Introducer fallback via try_introducer_query.
+      Exponential backoff 1s→2s→4s→...→300s cap. Backoff resets on success. 5s cycle sleep when
+      peers available. DiscoveryAction enum for test observability. tokio-util CancellationToken
+      for clean shutdown (CNC-004). tokio::select! for cancellation-aware sleeps.
   - id: DSC-007
     section: "6.6"
     summary: "Peer exchange (RequestPeers/RespondPeers)"
