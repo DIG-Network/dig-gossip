@@ -9,6 +9,8 @@
 //! - **API-005 — [`PeerConnection`]:**
 //!   [`docs/requirements/domains/crate_api/specs/API-005.md`](../../../docs/requirements/domains/crate_api/specs/API-005.md)
 //!   and [`SPEC.md`](../../../docs/resources/SPEC.md) Section 2.4.
+//! - **CON-006 — connection metrics:** [`docs/requirements/domains/connection/specs/CON-006.md`](../../../docs/requirements/domains/connection/specs/CON-006.md) —
+//!   `bytes_*`, `messages_*`, `last_message_time`; live slots mirror via [`PeerConnectionWireMetrics`].
 //! - **API-011 — [`ExtendedPeerInfo`]:**
 //!   [`docs/requirements/domains/crate_api/specs/API-011.md`](../../../docs/requirements/domains/crate_api/specs/API-011.md),
 //!   [`SPEC.md`](../../../docs/resources/SPEC.md) §2.6 — address-manager row metadata (Chia `address_manager.py:43`).
@@ -23,6 +25,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use chia_protocol::{Bytes32, Message, NodeType};
 use chia_sdk_client::Peer;
+use chia_traits::Streamable;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
@@ -161,6 +164,96 @@ pub struct ExtendedPeerInfo {
     pub last_count_attempt: u64,
 }
 
+/// Wall-clock **Unix seconds** for [`PeerConnection`] / CON-006 metric timestamps.
+///
+/// Uses the same “saturating to 0” pattern as keepalive penalties — if the host clock is
+/// before `UNIX_EPOCH`, callers still get a deterministic value.
+pub fn metric_unix_timestamp_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Serialized on-wire length of a [`Message`] (header + body) — **CON-006** requires byte counters
+/// to reflect wire size, not in-memory struct size.
+///
+/// **See:** [`CON-006.md`](../../../docs/requirements/domains/connection/specs/CON-006.md) —
+/// “`bytes_read`/`bytes_written` should count the serialized wire size”.
+#[allow(clippy::result_large_err)] // mirrors `encode_message` / Chia `Streamable` error surface
+pub fn message_wire_len(msg: &Message) -> Result<u64, chia_sdk_client::ClientError> {
+    msg.to_bytes()
+        .map(|b| b.len() as u64)
+        .map_err(chia_sdk_client::ClientError::Streamable)
+}
+
+/// Per-connection byte/message counters shared by [`LiveSlot`](crate::service::state::LiveSlot)
+/// (runtime source of truth) and copyable into [`PeerConnection`] snapshots (API-005 / CON-006).
+///
+/// Stored under `Arc<Mutex<…>>` on each live slot so accept-loop forwarders and
+/// [`GossipHandle`](crate::service::gossip_handle::GossipHandle) send paths can update metrics
+/// without blocking the whole peer map (CON-006 implementation notes — concurrent tasks).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerConnectionWireMetrics {
+    /// Immutable connection-open time (Unix seconds).
+    pub creation_time: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub last_message_time: u64,
+}
+
+impl PeerConnectionWireMetrics {
+    /// Initialize counters to zero with timestamps set to `now` (typically [`metric_unix_timestamp_secs`]).
+    pub fn new(now: u64) -> Self {
+        Self {
+            creation_time: now,
+            bytes_read: 0,
+            bytes_written: 0,
+            messages_sent: 0,
+            messages_received: 0,
+            last_message_time: now,
+        }
+    }
+
+    /// CON-006 — outbound metering: `bytes_written += wire_len`, `messages_sent += 1`.
+    ///
+    /// Does **not** touch [`Self::last_message_time`] (receive-only field per CON-006 spec).
+    pub fn record_message_sent(&mut self, wire_len: u64) {
+        self.bytes_written = self.bytes_written.saturating_add(wire_len);
+        self.messages_sent = self.messages_sent.saturating_add(1);
+    }
+
+    /// CON-006 — inbound metering: bytes + message count + `last_message_time = now`.
+    pub fn record_message_received(&mut self, wire_len: u64, now: u64) {
+        self.bytes_read = self.bytes_read.saturating_add(wire_len);
+        self.messages_received = self.messages_received.saturating_add(1);
+        self.last_message_time = now;
+    }
+}
+
+/// Sum CON-006 fields across snapshots — must match how [`crate::types::stats::GossipStats`]
+/// aggregates `messages_sent` / `messages_received` / `bytes_sent` / `bytes_received` (SPEC §3.4).
+pub fn aggregate_peer_connection_io(peers: &[PeerConnection]) -> (u64, u64, u64, u64) {
+    let mut messages_sent = 0u64;
+    let mut messages_received = 0u64;
+    let mut bytes_written = 0u64;
+    let mut bytes_read = 0u64;
+    for p in peers {
+        messages_sent = messages_sent.saturating_add(p.messages_sent);
+        messages_received = messages_received.saturating_add(p.messages_received);
+        bytes_written = bytes_written.saturating_add(p.bytes_written);
+        bytes_read = bytes_read.saturating_add(p.bytes_read);
+    }
+    (
+        messages_sent,
+        messages_received,
+        bytes_written,
+        bytes_read,
+    )
+}
+
 /// Active connection with gossip bookkeeping.
 ///
 /// Wraps [`Peer`] (TLS WebSocket I/O) with DIG-only metadata. Field layout matches
@@ -191,6 +284,10 @@ pub struct PeerConnection {
     pub bytes_read: u64,
     /// Bytes written (CON-006 updates on send).
     pub bytes_written: u64,
+    /// Application-level messages sent on this connection (CON-006).
+    pub messages_sent: u64,
+    /// Application-level messages received on this connection (CON-006).
+    pub messages_received: u64,
     /// Unix seconds of last inbound message.
     pub last_message_time: u64,
     /// Reputation snapshot (API-006).
@@ -214,9 +311,26 @@ impl fmt::Debug for PeerConnection {
             .field("creation_time", &self.creation_time)
             .field("bytes_read", &self.bytes_read)
             .field("bytes_written", &self.bytes_written)
+            .field("messages_sent", &self.messages_sent)
+            .field("messages_received", &self.messages_received)
             .field("last_message_time", &self.last_message_time)
             .field("reputation", &self.reputation)
             .field("inbound_rx", &"<mpsc::Receiver<Message>>")
             .finish()
+    }
+}
+
+impl PeerConnection {
+    /// CON-006 — apply outbound accounting (see [`PeerConnectionWireMetrics::record_message_sent`]).
+    pub fn record_message_sent(&mut self, wire_len: u64) {
+        self.bytes_written = self.bytes_written.saturating_add(wire_len);
+        self.messages_sent = self.messages_sent.saturating_add(1);
+    }
+
+    /// CON-006 — apply inbound accounting (see [`PeerConnectionWireMetrics::record_message_received`]).
+    pub fn record_message_received(&mut self, wire_len: u64, now: u64) {
+        self.bytes_read = self.bytes_read.saturating_add(wire_len);
+        self.messages_received = self.messages_received.saturating_add(1);
+        self.last_message_time = now;
     }
 }

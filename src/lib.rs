@@ -105,7 +105,9 @@ pub use connection::inbound_limits::{
     dig_extension_rate_limits_map, gossip_inbound_rate_limits, new_inbound_rate_limiter,
 };
 pub use types::peer::{
-    peer_id_from_tls_spki_der, ExtendedPeerInfo, PeerConnection, PeerId, PeerInfo,
+    aggregate_peer_connection_io, message_wire_len, metric_unix_timestamp_secs,
+    peer_id_from_tls_spki_der, ExtendedPeerInfo, PeerConnection, PeerConnectionWireMetrics, PeerId,
+    PeerInfo,
 };
 pub use types::reputation::{PeerReputation, PenaltyReason};
 pub use types::stats::{GossipStats, RelayStats};

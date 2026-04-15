@@ -214,8 +214,10 @@ fn test_reexport_constants() {
 fn test_full_import_set() {
     #![allow(unused_imports)]
     use dig_gossip::{
-        apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, load_ssl_cert,
-        peer_id_for_addr, peer_id_from_tls_spki_der, AddressManager, ServiceState,
+        aggregate_peer_connection_io, apply_inbound_rate_limit_violation,
+        dig_extension_rate_limits_map, load_ssl_cert, message_wire_len, metric_unix_timestamp_secs,
+        peer_id_for_addr, peer_id_from_tls_spki_der, AddressManager, PeerConnectionWireMetrics,
+        ServiceState,
         BackpressureConfig, Bytes32, ChiaCertificate, ChiaProtocolMessage, Client, ClientError,
         ClientState, DigMessageType, ExtendedPeerInfo, FullBlock, GossipConfig, GossipError,
         GossipHandle, GossipService, GossipStats, gossip_inbound_rate_limits, Handshake,

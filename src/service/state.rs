@@ -7,6 +7,19 @@
 //! tasks -- the accept loop (CON-002), keepalive tasks (CON-004), the discovery loop,
 //! and user-facing handle calls -- can operate with minimal contention.
 //!
+//! ## SPEC citations
+//!
+//! - SPEC §9.1 — Crate Boundary: `dig-gossip` is a library crate wrapping
+//!   `chia-sdk-client` and `chia-protocol`. Input: `Message` via `broadcast()`/`send_to()`.
+//!   Output: `(PeerId, Message)` via inbound channel. `ServiceState` is the runtime
+//!   interior that makes this possible.
+//! - SPEC §2.4 — `PeerConnection` fields: `ServiceState::peers` stores per-connection
+//!   metadata (direction, node type, remote address, reputation, rate limiter) that
+//!   populates `PeerConnection` snapshots returned by `get_connections()`.
+//! - SPEC §3.3 — `GossipHandle`: the handle's methods (`broadcast`, `send_to`, `request`,
+//!   `peer_count`, `get_connections`, `stats`) all read/write through `ServiceState`
+//!   fields under independent locks.
+//!
 //! # Requirements satisfied
 //!
 //! | Req | Role |
@@ -61,7 +74,7 @@ use chia_protocol::Bytes32;
 
 use crate::discovery::address_manager::AddressManager;
 use crate::types::config::GossipConfig;
-use crate::types::peer::PeerId;
+use crate::types::peer::{PeerConnectionWireMetrics, PeerId};
 use crate::types::reputation::{PeerReputation, PenaltyReason};
 
 /// Lifecycle state: service has been constructed but `start()` has not been called.
@@ -118,6 +131,7 @@ pub(crate) struct StubPeer {
 ///   [`crate::connection::keepalive::spawn_keepalive_task`] with RTT samples.
 /// * **CON-005** -- [`RateLimiter`] (`incoming = true`, 60 s window) enforced on the inbound
 ///   `mpsc` bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
+/// * **CON-006** -- [`PeerConnectionWireMetrics`] updated on each metered send/receive (wire bytes).
 #[derive(Debug)]
 pub(crate) struct LiveSlot {
     /// Common metadata (direction, node type, remote address) shared with [`StubPeer`].
@@ -145,6 +159,9 @@ pub(crate) struct LiveSlot {
     /// this field remains the **slot of record** for diagnostics and future introspection APIs.
     #[allow(dead_code)]
     pub inbound_rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// CON-006 — per-live-connection counters mirrored into [`crate::types::peer::PeerConnection`]
+    /// when snapshot APIs land; summed into [`crate::types::stats::GossipStats`] in [`crate::service::gossip_handle::GossipHandle::stats`].
+    pub traffic: Arc<Mutex<PeerConnectionWireMetrics>>,
 }
 
 /// A slot in the peer map: either a lightweight **test-only stub** or a **real** TLS peer.
@@ -225,6 +242,7 @@ impl PeerSlot {
 pub struct ServiceState {
     /// Immutable after construction. Holds all user-supplied knobs (listen address,
     /// connection limits, cert paths, timeouts, etc.). See [`GossipConfig`].
+    /// SPEC §2.10 — `GossipConfig` fields.
     pub config: GossipConfig,
 
     /// TLS certificate + private key loaded (or generated) during construction.
@@ -237,6 +255,7 @@ pub struct ServiceState {
     /// Manages known peer addresses for the discovery loop. Updated on successful
     /// connect (`mark_good`), on peer exchange (`add_to_new_table`), and on connect
     /// failure (`attempt`). See [`crate::discovery::address_manager::AddressManager`].
+    /// SPEC §6.3 — Address Manager (Rust port of `address_manager.py`).
     pub address_manager: AddressManager,
 
     /// LRU set for message deduplication (SPEC §8.1 step 2). Keyed by
@@ -282,10 +301,12 @@ pub struct ServiceState {
 
     /// Cumulative count of messages sent (API-008). `broadcast` adds one per recipient
     /// that accepted the message; `send_to` adds 1. Never decremented.
+    /// SPEC §3.4 — `GossipStats::messages_sent`.
     pub messages_sent: AtomicU64,
 
     /// Cumulative count of inbound messages observed (API-008). The accept loop
     /// (CON-002) increments this; stub tests increment via `test_inject_message`.
+    /// SPEC §3.4 — `GossipStats::messages_received`.
     pub messages_received: AtomicU64,
 
     /// Cumulative outbound bytes. Remains `0` until the CON-* transport layer meters
@@ -434,6 +455,69 @@ pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: Pe
     if let Ok(mut rep) = rep_mtx.lock() {
         rep.apply_penalty(PenaltyReason::RateLimitExceeded, now);
     };
+}
+
+/// CON-006 — increment outbound wire counters for a live peer (after a successful `Peer::send_*`).
+pub(crate) fn record_live_peer_outbound_bytes(state: &ServiceState, peer_id: PeerId, wire_len: u64) {
+    let traffic = {
+        let Ok(peers) = state.peers.lock() else {
+            return;
+        };
+        let Some(PeerSlot::Live(live)) = peers.get(&peer_id) else {
+            return;
+        };
+        Arc::clone(&live.traffic)
+    };
+    if let Ok(mut g) = traffic.lock() {
+        g.record_message_sent(wire_len);
+    };
+}
+
+/// CON-006 — increment inbound wire counters for a live peer (after a decoded inbound [`Message`]).
+pub(crate) fn record_live_peer_inbound_bytes(state: &ServiceState, peer_id: PeerId, wire_len: u64) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let traffic = {
+        let Ok(peers) = state.peers.lock() else {
+            return;
+        };
+        let Some(PeerSlot::Live(live)) = peers.get(&peer_id) else {
+            return;
+        };
+        Arc::clone(&live.traffic)
+    };
+    if let Ok(mut g) = traffic.lock() {
+        g.record_message_received(wire_len, now);
+    };
+}
+
+/// Sum [`PeerConnectionWireMetrics`] across all [`PeerSlot::Live`] rows — feeds [`GossipStats`] I/O fields.
+pub(crate) fn sum_live_peer_wire_metrics(state: &ServiceState) -> (u64, u64, u64, u64) {
+    let Ok(peers) = state.peers.lock() else {
+        return (0, 0, 0, 0);
+    };
+    let mut messages_sent = 0u64;
+    let mut messages_received = 0u64;
+    let mut bytes_written = 0u64;
+    let mut bytes_read = 0u64;
+    for slot in peers.values() {
+        if let PeerSlot::Live(l) = slot {
+            if let Ok(g) = l.traffic.lock() {
+                messages_sent = messages_sent.saturating_add(g.messages_sent);
+                messages_received = messages_received.saturating_add(g.messages_received);
+                bytes_written = bytes_written.saturating_add(g.bytes_written);
+                bytes_read = bytes_read.saturating_add(g.bytes_read);
+            }
+        }
+    }
+    (
+        messages_sent,
+        messages_received,
+        bytes_written,
+        bytes_read,
+    )
 }
 
 impl fmt::Debug for ServiceState {

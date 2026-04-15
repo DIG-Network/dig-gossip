@@ -63,10 +63,15 @@ items:
   - id: CON-006
     section: "2.4"
     summary: "Connection metrics tracking"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#24-peerconnection-dig-extension-of-chia-sdk-clientpeer"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_006_tests.rs
+    notes: >
+      types/peer.rs: PeerConnection messages_sent/messages_received + record_* + message_wire_len +
+      PeerConnectionWireMetrics; LiveSlot.traffic Arc<Mutex>; listener + gossip_handle forwarders +
+      keepalive request_raw meter inbound; broadcast/send_to meter live sends; stub + __inject use
+      ServiceState atomics; GossipHandle::stats sums live + atomics (API-008 doc alignment).
   - id: CON-007
     section: "2.5, 2.13"
     summary: "Peer banning via reputation"
