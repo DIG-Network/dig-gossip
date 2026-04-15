@@ -362,11 +362,7 @@ impl GossipService {
             .clear();
         // CON-007 — drop Chia-side IP bans so the next `start()` in a fresh process/test run
         // does not inherit stale `ClientState::banned_peers` rows.
-        *self
-            .inner
-            .chia_ip_bans
-            .lock()
-            .await = ClientState::default();
+        *self.inner.chia_ip_bans.lock().await = ClientState::default();
         Ok(())
     }
 
@@ -427,11 +423,12 @@ fn ensure_parent_dirs(cert_path: &str, key_path: &str) -> Result<(), GossipError
 }
 
 /// Load (or generate) a TLS certificate pair via [`chia_sdk_client::load_ssl_cert`]
-/// (SPEC §5.3 -- Mandatory Mutual TLS).
+/// (SPEC section 5.3 — mandatory mutual TLS; **CON-009**).
 ///
 /// The returned [`ChiaCertificate`](chia_ssl::ChiaCertificate) is stored in
 /// [`ServiceState::tls`] and used for both outbound `connect_peer()` calls and the
-/// inbound TLS acceptor in the CON-002 accept loop.
+/// inbound TLS acceptor in the CON-002 accept loop (see `vendor/native-tls/README.dig-gossip.md`
+/// for inbound OpenSSL `CERT_REQUIRED` behavior).
 fn load_tls_material(config: &GossipConfig) -> Result<chia_ssl::ChiaCertificate, GossipError> {
     load_ssl_cert(&config.cert_path, &config.key_path).map_err(map_sdk_tls_err)
 }

@@ -39,7 +39,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] CON-006 — Connection state tracking (per-connection metadata on PeerConnection)
 - [x] CON-007 — Peer banning (ClientState::ban + PeerReputation penalty)
 - [x] CON-008 — Software version string sanitization (strip control/format characters)
-- [ ] CON-009 — Mandatory TLS via chia-ssl on ALL peer connections (no unencrypted)
+- [x] CON-009 — Mandatory TLS via chia-ssl on ALL peer connections (no unencrypted)
 
 ## Phase 3: Discovery
 

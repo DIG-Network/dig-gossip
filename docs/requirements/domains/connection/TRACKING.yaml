@@ -99,7 +99,13 @@ items:
   - id: CON-009
     section: "5.3"
     summary: "Mandatory mutual TLS (mTLS) via chia-ssl on ALL P2P connections. Both sides present certs. No unencrypted or server-only TLS."
-    status: gap
+    status: verified
     spec_ref: "docs/requirements/domains/connection/specs/CON-009.md"
-    tests: []
-    notes: "Hard security requirement. mTLS — both sides present chia-ssl certs. PeerId = SHA256(remote_cert_pubkey). Relay connections exempt (standard wss://)."
+    tests:
+      - tests/con_009_tests.rs
+    notes: >
+      Outbound: `chia-sdk-client` `create_native_tls_connector` / `create_rustls_connector` attach `ChiaCertificate`
+      as client identity (`vendor/chia-sdk-client/src/tls.rs`). Inbound: `vendor/native-tls` OpenSSL fork sets
+      CERT_REQUIRED + Chia CA (`chia_ca.crt`) per `README.dig-gossip.md`; Windows/macOS retain `peer_id_for_addr`
+      fallback when `peer_certificate()` is unavailable (listener module docs). `tests/con_009_tests.rs` covers
+      connector smoke, cert load round-trip, OpenSSL negative probe, and live `connect_to` mTLS. Relay exempt.
