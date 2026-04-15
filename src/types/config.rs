@@ -10,7 +10,7 @@
 //!
 //! | Requirement | Struct | Spec section |
 //! |-------------|--------|--------------|
-//! | API-003 | [`GossipConfig`] | SPEC §2.10 |
+//! | API-003 | [`GossipConfig`] | SPEC §2.10 (includes DSC-003 DNS seed knobs on [`GossipConfig`]) |
 //! | API-010 | [`IntroducerConfig`], [`RelayConfig`] | SPEC §2.11, §2.12 |
 //! | STR-003 | re-export at crate root | SPEC §10.2 |
 //! | STR-004 | feature-gated fields | SPEC §10.3 |
@@ -42,6 +42,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chia_protocol::Bytes32;
 use chia_sdk_client::{Network, PeerOptions};
@@ -49,7 +50,8 @@ use serde::{Deserialize, Serialize};
 
 use super::peer::PeerId;
 use crate::constants::{
-    DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT, DEFAULT_TARGET_OUTBOUND_COUNT, PING_INTERVAL_SECS,
+    DEFAULT_DNS_SEED_BATCH_SIZE, DEFAULT_DNS_SEED_TIMEOUT_SECS, DEFAULT_MAX_SEEN_MESSAGES,
+    DEFAULT_P2P_PORT, DEFAULT_TARGET_OUTBOUND_COUNT, PING_INTERVAL_SECS,
 };
 use crate::gossip::backpressure::BackpressureConfig;
 
@@ -127,6 +129,15 @@ pub struct GossipConfig {
     /// [`chia_sdk_client::Network::lookup_all()`](chia_sdk_client::Network). Configures which DNS
     /// introducers are contacted first before the WebSocket introducer fallback (DSC-003).
     pub network: Network,
+
+    /// Timeout forwarded to [`Network::lookup_all`](chia_sdk_client::Network::lookup_all) for each
+    /// DNS introducer in the current batch (DSC-003). Default **30 s** per [`DEFAULT_DNS_SEED_TIMEOUT_SECS`].
+    pub dns_seed_timeout: Duration,
+
+    /// Parallel batch size for DNS introducer resolution (second argument to `lookup_all`, DSC-003).
+    /// Default **2** ([`DEFAULT_DNS_SEED_BATCH_SIZE`]). Values below **1** are clamped to **1** at the
+    /// call site so misconfiguration cannot trigger a panic in [`std::slice::chunks`]-based upstream code.
+    pub dns_seed_batch_size: usize,
 
     /// How many outbound connections the discovery loop tries to maintain.
     /// Chia default is 8 (`node_discovery.py:49`); DIG inherits the same.
@@ -218,6 +229,8 @@ impl Default for GossipConfig {
             peer_id: PeerId::default(),
             network_id: Bytes32::default(),
             network: Network::default_mainnet(),
+            dns_seed_timeout: Duration::from_secs(DEFAULT_DNS_SEED_TIMEOUT_SECS),
+            dns_seed_batch_size: DEFAULT_DNS_SEED_BATCH_SIZE,
             target_outbound_count: DEFAULT_TARGET_OUTBOUND_COUNT,
             max_connections: 50,
             bootstrap_peers: Vec::new(),

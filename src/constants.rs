@@ -104,6 +104,14 @@ pub const NEW_TABLE_SIZE: usize = NEW_BUCKET_COUNT * BUCKET_SIZE;
 /// Chia mainnet uses 8444; DIG uses 9444 to avoid collisions on dual-stack machines.
 pub const DEFAULT_P2P_PORT: u16 = 9444;
 
+/// Default per-introducer DNS resolution timeout passed to
+/// [`chia_sdk_client::Network::lookup_all`](chia_sdk_client::Network::lookup_all) (DSC-003 / SPEC §6.2).
+pub const DEFAULT_DNS_SEED_TIMEOUT_SECS: u64 = 30;
+
+/// Default batch size for parallel DNS introducer lookups inside `lookup_all` (DSC-003).
+/// Matches the sketch in [`docs/requirements/domains/discovery/specs/DSC-003.md`](../../docs/requirements/domains/discovery/specs/DSC-003.md).
+pub const DEFAULT_DNS_SEED_BATCH_SIZE: usize = 2;
+
 /// Default relay server port (SPEC §7 -- relay fallback, DIG-specific).
 pub const DEFAULT_RELAY_PORT: u16 = 9450;
 

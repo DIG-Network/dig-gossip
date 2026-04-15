@@ -18,6 +18,7 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 #[cfg(feature = "dandelion")]
 use dig_gossip::DandelionConfig;
@@ -27,7 +28,8 @@ use dig_gossip::ErlayConfig;
 use dig_gossip::TorConfig;
 use dig_gossip::{
     BackpressureConfig, Bytes32, GossipConfig, IntroducerConfig, Network, PeerId,
-    PeerIdRotationConfig, PeerOptions, RelayConfig, DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT,
+    PeerIdRotationConfig, PeerOptions, RelayConfig, DEFAULT_DNS_SEED_BATCH_SIZE,
+    DEFAULT_DNS_SEED_TIMEOUT_SECS, DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT,
     DEFAULT_TARGET_OUTBOUND_COUNT,
 };
 
@@ -54,6 +56,8 @@ fn test_config_all_fields_exist() {
         peer_id: PeerId::from([9u8; 32]),
         network_id: common::test_network_id(),
         network: common::test_network(),
+        dns_seed_timeout: Duration::from_secs(11),
+        dns_seed_batch_size: 3,
         target_outbound_count: 3,
         max_connections: 40,
         bootstrap_peers: vec![bootstrap],
@@ -91,6 +95,8 @@ fn test_config_all_fields_exist() {
     assert_eq!(cfg.gossip_fanout, 4);
     assert_eq!(cfg.max_seen_messages, 99);
     assert_eq!(cfg.peers_file_path, dir.path().join("addrman.dat"));
+    assert_eq!(cfg.dns_seed_timeout, Duration::from_secs(11));
+    assert_eq!(cfg.dns_seed_batch_size, 3);
 
     #[cfg(feature = "dandelion")]
     assert!(cfg.dandelion.is_some());
@@ -168,6 +174,24 @@ fn test_config_default_max_seen_messages() {
     assert_eq!(
         GossipConfig::default().max_seen_messages,
         DEFAULT_MAX_SEEN_MESSAGES
+    );
+}
+
+/// **Row:** `test_config_default_dns_seed_timeout` — DSC-003 default 30 s (`DEFAULT_DNS_SEED_TIMEOUT_SECS`).
+#[test]
+fn test_config_default_dns_seed_timeout() {
+    assert_eq!(
+        GossipConfig::default().dns_seed_timeout,
+        Duration::from_secs(DEFAULT_DNS_SEED_TIMEOUT_SECS)
+    );
+}
+
+/// **Row:** `test_config_default_dns_seed_batch_size` — DSC-003 default batch 2 (`DEFAULT_DNS_SEED_BATCH_SIZE`).
+#[test]
+fn test_config_default_dns_seed_batch_size() {
+    assert_eq!(
+        GossipConfig::default().dns_seed_batch_size,
+        DEFAULT_DNS_SEED_BATCH_SIZE
     );
 }
 

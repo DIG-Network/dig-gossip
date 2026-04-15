@@ -45,7 +45,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 - [x] DSC-001 — AddressManager with tried/new tables (Rust port of address_manager.py)
 - [x] DSC-002 — Address manager persistent serialization (save/load to peers file)
-- [ ] DSC-003 — DNS seeding via chia-sdk-client Network::lookup_all()
+- [x] DSC-003 — DNS seeding via chia-sdk-client Network::lookup_all()
 - [ ] DSC-004 — Introducer query (RequestPeersIntroducer flow)
 - [ ] DSC-005 — Introducer registration (DIG extension: register_peer)
 - [ ] DSC-006 — Discovery loop with DNS-first then introducer with exponential backoff

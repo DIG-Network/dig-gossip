@@ -118,6 +118,10 @@ pub use discovery::address_manager_store::{
 };
 pub use discovery::introducer_client::IntroducerClient;
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
+pub use discovery::node_discovery::{
+    dig_network_from_gossip_config, dns_lookup_seed_addrs, dns_seed_resolve_and_merge,
+    merge_dns_seed_addrs_into_address_manager, timestamped_peer_infos_from_dns_addrs,
+};
 
 pub use error::GossipError;
 

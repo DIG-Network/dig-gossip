@@ -41,6 +41,7 @@ items:
       DandelionConfig (privacy/dandelion), TorConfig + TorTransportConfig alias (privacy/tor), ErlayConfig
       (gossip/erlay), BackpressureConfig (gossip/backpressure), PeerIdRotationConfig (types/config).
       Nested configs are placeholders until PRV-*/ERL-*/PRI-* land. Default values use crate constants.
+      DSC-003 adds dns_seed_timeout / dns_seed_batch_size (see constants::DEFAULT_DNS_SEED_*).
   - id: API-004
     section: "4"
     summary: "GossipError enum variants (wraps ClientError)"
