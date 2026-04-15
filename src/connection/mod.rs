@@ -6,7 +6,10 @@
 
 pub mod handshake;
 
-/// Outbound `wss://` + handshake + SPKI capture (CON-001).
-pub mod outbound;
+/// CON-004 keepalive + RTT sampling (application-level `RequestPeers` probe).
+pub mod keepalive;
 
 pub mod listener;
+
+/// Outbound `wss://` + handshake + SPKI capture (CON-001).
+pub mod outbound;

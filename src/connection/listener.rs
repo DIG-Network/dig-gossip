@@ -33,6 +33,8 @@
 //! peer; the sanitized string is stored on [`crate::service::state::LiveSlot`]. CON-008 remains the
 //! dedicated normative row for the same Chia `ws_connection.py` behavior — implementation is shared.
 
+// CON-002: Large `ClientError` payloads are intentional — they propagate upstream
+// `chia_sdk_client` variants verbatim, matching the API-004 `GossipError::ClientError` wrapper.
 #![allow(clippy::result_large_err)]
 
 use std::net::SocketAddr;
@@ -57,11 +59,26 @@ use crate::connection::outbound::{network_id_handshake_string, spki_der_from_lea
 use crate::service::state::{peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer};
 use crate::types::peer::{peer_id_from_tls_spki_der, PeerId, PeerInfo};
 
-/// If the remote never sends [`ProtocolMessageTypes::Handshake`], drop the session (CON-002 notes).
+/// Maximum time we wait for the remote peer to send a [`ProtocolMessageTypes::Handshake`]
+/// message before we abort the inbound session.
+///
+/// **Spec:** CON-002 notes — "If the remote does not complete the handshake within a reasonable
+/// time, drop the session." 30 seconds aligns with Chia `full_node_server.py` behavior.
+///
+/// **Security:** prevents slow-loris style attacks where an adversary opens a TLS connection
+/// but never completes the application-level handshake, tying up a slot in
+/// [`ServiceState::peers`](crate::service::state::ServiceState).
 const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Inbound TLS (`native_tls::TlsAcceptor`) — used for **both** `native-tls` and `rustls` features.
+//
+// Why `native_tls` for *inbound* even when `rustls` is enabled:
+// Upstream `chia_sdk_client::Peer::from_websocket` types the stream as
+// `MaybeTlsStream::NativeTls` on the server side. The `rustls` feature only
+// affects *outbound* dialing (CON-001). Using `native_tls` here keeps the
+// type system happy without forking upstream abstractions. See module-level
+// doc § "TLS backends (STR-004)" for the full story.
 // ---------------------------------------------------------------------------
 
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
@@ -69,8 +86,20 @@ use native_tls::Identity;
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio_native_tls::TlsAcceptor as TokioNativeTlsAcceptor;
 
+/// Build a [`TokioNativeTlsAcceptor`] from the node's [`ChiaCertificate`] (PEM key + cert).
+///
+/// This is the **server-side** TLS identity used when accepting inbound connections on
+/// [`crate::types::config::GossipConfig::listen_addr`]. The certificate is typically generated
+/// by [`chia_ssl`] at node startup (API-001 lifecycle) and stored in
+/// [`ServiceState::tls`](crate::service::state::ServiceState).
+///
+/// # Errors
+///
+/// Returns [`ClientError::Io`] if the PEM material cannot be parsed into a PKCS#8 identity
+/// or if the platform TLS library rejects the certificate (e.g., expired, unsupported algo).
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor, ClientError> {
+    // PKCS#8 is the Chia default PEM format produced by `chia_ssl::ChiaCertificate`.
     let ident =
         Identity::from_pkcs8(cert.cert_pem.as_bytes(), cert.key_pem.as_bytes()).map_err(|e| {
             ClientError::Io(std::io::Error::new(
@@ -89,6 +118,20 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
     Ok(TokioNativeTlsAcceptor::from(acc))
 }
 
+/// Extract the remote peer's **SubjectPublicKeyInfo** (SPKI) DER bytes from a server-side
+/// `native_tls` TLS stream after the TLS handshake completes.
+///
+/// The SPKI is the raw ASN.1 blob containing the peer's public key algorithm + key material.
+/// We feed it into [`peer_id_from_tls_spki_der`] to derive the deterministic [`PeerId`]
+/// (SHA-256 of the SPKI DER — see API-005 / API-007).
+///
+/// # Errors
+///
+/// - [`ClientError::MissingHandshake`] — the remote did not present a client certificate.
+///   This is **expected on Windows/SChannel** where `peer_certificate()` returns `None` even
+///   when the client sends one (see module-level CON-009 notes). The caller falls back to
+///   [`peer_id_for_addr`] in that case.
+/// - [`ClientError::Io`] — the leaf cert DER could not be extracted or parsed.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn remote_spki_from_native_tls_stream(
     tls: &tokio_native_tls::TlsStream<TcpStream>,
@@ -104,9 +147,23 @@ fn remote_spki_from_native_tls_stream(
             format!("peer cert der: {e}"),
         ))
     })?;
+    // Delegate to shared helper also used by outbound CON-001 SPKI capture.
     spki_der_from_leaf_cert_der(&der)
 }
 
+/// Top-level wrapper for a single inbound connection attempt using `native_tls`.
+///
+/// This is the entry point spawned by [`accept_loop`] for each accepted TCP connection.
+/// It delegates to [`handle_inbound_native_inner`] and catches any errors, logging them
+/// at `debug` level. Errors here are **expected** for normal rejections (banned peers,
+/// duplicate connections, TLS failures) — they do not indicate bugs.
+///
+/// # Arguments
+///
+/// - `state` — shared [`ServiceState`] holding peer map, ban list, config, and TLS identity.
+/// - `tcp` — the raw TCP stream from `TcpListener::accept()`, before TLS negotiation.
+/// - `remote_addr` — the peer's socket address as reported by the OS.
+/// - `acceptor` — the pre-built [`TokioNativeTlsAcceptor`] from [`native_tls_acceptor`].
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn handle_inbound_native(
     state: Arc<ServiceState>,
@@ -119,6 +176,23 @@ async fn handle_inbound_native(
     }
 }
 
+/// Inner implementation of the inbound connection pipeline using `native_tls`.
+///
+/// **CON-002 acceptance flow (in order):**
+///
+/// 1. **TLS accept** — negotiate server-side TLS with the node's [`ChiaCertificate`].
+/// 2. **SPKI extraction** — read the remote peer's leaf certificate to derive [`PeerId`].
+///    On Windows/SChannel this may fail (CON-009), so we fall back to [`peer_id_for_addr`].
+/// 3. **Self-connection guard** — reject if the derived `peer_id` matches our own
+///    [`GossipConfig::peer_id`](crate::types::config::GossipConfig::peer_id).
+/// 4. **Ban check** — reject peers in the [`ServiceState::banned`] set.
+/// 5. **Duplicate check** — reject peers already present in [`ServiceState::peers`].
+/// 6. **WebSocket upgrade** — [`accept_async`] over the TLS stream.
+/// 7. **Chia handshake** — delegated to [`negotiate_inbound_over_ws`].
+///
+/// # Errors
+///
+/// Any failure returns [`ClientError`]; the outer [`handle_inbound_native`] logs and drops it.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn handle_inbound_native_inner(
     state: Arc<ServiceState>,
@@ -126,13 +200,22 @@ async fn handle_inbound_native_inner(
     remote_addr: SocketAddr,
     acceptor: TokioNativeTlsAcceptor,
 ) -> Result<(), ClientError> {
+    // Early exit: no point doing TLS if the service is shutting down.
     if !state.is_running() {
         return Ok(());
     }
+
+    // Step 1: TLS accept — negotiate server-side TLS.
     let tls = acceptor
         .accept(tcp)
         .await
         .map_err(|e| ClientError::Io(std::io::Error::other(format!("tls accept: {e}"))))?;
+
+    // Step 2: Derive PeerId from the remote's TLS certificate SPKI.
+    // On Windows, SChannel's `peer_certificate()` often returns `None` even when the client
+    // presents identity material, because SChannel does not expose a "request client cert"
+    // API without explicit CERT_REQUIRED configuration (CON-009 future work). We use a
+    // deterministic address-based fallback so the inbound pipeline still works on Windows CI.
     let peer_id = match remote_spki_from_native_tls_stream(&tls) {
         Ok(spki) => peer_id_from_tls_spki_der(&spki),
         Err(e) => {
@@ -147,12 +230,16 @@ async fn handle_inbound_native_inner(
             }
         }
     };
+
+    // Step 3: Self-connection guard — Chia `full_node_server.py` drops connections to self.
     if peer_id == state.config.peer_id {
         return Err(ClientError::Io(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
             "inbound self-connection (remote PeerId equals local config.peer_id)",
         )));
     }
+
+    // Step 4: Ban check — reject peers penalized past the threshold (CON-007 / API-006).
     if state
         .banned
         .lock()
@@ -164,6 +251,9 @@ async fn handle_inbound_native_inner(
             "inbound peer is banned",
         )));
     }
+
+    // Step 5: Duplicate check — only one slot per PeerId in the peer map.
+    // The lock scope is intentionally narrow to avoid holding it across async points.
     {
         let peers = state
             .peers
@@ -177,20 +267,38 @@ async fn handle_inbound_native_inner(
         }
     }
 
+    // Step 6: WebSocket upgrade over the now-established TLS stream.
+    // We wrap the `native_tls` stream in `MaybeTlsStream::NativeTls` so the type matches
+    // what `Peer::from_websocket` expects downstream.
     let ws = accept_async(MaybeTlsStream::NativeTls(tls))
         .await
         .map_err(ws_err)?;
+
+    // Step 7: Chia handshake negotiation, address-manager registration, peer insertion.
     negotiate_inbound_over_ws(state, remote_addr, ws, peer_id).await
 }
 
 // ---------------------------------------------------------------------------
-// Shared WebSocket + Chia handshake
+// Shared WebSocket + Chia handshake helpers
+//
+// These utility functions are used by `negotiate_inbound_over_ws` and
+// `relay_new_peer_to_live_peers`. They are feature-gate-independent because
+// the WebSocket + Handshake layer sits above TLS.
 // ---------------------------------------------------------------------------
 
+/// Convert a [`tokio_tungstenite`] WebSocket error into [`ClientError::Io`].
+///
+/// The string conversion loses the original error type, but `ClientError` does not have a
+/// dedicated WebSocket variant, and we only need the message for diagnostic logging.
 fn ws_err(e: tokio_tungstenite::tungstenite::Error) -> ClientError {
     ClientError::Io(std::io::Error::other(e.to_string()))
 }
 
+/// Resolve the **advertised listen port** for our outbound [`Handshake::server_port`] field.
+///
+/// Prefers the OS-assigned bound address (populated after `TcpListener::bind` in [`accept_loop`])
+/// over the configured address. This matters when `listen_addr` uses port `0` (OS picks an
+/// ephemeral port) — tests rely on this to avoid port conflicts.
 fn listen_port_for_handshake(state: &ServiceState) -> u16 {
     state
         .listen_bound_addr
@@ -201,6 +309,12 @@ fn listen_port_for_handshake(state: &ServiceState) -> u16 {
         .unwrap_or_else(|| state.config.listen_addr.port())
 }
 
+/// Build the [`PeerInfo`] representing **our own** listener endpoint.
+///
+/// Used as the `source` parameter when adding the inbound peer to the
+/// [`AddressManager`](crate::discovery::address_manager::AddressManager) new-table
+/// (Chia `address_manager.py:add_to_new_table` convention — the source is the node
+/// that told us about the peer, which for inbound connections is ourselves).
 fn our_listen_peer_info(state: &ServiceState) -> PeerInfo {
     let addr = state
         .listen_bound_addr
@@ -214,6 +328,11 @@ fn our_listen_peer_info(state: &ServiceState) -> PeerInfo {
     }
 }
 
+/// Current wall-clock time as seconds since the Unix epoch.
+///
+/// Used for [`TimestampedPeerInfo`] timestamps when registering inbound peers in the
+/// address manager. Falls back to `0` if the system clock is before the epoch (should
+/// never happen in practice).
 fn unix_secs_u64() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -251,13 +370,12 @@ async fn relay_new_peer_to_live_peers(
 
 /// Read the next Chia [`Message`] from a raw [`WebSocketStream`] (ping/pong passthrough).
 ///
-/// **Why not [`Peer::from_websocket`] immediately?** Upstream [`chia_sdk_client::Peer`]'s background
-/// reader routes `id: Some` wire messages through an outbound [`RequestMap`](chia_sdk_client::request_map::RequestMap).
-/// Outbound [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle::connect_to) sends
-/// [`RequestPeers`](chia_protocol::RequestPeers) with a non-`None` correlation id; the server must answer on the
-/// **raw WebSocket** *before* handing the stream to `Peer::from_websocket`, or the reader errors with
-/// [`ClientError::UnexpectedMessage`](chia_sdk_client::ClientError::UnexpectedMessage) (same lesson as
-/// [`tests/common/wss_full_node.rs`](../../../tests/common/wss_full_node.rs) for CON-001).
+/// **Why defer `Peer::from_websocket` until after one `RequestPeers` on the raw socket?** The first
+/// outbound packet from [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle::connect_to)
+/// may arrive before our `Peer` reader task exists, so we answer that **initial** probe on the raw
+/// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives use the vendored
+/// [`chia_sdk_client`] patch (`vendor/chia-sdk-client`): inbound `RequestPeers` is forwarded to the
+/// application and answered with [`Peer::send_protocol_message`](chia_sdk_client::Peer::send_protocol_message).
 async fn read_next_wire_message(
     ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> Result<Message, ClientError> {
@@ -278,6 +396,35 @@ async fn read_next_wire_message(
     }
 }
 
+/// Perform the Chia application-level handshake over an already-upgraded WebSocket,
+/// register the peer in the address manager, and insert a [`LiveSlot`] into the peer map.
+///
+/// This is the **server-side** counterpart to the outbound handshake in
+/// [`crate::connection::outbound::connect_outbound_peer`]. The sequence is:
+///
+/// 1. **Receive remote Handshake** — with [`INBOUND_HANDSHAKE_TIMEOUT`].
+/// 2. **Validate** via [`crate::connection::handshake::validate_remote_handshake`] (CON-003).
+/// 3. **Send our Handshake reply** — advertises [`ADVERTISED_PROTOCOL_VERSION`] and `FullNode` type.
+/// 4. **Receive and answer `RequestPeers`** — outbound peers issue this immediately (CON-001).
+/// 5. **Address manager insert** — add the newcomer to the new-table (DSC-001 bucketing).
+/// 6. **Relay** — push the newcomer's `TimestampedPeerInfo` to all existing live peers.
+/// 7. **Upgrade to `Peer`** — hand off to [`Peer::from_websocket`] for the steady-state reader.
+/// 8. **Bridge inbound messages** — spawn a task that forwards wire messages into the
+///    [`ServiceState::inbound_tx`] broadcast channel (API-002 event bus).
+/// 9. **Insert `LiveSlot`** — the peer is now fully registered and visible to `peer_count`, etc.
+/// 10. **Spawn keepalive** — [`crate::connection::keepalive::spawn_keepalive_task`] (CON-004).
+///
+/// # Arguments
+///
+/// - `state` — shared service state.
+/// - `remote_addr` — the peer's TCP socket address.
+/// - `ws` — the WebSocket stream (already TLS-upgraded).
+/// - `peer_id` — the [`PeerId`] derived from the remote's TLS certificate SPKI.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] for handshake timeouts, validation failures, or WebSocket errors.
+/// The peer map is not modified if this function returns `Err`.
 async fn negotiate_inbound_over_ws(
     state: Arc<ServiceState>,
     remote_addr: SocketAddr,
@@ -286,6 +433,7 @@ async fn negotiate_inbound_over_ws(
 ) -> Result<(), ClientError> {
     let opts: PeerOptions = state.config.peer_options;
 
+    // --- Phase 1: Receive the remote's Handshake (with timeout) ---
     let first = tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, read_next_wire_message(&mut ws))
         .await
         .map_err(|_| {
@@ -295,6 +443,7 @@ async fn negotiate_inbound_over_ws(
             ))
         })??;
 
+    // The first application message MUST be a Handshake; anything else is a protocol violation.
     if first.msg_type != ProtocolMessageTypes::Handshake {
         return Err(ClientError::InvalidResponse(
             vec![ProtocolMessageTypes::Handshake],
@@ -302,12 +451,17 @@ async fn negotiate_inbound_over_ws(
         ));
     }
     let their_handshake = Handshake::from_bytes(&first.data)?;
+
+    // --- Phase 2: CON-003 validation (network id, protocol version, software version) ---
     let net = network_id_handshake_string(state.config.network_id);
     let remote_software_version_sanitized =
         crate::connection::handshake::validate_remote_handshake(&their_handshake, &net)
             .map_err(ClientError::from)?;
     let remote_protocol_version = their_handshake.protocol_version.clone();
 
+    // --- Phase 3: Send our Handshake reply ---
+    // We advertise as FullNode with standard Chia capabilities (BASE=1, BLOCK_HEADERS=1, RATE_LIMITS=1).
+    // The `server_port` tells the remote peer what port to dial us back on.
     let our_handshake = Handshake {
         network_id: net.clone(),
         protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
@@ -315,14 +469,14 @@ async fn negotiate_inbound_over_ws(
         server_port: listen_port_for_handshake(&state),
         node_type: NodeType::FullNode,
         capabilities: vec![
-            (1, "1".to_string()),
-            (2, "1".to_string()),
-            (3, "1".to_string()),
+            (1, "1".to_string()),  // BASE protocol
+            (2, "1".to_string()),  // BLOCK_HEADERS
+            (3, "1".to_string()),  // RATE_LIMITS_V2
         ],
     };
     let reply = Message {
         msg_type: ProtocolMessageTypes::Handshake,
-        id: None,
+        id: None, // Handshakes have no correlation id in the Chia wire protocol.
         data: our_handshake
             .to_bytes()
             .map_err(ClientError::Streamable)?
@@ -334,9 +488,14 @@ async fn negotiate_inbound_over_ws(
     .await
     .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
 
-    // CON-003: remote_software_version_sanitized computed before our Handshake reply.
+    // CON-003: remote_software_version_sanitized was computed *before* our reply was sent.
+    // This means we validate-then-respond, never the reverse — a malformed remote version
+    // causes rejection before we leak our own Handshake.
 
-    // CON-001 outbound `connect_to` issues `RequestPeers` immediately after the handshake exchange.
+    // --- Phase 4: Handle the expected `RequestPeers` from the outbound peer (CON-001 pattern) ---
+    // The outbound `connect_to` issues `RequestPeers` immediately after the handshake exchange
+    // (see `GossipHandle::connect_to`). We answer on the *raw* WebSocket before handing to
+    // `Peer::from_websocket` — see `read_next_wire_message` doc for the rationale.
     let second = tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, read_next_wire_message(&mut ws))
         .await
         .map_err(|_| {
@@ -346,10 +505,12 @@ async fn negotiate_inbound_over_ws(
             ))
         })??;
     if second.msg_type == ProtocolMessageTypes::RequestPeers {
+        // Reply with an empty peer list for now. Future DSC-* requirements will populate this
+        // from the address manager's tried/new tables.
         let resp = RespondPeers::new(vec![]);
         let out = Message {
             msg_type: ProtocolMessageTypes::RespondPeers,
-            id: second.id,
+            id: second.id, // Preserve correlation id so the outbound Peer reader can match it.
             data: resp.to_bytes().map_err(ClientError::Streamable)?.into(),
         };
         ws.send(WsMsg::Binary(
@@ -359,6 +520,7 @@ async fn negotiate_inbound_over_ws(
         .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
     }
 
+    // --- Phase 5: Register in the address manager (DSC-001 new-table bucketing) ---
     let ts = unix_secs_u64();
     let new_row = TimestampedPeerInfo::new(
         remote_addr.ip().to_string(),
@@ -366,31 +528,55 @@ async fn negotiate_inbound_over_ws(
         ts,
     );
     let src = our_listen_peer_info(&state);
+    // `penalty = 0`: inbound peers start fresh; future DSC-011 may apply group penalties.
     state
         .address_manager
         .add_to_new_table(std::slice::from_ref(&new_row), &src, 0);
 
+    // --- Phase 6: Relay the newcomer's address to all existing live peers ---
     relay_new_peer_to_live_peers(&state, new_row).await?;
 
+    // --- Phase 7: Upgrade to `Peer` (chia_sdk_client managed reader/writer) ---
+    // After this point the WebSocket is consumed; all further communication goes through
+    // the `Peer` handle (send) and the `inbound_rx` channel (receive).
     let (peer, mut inbound_rx) = Peer::from_websocket(ws, opts)?;
 
+    // --- Phase 8: Bridge inbound wire messages into the service broadcast channel ---
+    // This spawns a background task that reads from the per-connection `inbound_rx` and
+    // re-publishes `(PeerId, Message)` tuples on the shared broadcast channel that
+    // `GossipHandle` subscribers (API-002) consume.
     if let Ok(guard) = state.inbound_tx.lock() {
         if let Some(tx_b) = guard.as_ref() {
             let tx: broadcast::Sender<(PeerId, Message)> = tx_b.clone();
             let pid_task = peer_id;
+            let peer_rpc = peer.clone();
             tokio::spawn(async move {
                 while let Some(msg) = inbound_rx.recv().await {
+                    if msg.msg_type == ProtocolMessageTypes::RequestPeers {
+                        if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
+                            let reply = Message {
+                                msg_type: ProtocolMessageTypes::RespondPeers,
+                                id: msg.id,
+                                data: body.into(),
+                            };
+                            let _ = peer_rpc.send_protocol_message(reply).await;
+                        }
+                    }
+                    // Ignore send errors: they mean all broadcast receivers have been dropped
+                    // (service shutting down), which is a normal exit condition.
                     let _ = tx.send((pid_task, msg));
                 }
             });
         }
     }
 
+    // --- Phase 9: Insert the fully-negotiated peer into the peer map ---
     let meta = StubPeer {
         remote: remote_addr,
         node_type: their_handshake.node_type,
-        is_outbound: false,
+        is_outbound: false, // This is the *inbound* path; outbound has its own insertion logic.
     };
+    let peer_for_keepalive = peer.clone(); // Clone the Arc<Peer> before moving into LiveSlot.
     let mut peers = state
         .peers
         .lock()
@@ -402,10 +588,16 @@ async fn negotiate_inbound_over_ws(
             peer,
             remote_protocol_version,
             remote_software_version_sanitized,
+            reputation: std::sync::Mutex::new(crate::types::reputation::PeerReputation::default()),
         }),
     );
+    // Drop the lock before spawning async work to avoid holding it across an await point.
     drop(peers);
 
+    // --- Phase 10: Start the keepalive loop for this connection (CON-004) ---
+    crate::connection::keepalive::spawn_keepalive_task(state.clone(), peer_id, peer_for_keepalive);
+
+    // Increment the lifetime connection counter (API-008 stats).
     state
         .total_connections
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

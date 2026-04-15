@@ -188,6 +188,8 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         #[cfg(feature = "erlay")]
         erlay: None,
         backpressure: None,
+        keepalive_ping_interval_secs: None,
+        keepalive_peer_timeout_secs: None,
     }
 }
 

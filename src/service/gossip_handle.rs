@@ -1,20 +1,50 @@
-//! Cheap clone handle for callers to broadcast, query stats, and shut down.
+//! Cheap-clone handle exposing the full gossip runtime API to callers.
 //!
-//! **Requirement:** API-002 /
-//! [`docs/requirements/domains/crate_api/specs/API-002.md`](../../../docs/requirements/domains/crate_api/specs/API-002.md)
-//! and [`SPEC.md`](../../../docs/resources/SPEC.md) §3.3.
+//! [`GossipHandle`] is the **primary public interface** of the `dig-gossip` crate. It is returned
+//! by [`GossipService::start()`](super::gossip_service::GossipService::start) and wraps an
+//! `Arc<ServiceState>`, making it freely cloneable across tasks with no extra allocation.
 //!
-//! ## Deviations from the markdown spec (Rust ownership)
+//! Every method on `GossipHandle` ultimately reads from or mutates the shared
+//! [`ServiceState`](super::state::ServiceState) via short mutex holds or atomic loads, so the
+//! handle is safe for concurrent use by multiple Tokio tasks.
+//!
+//! # Requirement coverage
+//!
+//! | Requirement | Methods |
+//! |-------------|---------|
+//! | API-001 | [`health_check`](GossipHandle::health_check) (lifecycle probe) |
+//! | API-002 | All messaging, peer-management, discovery, and stats methods |
+//! | API-008 | [`stats`](GossipHandle::stats), [`relay_stats`](GossipHandle::relay_stats) |
+//! | CON-001 | [`connect_to`](GossipHandle::connect_to) — outbound WSS + `RequestPeers` |
+//! | CON-004 | [`penalize_peer`](GossipHandle::penalize_peer) (penalty accumulation path) |
+//!
+//! See: `docs/requirements/domains/crate_api/specs/API-002.md`
+//! See: `docs/resources/SPEC.md` Section 3.3 — GossipHandle methods.
+//!
+//! # Deviations from the markdown spec (Rust ownership)
 //!
 //! - **`inbound_receiver`:** SPEC shows `&mpsc::Receiver<_>` while [`GossipHandle`] is [`Clone`].
 //!   Cloning a handle cannot share a single-consumer `mpsc` receiver safely. We return a
-//!   [`broadcast::Receiver`] subscription (see [`ServiceState::inbound_tx`](super::state::ServiceState::inbound_tx)).
+//!   [`broadcast::Receiver`] subscription instead. This allows multiple subscribers (e.g. a relay
+//!   task + an application handler) without contention. See
+//!   [`ServiceState::inbound_tx`](super::state::ServiceState::inbound_tx) for the sender half.
+//!
 //! - **`connected_peers` / `get_connections`:** Returning owned [`crate::types::peer::PeerConnection`]
-//!   values would duplicate [`tokio::sync::mpsc::Receiver`] halves; CON-001 keeps live [`chia_sdk_client::Peer`]
-//!   handles inside [`super::state::PeerSlot::Live`] while these RPCs stay empty until a snapshot API lands.
+//!   values would duplicate [`tokio::sync::mpsc::Receiver`] halves; CON-001 keeps live
+//!   [`chia_sdk_client::Peer`] handles inside [`super::state::PeerSlot::Live`] while these RPCs
+//!   stay empty until a snapshot API lands. In the meantime,
+//!   [`__stub_filter_count_for_tests`](GossipHandle::__stub_filter_count_for_tests) gives tests a
+//!   way to verify filter semantics.
+//!
+//! # Chia equivalence
+//!
+//! This module loosely maps to the `FullNode` peer-handling surface in Chia's Python code
+//! (`full_node.py`, `server.py`). The key difference is that Chia's `Server` object is not
+//! `Clone` — callers must borrow it. Our `Arc` wrapper avoids lifetime gymnastics in async code.
 
 use chia_protocol::{
-    ChiaProtocolMessage, Message, NodeType, RequestPeers, RespondPeers, TimestampedPeerInfo,
+    ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
+    TimestampedPeerInfo,
 };
 use chia_traits::Streamable;
 use std::any::TypeId;
@@ -24,18 +54,54 @@ use tokio::sync::broadcast;
 use crate::constants::PENALTY_BAN_THRESHOLD;
 use crate::error::GossipError;
 use crate::types::peer::{peer_id_from_tls_spki_der, PeerConnection, PeerId, PeerInfo};
+use crate::types::reputation::PeerReputation;
 use crate::types::reputation::PenaltyReason;
 use crate::types::stats::{GossipStats, RelayStats};
 
 use super::state::{peer_id_for_addr, LiveSlot, PeerSlot, ServiceState, StubPeer};
 
-/// Cloneable façade over the shared [`ServiceState`] (`Arc`).
+// ---------------------------------------------------------------------------
+// GossipHandle — the user-facing façade
+// ---------------------------------------------------------------------------
+
+/// Cloneable façade over the shared [`ServiceState`].
+///
+/// `GossipHandle` is **the** user-facing type after [`GossipService::start()`]. It holds an
+/// `Arc<ServiceState>` so clones are pointer-sized and allocation-free. All mutation goes
+/// through interior-mutable fields (std `Mutex`, `AtomicU64`, etc.) inside `ServiceState`.
+///
+/// # Thread safety
+///
+/// The handle is `Send + Sync + Clone`. Multiple tasks can call methods concurrently; each
+/// method acquires the narrowest possible lock (or uses relaxed atomics for counters) to
+/// minimize contention.
+///
+/// # Lifecycle guard
+///
+/// Most public methods start with [`require_running`](Self::require_running) which reads the
+/// [`ServiceState::lifecycle`] atomic. After [`GossipService::stop()`] sets it to `LC_STOPPED`,
+/// all subsequent calls return [`GossipError::ServiceNotStarted`].
+///
+/// See: `docs/requirements/domains/crate_api/specs/API-002.md`
 #[derive(Debug, Clone)]
 pub struct GossipHandle {
+    /// Shared runtime state — configuration, peer map, counters, inbound channel.
+    /// `pub(crate)` so [`GossipService`](super::gossip_service::GossipService) and internal
+    /// subsystems (e.g. the CON-002 accept loop) can reach the same state without going
+    /// through the handle's public API.
     pub(crate) inner: Arc<ServiceState>,
 }
 
 impl GossipHandle {
+    // ------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------
+
+    /// Gate that every public method calls first.
+    ///
+    /// Reads [`ServiceState::lifecycle`] with `SeqCst` ordering. Returns
+    /// [`GossipError::ServiceNotStarted`] when the service has never been started **or** has
+    /// already been stopped (API-001 acceptance: "methods on handle after `stop()` return error").
     fn require_running(&self) -> Result<(), GossipError> {
         if self.inner.is_running() {
             Ok(())
@@ -44,17 +110,47 @@ impl GossipHandle {
         }
     }
 
-    /// API-001 lifecycle probe — still used by older tests.
+    // ------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------
+
+    /// Lightweight liveness check — returns `Ok(())` iff the service is in the `RUNNING` state.
+    ///
+    /// **Requirement:** API-001 acceptance — "handle methods after `stop()` return
+    /// `GossipError::ServiceNotStarted`". Also used by legacy API-001 tests as a smoke probe.
+    ///
+    /// This is intentionally cheap (single atomic load); it does **not** verify that background
+    /// tasks (listener, keepalive loops, etc.) are still alive.
     pub async fn health_check(&self) -> Result<(), GossipError> {
         self.require_running()
     }
 
+    // ------------------------------------------------------------------
+    // Inbound message subscription
+    // ------------------------------------------------------------------
+
     /// Subscribe to inbound `(sender_peer_id, wire_message)` pairs.
     ///
-    /// **SPEC:** [`SPEC.md`](../../../docs/resources/SPEC.md) §3.3 — see module docs for the
-    /// `broadcast` vs `mpsc` deviation.
+    /// Returns a **new** [`broadcast::Receiver`] each time it is called. Each receiver gets an
+    /// independent copy of every message published after subscription; messages sent before
+    /// the call are **not** replayed (unlike `mpsc`).
+    ///
+    /// # Deviation from SPEC §3.3
+    ///
+    /// The spec prototype shows `&mpsc::Receiver<_>`, but `mpsc` is single-consumer and
+    /// cannot be shared across cloned handles. We use [`tokio::sync::broadcast`] instead,
+    /// which supports multiple subscribers. See the module-level doc comment for the full
+    /// rationale.
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::ServiceNotStarted`] — service not yet started or already stopped.
+    /// - [`GossipError::ChannelClosed`] — internal mutex poisoned (should not happen in practice).
+    ///
+    /// See: `docs/requirements/domains/crate_api/specs/API-002.md` — `inbound_receiver`
     pub fn inbound_receiver(&self) -> Result<broadcast::Receiver<(PeerId, Message)>, GossipError> {
         self.require_running()?;
+        // Short lock: grab the broadcast Sender, then immediately subscribe (subscribe() is O(1)).
         let g = self
             .inner
             .inbound_tx
@@ -64,17 +160,43 @@ impl GossipHandle {
         Ok(tx.subscribe())
     }
 
-    /// Broadcast a wire [`Message`] to the stub peer set; returns how many peers would receive it.
+    // ------------------------------------------------------------------
+    // Messaging — broadcast / send / request
+    // ------------------------------------------------------------------
+
+    /// Broadcast a wire [`Message`] to every connected peer (optionally excluding one).
     ///
-    /// **Stub:** increments [`ServiceState::messages_sent`] by the per-peer delivery count. With zero
-    /// peers, returns `Ok(0)` (API-002 implementation notes).
+    /// Returns the number of peers that **would** receive the message. With zero connected
+    /// peers the return value is `Ok(0)` — this is explicitly **not** an error (API-002
+    /// implementation notes: "broadcast with zero connected peers should return `Ok(0)`").
+    ///
+    /// # Current stub behaviour
+    ///
+    /// The message payload is currently **not** forwarded over the wire — the `message`
+    /// parameter is consumed but unused (see `let _ = message`). Once CON-* lands real
+    /// `Peer::send_raw` calls, this will iterate the peer map and push bytes. The
+    /// [`ServiceState::messages_sent`] counter is still incremented by `n` so that
+    /// [`stats()`](Self::stats) reflects expected semantics even in tests.
+    ///
+    /// # Parameters
+    ///
+    /// - `message` — Serialized Chia wire message (header + body).
+    /// - `exclude` — If `Some(peer_id)`, that peer is skipped (typical use: don't echo a
+    ///   message back to the peer that sent it).
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::ServiceNotStarted`] — service not running.
+    /// - [`GossipError::ChannelClosed`] — mutex poisoned.
+    ///
+    /// See: `docs/requirements/domains/crate_api/specs/API-002.md` — `broadcast`
     pub async fn broadcast(
         &self,
         message: Message,
         exclude: Option<PeerId>,
     ) -> Result<usize, GossipError> {
         self.require_running()?;
-        let _ = message; // CON-* will forward bytes to `Peer::send_raw`.
+        let _ = message; // TODO(CON-*): forward bytes to each `Peer::send_raw`.
         let mut n = self
             .inner
             .peers
@@ -82,6 +204,8 @@ impl GossipHandle {
             .map_err(|_| GossipError::ChannelClosed)?
             .len();
         if let Some(e) = exclude {
+            // Second lock acquisition: acceptable because locks are short-held and
+            // non-reentrant on the same thread (std::sync::Mutex, not tokio::sync::Mutex).
             if self
                 .inner
                 .peers
@@ -92,13 +216,26 @@ impl GossipHandle {
                 n = n.saturating_sub(1);
             }
         }
+        // Relaxed ordering is fine for a monotonic counter — no other state depends on this
+        // value being visible before subsequent stores.
         self.inner
             .messages_sent
             .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(n)
     }
 
-    /// Serialize `body` with [`Streamable`] and delegate to [`Self::broadcast`].
+    /// Type-safe broadcast: serialize `body` via [`Streamable`] then delegate to [`Self::broadcast`].
+    ///
+    /// This is the recommended entry point for application-level broadcasts — callers work with
+    /// concrete Chia protocol types (e.g. `NewPeak`, `NewTransaction`) rather than raw
+    /// [`Message`] bytes.
+    ///
+    /// # Errors
+    ///
+    /// Inherits all errors from [`Self::broadcast`], plus [`GossipError::ClientError`] if
+    /// serialization fails (e.g. the `Streamable` impl encounters an internal error).
+    ///
+    /// See: `docs/requirements/domains/crate_api/specs/API-002.md` — `broadcast_typed`
     pub async fn broadcast_typed<T: Streamable + ChiaProtocolMessage + Send>(
         &self,
         body: T,
@@ -108,14 +245,38 @@ impl GossipHandle {
         self.broadcast(msg, exclude).await
     }
 
-    /// Send a typed message to one stub peer.
+    /// Send a typed message to a single peer identified by [`PeerId`].
+    ///
+    /// For **live** peers (CON-001+), the message is forwarded through the underlying
+    /// [`chia_sdk_client::Peer::send`] WebSocket channel. For **stub** peers (pre-CON-001
+    /// test fixtures), the payload is serialized (to validate encoding) but not transmitted;
+    /// the counter is still incremented so stats remain consistent.
+    ///
+    /// # Preconditions
+    ///
+    /// - Service must be running.
+    /// - `peer_id` must be present in the peer map.
+    /// - `peer_id` must **not** be in the ban set.
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::ServiceNotStarted`] — service not running.
+    /// - [`GossipError::PeerBanned`] — the target peer has been banned.
+    /// - [`GossipError::PeerNotConnected`] — unknown `peer_id`.
+    /// - [`GossipError::ClientError`] — serialization failure or WebSocket send error.
+    ///
+    /// See: `docs/requirements/domains/crate_api/specs/API-002.md` — `send_to`
     pub async fn send_to<T: Streamable + ChiaProtocolMessage + Send>(
         &self,
         peer_id: PeerId,
         body: T,
     ) -> Result<(), GossipError> {
         self.require_running()?;
+        // Validate serialization upfront — fail fast even for stub peers so callers
+        // get consistent error behaviour regardless of the peer type.
         let _ = encode_message(&body)?;
+
+        // Ban check before touching the peer map — avoids leaking message data to a banned peer.
         if self
             .inner
             .banned
@@ -125,6 +286,9 @@ impl GossipHandle {
         {
             return Err(GossipError::PeerBanned(peer_id));
         }
+
+        // Clone the live `Peer` handle (Arc-backed, cheap) while the lock is held,
+        // then release the lock before the async send to avoid holding it across `.await`.
         let maybe_live = {
             let peers = self
                 .inner
@@ -291,13 +455,29 @@ impl GossipHandle {
             .address_manager
             .add_to_new_table(&respond.peer_list, &src, 0);
 
+        // Answer inbound `RequestPeers` (keepalive / discovery) with correlated `RespondPeers`.
+        // Upstream `Peer` routes `id: Some` messages through a local `RequestMap`; remote request
+        // ids are forwarded on `inbound_rx` (see `vendor/chia-sdk-client` patch) and must be
+        // replied to with [`Peer::send_protocol_message`].
+        let peer_inbound_rpc = out.peer.clone();
         if let Ok(g) = self.inner.inbound_tx.lock() {
             if let Some(tx) = g.as_ref() {
                 let tx = tx.clone();
                 let mut inbound_rx = out.inbound_rx;
                 let pid_task = peer_id;
+                let peer_rpc = peer_inbound_rpc;
                 tokio::spawn(async move {
                     while let Some(msg) = inbound_rx.recv().await {
+                        if msg.msg_type == ProtocolMessageTypes::RequestPeers {
+                            if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
+                                let reply = Message {
+                                    msg_type: ProtocolMessageTypes::RespondPeers,
+                                    id: msg.id,
+                                    data: body.into(),
+                                };
+                                let _ = peer_rpc.send_protocol_message(reply).await;
+                            }
+                        }
                         let _ = tx.send((pid_task, msg));
                     }
                 });
@@ -310,6 +490,7 @@ impl GossipHandle {
             is_outbound: true,
         };
         let peer = out.peer;
+        let peer_for_keepalive = peer.clone();
         let mut peers = self
             .inner
             .peers
@@ -322,9 +503,16 @@ impl GossipHandle {
                 peer,
                 remote_protocol_version: out.their_handshake.protocol_version.clone(),
                 remote_software_version_sanitized: out.remote_software_version_sanitized,
+                reputation: std::sync::Mutex::new(crate::types::reputation::PeerReputation::default()),
             }),
         );
         drop(peers);
+
+        crate::connection::keepalive::spawn_keepalive_task(
+            self.inner.clone(),
+            peer_id,
+            peer_for_keepalive,
+        );
 
         self.inner
             .total_connections
@@ -617,6 +805,27 @@ impl GossipHandle {
             )),
             PeerSlot::Stub(_) => None,
         }
+    }
+
+    /// CON-004: clone of per-connection [`PeerReputation`] (RTT window + penalties on that struct).
+    #[doc(hidden)]
+    pub fn __con004_peer_reputation_for_tests(&self, peer_id: PeerId) -> Option<PeerReputation> {
+        let peers = self.inner.peers.lock().ok()?;
+        match peers.get(&peer_id)? {
+            PeerSlot::Live(l) => l.reputation.lock().ok().map(|g| g.clone()),
+            PeerSlot::Stub(_) => None,
+        }
+    }
+
+    /// CON-004 / CON-007: accumulated penalty points (includes keepalive disconnect path).
+    #[doc(hidden)]
+    pub fn __con004_penalty_points_for_tests(&self, peer_id: PeerId) -> Option<u32> {
+        self.inner
+            .penalties
+            .lock()
+            .ok()?
+            .get(&peer_id)
+            .copied()
     }
 
     /// CON-002: snapshot of [`PeerId`] keys in the live/stub map (order not stable — use for single-peer asserts).
