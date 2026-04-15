@@ -29,7 +29,8 @@
 //! Chia's `ClientState` offers only `ban(ip)` / `unban(ip)` with no point weights,
 //! no RTT scoring, and no automatic expiry. DIG layers this richer model *on top of*
 //! `ClientState` — the [`crate::service::gossip_handle::GossipHandle::penalize_peer`]
-//! bridge calls `ClientState::ban()` when `PeerReputation` crosses the threshold.
+//! bridge calls `ClientState::ban()` when `PeerReputation` crosses the threshold
+//! (see **CON-007** in [`crate::service::state::ServiceState::chia_ip_bans`]).
 //!
 //! ## Design notes
 //!
@@ -156,8 +157,9 @@ impl PenaltyReason {
 ///
 /// # Invariants
 ///
-/// - `penalty_points` is monotonically non-decreasing within a ban cycle (reset only
-///   on unban, which is handled externally by CON-007 / CNC-006).
+/// - `penalty_points` reset to **0** when a timed ban expires via
+///   [`refresh_ban_status`](Self::refresh_ban_status) / [`check_unban`](Self::check_unban)
+///   (**CON-007** auto-unban). Until then, points only increase (saturating add).
 /// - `rtt_history.len() <= RTT_WINDOW_SIZE` at all times.
 /// - `score` is always non-negative and finite (never NaN or negative).
 /// - `is_banned == true` implies `ban_until.is_some()`.
@@ -252,29 +254,38 @@ impl PeerReputation {
     ///   small penalties could wrap the counter back to zero and escape a ban.
     /// - **Auto-ban:** once `penalty_points >= PENALTY_BAN_THRESHOLD` (100), the peer
     ///   is immediately marked banned with a `ban_until` of
-    ///   `now_unix_secs + BAN_DURATION_SECS` (3600 s). The ban check is idempotent —
-    ///   additional penalties on an already-banned peer just extend `ban_until`.
+    ///   `now_unix_secs + BAN_DURATION_SECS` (3600 s). **CON-007 idempotence:** if the peer
+    ///   was *already* banned (`is_banned == true`), additional penalties **do not** move
+    ///   `ban_until` — only the first crossing schedules the window.
     ///
     /// # Post-conditions
     ///
     /// - `self.penalty_points >= old_penalty_points`
     /// - `self.last_penalty_reason == Some(reason)`
-    /// - If `self.penalty_points >= PENALTY_BAN_THRESHOLD`: `self.is_banned == true`
-    ///   and `self.ban_until.is_some()`.
+    /// - If `self.penalty_points >= PENALTY_BAN_THRESHOLD` and this call newly imposed a ban:
+    ///   returns `true` (caller should run `ClientState::ban` + disconnect at the service layer).
     ///
     /// # Cross-references
     ///
     /// - CON-007 step "Penalty Application"
     /// - Called from [`crate::connection::keepalive::disconnect_after_keepalive_failure`]
     ///   and [`crate::service::gossip_handle::GossipHandle::penalize_peer`].
-    pub fn apply_penalty(&mut self, reason: PenaltyReason, now_unix_secs: u64) {
+    pub fn apply_penalty(&mut self, reason: PenaltyReason, now_unix_secs: u64) -> bool {
         self.penalty_points = self.penalty_points.saturating_add(reason.penalty_points());
         self.last_penalty_reason = Some(reason);
         if self.penalty_points >= PENALTY_BAN_THRESHOLD {
-            self.is_banned = true;
-            // saturating_add guards against far-future timestamps overflowing u64.
-            self.ban_until = Some(now_unix_secs.saturating_add(BAN_DURATION_SECS));
+            if !self.is_banned {
+                self.is_banned = true;
+                // saturating_add guards against far-future timestamps overflowing u64.
+                self.ban_until = Some(now_unix_secs.saturating_add(BAN_DURATION_SECS));
+                self.recompute_score();
+                return true;
+            }
+            self.recompute_score();
+            return false;
         }
+        self.recompute_score();
+        false
     }
 
     /// Check whether a time-limited ban has expired and, if so, clear the ban flag.
@@ -288,22 +299,33 @@ impl PeerReputation {
     ///
     /// # Arguments
     ///
-    /// - `now_unix_secs` — current wall-clock time. If `now_unix_secs > ban_until`,
-    ///   the ban is considered expired.
+    /// - `now_unix_secs` — current wall-clock time. If `now_unix_secs >= ban_until`,
+    ///   the ban is considered expired (**CON-007** inclusive boundary; aligns with
+    ///   [`Self::check_unban`] and timed service bans in [`crate::service::state::ServiceState`]).
     ///
     /// # Post-conditions
     ///
-    /// If the ban expired: `self.is_banned == false` and `self.ban_until == None`.
-    /// Note that `penalty_points` is **not** reset here — CON-007 specifies that
-    /// points reset on unban, but that is handled by the higher-level unban flow
-    /// which also calls `ClientState::unban()`.
+    /// If the ban expired: `self.is_banned == false`, `self.ban_until == None`, and
+    /// **`penalty_points` reset to 0** (CON-007 — fresh start after cooldown).
     pub fn refresh_ban_status(&mut self, now_unix_secs: u64) {
         if let Some(until) = self.ban_until {
-            if now_unix_secs > until {
+            if self.is_banned && now_unix_secs >= until {
                 self.is_banned = false;
                 self.ban_until = None;
+                self.penalty_points = 0;
+                self.recompute_score();
             }
         }
+    }
+
+    /// **CON-007** — [`Self::refresh_ban_status`] alias that returns whether a ban *just* cleared.
+    ///
+    /// Higher-level code that mirrors this into [`chia_sdk_client::ClientState::unban`] should
+    /// call this (or `refresh_ban_status`) when evaluating whether a peer may reconnect.
+    pub fn check_unban(&mut self, current_time: u64) -> bool {
+        let was = self.is_banned;
+        self.refresh_ban_status(current_time);
+        was && !self.is_banned
     }
 
     /// Record a single RTT sample (in milliseconds), maintain the sliding window, and

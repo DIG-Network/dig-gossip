@@ -75,10 +75,14 @@ items:
   - id: CON-007
     section: "2.5, 2.13"
     summary: "Peer banning via reputation"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#25-peerreputation-dig-extension"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_007_tests.rs
+    notes: >
+      types/reputation.rs: idempotent apply_penalty + refresh_ban_status/check_unban with penalty reset;
+      ServiceState: DigBanEntry map + chia_ip_bans ClientState; prune + enforce_timed_ban;
+      gossip_handle/listener/keepalive wiring; rate-limit spawn path to enforce_timed_ban_and_disconnect.
   - id: CON-008
     section: "5.1, 5.2"
     summary: "Version string sanitization"

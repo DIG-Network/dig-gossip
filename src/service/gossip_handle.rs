@@ -17,7 +17,7 @@
 //! | API-008 | [`stats`](GossipHandle::stats), [`relay_stats`](GossipHandle::relay_stats) |
 //! | CON-001 | [`connect_to`](GossipHandle::connect_to) — outbound WSS + `RequestPeers` |
 //! | CON-006 | Per-live-slot [`PeerConnectionWireMetrics`](crate::types::peer::PeerConnectionWireMetrics) + [`stats`](GossipHandle::stats) aggregation |
-//! | CON-004 | [`penalize_peer`](GossipHandle::penalize_peer) (penalty accumulation path) |
+//! | CON-004 / CON-007 | [`penalize_peer`](GossipHandle::penalize_peer), [`ban_peer`](GossipHandle::ban_peer) |
 //!
 //! See: `docs/requirements/domains/crate_api/specs/API-002.md`
 //! See: `docs/resources/SPEC.md` Section 3.3 — GossipHandle methods.
@@ -300,10 +300,8 @@ impl GossipHandle {
         // Ban check before touching the peer map — avoids leaking message data to a banned peer.
         if self
             .inner
-            .banned
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .contains(&peer_id)
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await
         {
             return Err(GossipError::PeerBanned(peer_id));
         }
@@ -349,10 +347,8 @@ impl GossipHandle {
         let _ = encode_message(&body)?;
         if self
             .inner
-            .banned
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .contains(&peer_id)
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await
         {
             return Err(GossipError::PeerBanned(peer_id));
         }
@@ -451,10 +447,8 @@ impl GossipHandle {
         let peer_id = peer_id_from_tls_spki_der(&out.remote_spki_der);
         let is_banned = self
             .inner
-            .banned
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .contains(&peer_id);
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await;
         if is_banned {
             let _ = out.peer.close().await;
             return Err(GossipError::PeerBanned(peer_id));
@@ -591,10 +585,8 @@ impl GossipHandle {
         let pid = peer_id_for_addr(addr);
         if self
             .inner
-            .banned
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .contains(&pid)
+            .is_peer_id_banned_at(pid, metric_unix_timestamp_secs())
+            .await
         {
             return Err(GossipError::PeerBanned(pid));
         }
@@ -671,50 +663,114 @@ impl GossipHandle {
         Ok(())
     }
 
+    /// Force-disconnect a peer and record a **timed DIG ban** (**CON-007**).
+    ///
+    /// This mirrors Chia [`chia_sdk_client::ClientState::ban`] on the peer's remote IP (when known),
+    /// inserts a [`super::state::DigBanEntry`] so [`Self::connect_to`] / inbound accept reject
+    /// the [`PeerId`] until [`super::state::ServiceState::prune_expired_dig_bans`] fires.
     pub async fn ban_peer(
         &self,
         peer_id: &PeerId,
         _reason: PenaltyReason,
     ) -> Result<(), GossipError> {
         self.require_running()?;
+        let now = metric_unix_timestamp_secs();
         self.inner
-            .banned
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .insert(*peer_id);
-        let removed = self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .remove(peer_id);
-        if let Some(PeerSlot::Live(l)) = removed {
-            let _ = l.peer.close().await;
-        }
+            .enforce_timed_ban_and_disconnect(*peer_id, now)
+            .await;
         Ok(())
     }
 
+    /// Increment [`PenaltyReason`] weights, mirror into [`PeerReputation`] for live slots, and
+    /// auto-ban per **CON-007** when cumulative points reach [`PENALTY_BAN_THRESHOLD`].
     pub async fn penalize_peer(
         &self,
         peer_id: &PeerId,
         reason: PenaltyReason,
     ) -> Result<(), GossipError> {
         self.require_running()?;
-        let add = reason.penalty_points();
-        let should_ban = {
-            let mut p = self
+        let now = metric_unix_timestamp_secs();
+        self.inner.prune_expired_dig_bans(now).await;
+
+        let already_banned = self
+            .inner
+            .banned
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?
+            .contains_key(peer_id);
+
+        let should_enforce = {
+            let peers = self
                 .inner
-                .penalties
+                .peers
                 .lock()
                 .map_err(|_| GossipError::ChannelClosed)?;
-            let e = p.entry(*peer_id).or_insert(0);
-            *e = e.saturating_add(add);
-            *e >= PENALTY_BAN_THRESHOLD
+            match peers.get(peer_id) {
+                Some(PeerSlot::Live(live)) => {
+                    let (crossed, pts) = {
+                        let mut r = live
+                            .reputation
+                            .lock()
+                            .map_err(|_| GossipError::ChannelClosed)?;
+                        let c = r.apply_penalty(reason, now);
+                        (c, r.penalty_points)
+                    };
+                    drop(peers);
+                    if let Ok(mut p) = self.inner.penalties.lock() {
+                        p.insert(*peer_id, pts);
+                    }
+                    crossed
+                }
+                Some(PeerSlot::Stub(_)) => {
+                    drop(peers);
+                    let mut p = self
+                        .inner
+                        .penalties
+                        .lock()
+                        .map_err(|_| GossipError::ChannelClosed)?;
+                    let e = p.entry(*peer_id).or_insert(0);
+                    *e = e.saturating_add(reason.penalty_points());
+                    *e >= PENALTY_BAN_THRESHOLD
+                }
+                None => {
+                    drop(peers);
+                    let mut p = self
+                        .inner
+                        .penalties
+                        .lock()
+                        .map_err(|_| GossipError::ChannelClosed)?;
+                    let e = p.entry(*peer_id).or_insert(0);
+                    *e = e.saturating_add(reason.penalty_points());
+                    *e >= PENALTY_BAN_THRESHOLD
+                }
+            }
         };
-        if should_ban {
-            self.ban_peer(peer_id, reason).await?;
+
+        if should_enforce && !already_banned {
+            self.inner
+                .enforce_timed_ban_and_disconnect(*peer_id, now)
+                .await;
         }
         Ok(())
+    }
+
+    /// **CON-007 test hook:** [`chia_sdk_client::ClientState::is_banned`] for `ip` on the service's
+    /// shadow [`super::state::ServiceState::chia_ip_bans`] table.
+    #[doc(hidden)]
+    pub async fn __con007_chia_client_is_ip_banned_for_tests(
+        &self,
+        ip: std::net::IpAddr,
+    ) -> bool {
+        self.inner.chia_ip_bans.lock().await.is_banned(&ip)
+    }
+
+    /// **CON-007 test hook:** advance the ban clock to `now_unix_secs` and expire rows whose
+    /// [`super::state::DigBanEntry::until`] timestamp has passed (also calls [`ClientState::unban`]).
+    #[doc(hidden)]
+    pub async fn __con007_prune_expired_bans_for_tests(&self, now_unix_secs: u64) {
+        self.inner
+            .prune_expired_dig_bans(now_unix_secs)
+            .await;
     }
 
     pub async fn discover_from_introducer(&self) -> Result<Vec<TimestampedPeerInfo>, GossipError> {

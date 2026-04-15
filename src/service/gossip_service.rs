@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use chia_protocol::Bytes32;
 use chia_sdk_client::load_ssl_cert;
-use chia_sdk_client::ClientError;
+use chia_sdk_client::{ClientError, ClientState};
 
 use crate::error::GossipError;
 use crate::types::config::GossipConfig;
@@ -360,6 +360,13 @@ impl GossipService {
             .lock()
             .expect("penalties mutex poisoned")
             .clear();
+        // CON-007 — drop Chia-side IP bans so the next `start()` in a fresh process/test run
+        // does not inherit stale `ClientState::banned_peers` rows.
+        *self
+            .inner
+            .chia_ip_bans
+            .lock()
+            .await = ClientState::default();
         Ok(())
     }
 
