@@ -35,6 +35,7 @@
 //! | Primitive | Fields | Rationale |
 //! |-----------|--------|-----------|
 //! | `std::sync::Mutex` | `peers`, `banned`, `penalties`, `seen_messages`, `inbound_tx`, `listen_bound_addr`, `listener_stop`, `listener_task` | Short critical sections (insert/remove/lookup); no `await` while lock is held. `std::sync::Mutex` is cheaper than `tokio::sync::Mutex` for non-async guards. |
+//! | `tokio::sync::Mutex` | `chia_ip_bans` | Holds upstream [`ClientState`] for **CON-007** `ban`/`unban` on remote IPs; mutated only across `.await` from async gossip paths. |
 //! | `AtomicU64` | `messages_sent`, `messages_received`, `bytes_sent`, `bytes_received`, `total_connections` | Lock-free, single-word counters incremented from many tasks concurrently; reads via `Relaxed` are acceptable for stats. |
 //! | `AtomicU8` | `lifecycle` | Three-state flag guarding the constructed -> running -> stopped transitions. |
 //! | `broadcast::Sender` (inside Mutex) | `inbound_tx` | Created once in `start()`, dropped in `stop()`. The sender itself is lock-free; the `Mutex` guards the `Option` wrapper for late initialization. |
@@ -55,15 +56,15 @@
 //! state into a separate struct so it can be shared across service and handle without
 //! exposing lifecycle methods on the handle.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chia_protocol::{Message, NodeType};
-use chia_sdk_client::{Peer, RateLimiter};
+use chia_sdk_client::{ClientState, Peer, RateLimiter};
 use chia_ssl::ChiaCertificate;
 use lru::LruCache;
 use tokio::sync::broadcast;
@@ -164,6 +165,21 @@ pub(crate) struct LiveSlot {
     pub traffic: Arc<Mutex<PeerConnectionWireMetrics>>,
 }
 
+/// **CON-007** — DIG timed-ban row stored alongside [`PeerId`] in [`ServiceState::banned`].
+///
+/// We keep the **remote IP** so that when [`DigBanEntry::until`] expires we can call
+/// [`ClientState::unban`] even though the peer slot is long gone (disconnect-on-ban).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DigBanEntry {
+    /// Unix seconds (inclusive): ban lifts when `now >= until` (matches [`PeerReputation::refresh_ban_status`]).
+    pub until: u64,
+    /// Source address used for [`ClientState::ban`] / [`ClientState::unban`].
+    ///
+    /// [`Ipv4Addr::UNSPECIFIED`] means “unknown IP” (e.g. manual `penalize_peer` on a ghost id);
+    /// those rows still block by [`PeerId`] but do **not** touch Chia's IP ban table.
+    pub ip: IpAddr,
+}
+
 /// A slot in the peer map: either a lightweight **test-only stub** or a **real** TLS peer.
 ///
 /// The two-variant design lets the API surface (`peer_count`, `broadcast`, `get_connections`)
@@ -226,8 +242,9 @@ impl PeerSlot {
 /// | Field | Writers | Readers |
 /// |-------|---------|---------|
 /// | `peers` | `connect_to`, accept loop, `disconnect`, `stop` | `broadcast`, `peer_count`, `get_connections`, `send_to`, `request` |
-/// | `banned` | `ban_peer`, `stop` | `connect_to`, accept loop |
-/// | `penalties` | `penalize_peer`, `stop` | `ban_peer` (threshold check) |
+/// | `banned` | `ban_peer`, `stop`, `prune_expired_dig_bans` | `connect_to`, accept loop, messaging |
+/// | `chia_ip_bans` | `execute_dig_timed_ban`, `prune_expired_dig_bans`, `stop` | (internal — mirrors `banned` into Chia) |
+/// | `penalties` | `penalize_peer`, `keepalive`, `stop`, `prune_expired_dig_bans` | threshold checks, diagnostics |
 /// | `lifecycle` | `start`, `stop` | every handle method (guard) |
 /// | `inbound_tx` | `start`, `stop` | accept loop, `test_inject_message` |
 /// | `messages_sent` | `broadcast`, `send_to` | `stats` |
@@ -273,9 +290,17 @@ pub struct ServiceState {
     /// Readers: `broadcast`, `peer_count`, `get_connections`, `send_to`, `request`.
     pub(crate) peers: Mutex<HashMap<PeerId, PeerSlot>>,
 
-    /// Set of banned [`PeerId`]s. Checked during `connect_to` and inbound accept to
-    /// reject known-bad peers. Cleared on `stop()`.
-    pub banned: Mutex<HashSet<PeerId>>,
+    /// **CON-007** — timed bans keyed by [`PeerId`]: each entry records `until` + IP for
+    /// Chia [`ClientState`] synchronization. Expired rows are pruned on connection attempts
+    /// and on explicit [`Self::prune_expired_dig_bans`] calls. Cleared on `stop()`.
+    pub(crate) banned: Mutex<HashMap<PeerId, DigBanEntry>>,
+
+    /// Chia upstream IP ban table — **must** stay consistent with `banned` for live sockets
+    /// that flow through `chia-sdk-client` connect paths (CON-007 acceptance).
+    ///
+    /// Wrapped in [`tokio::sync::Mutex`] because eviction (`unban`) runs from async tasks;
+    /// the inner [`ClientState`] methods are synchronous.
+    pub(crate) chia_ip_bans: Arc<tokio::sync::Mutex<ClientState>>,
 
     /// Accumulated penalty scores per peer. When a peer's score crosses
     /// [`PENALTY_BAN_THRESHOLD`](crate::constants::PENALTY_BAN_THRESHOLD) it is moved
@@ -390,7 +415,8 @@ impl ServiceState {
             address_manager: AddressManager::default(),
             seen_messages: Mutex::new(LruCache::new(cap)),
             peers: Mutex::new(HashMap::new()),
-            banned: Mutex::new(HashSet::new()),
+            banned: Mutex::new(HashMap::new()),
+            chia_ip_bans: Arc::new(tokio::sync::Mutex::new(ClientState::default())),
             penalties: Mutex::new(HashMap::new()),
             lifecycle: AtomicU8::new(LC_CONSTRUCTED),
             inbound_tx: Mutex::new(None),
@@ -412,6 +438,103 @@ impl ServiceState {
     /// [`GossipError::ServiceNotStarted`].
     pub(crate) fn is_running(&self) -> bool {
         self.lifecycle.load(Ordering::SeqCst) == LC_RUNNING
+    }
+
+    // -------------------------------------------------------------------------
+    // CON-007 — timed `PeerId` bans mirrored into `chia_sdk_client::ClientState`
+    // -------------------------------------------------------------------------
+
+    /// Drop [`DigBanEntry`] rows whose `until` timestamp has passed, call [`ClientState::unban`]
+    /// for each non-placeholder IP, and remove the matching [`penalties`] row so a cooled-off
+    /// peer truly gets a clean slate (CON-007 acceptance + [`PeerReputation::refresh_ban_status`]).
+    pub(crate) async fn prune_expired_dig_bans(&self, now_unix_secs: u64) {
+        let mut expired: Vec<(PeerId, IpAddr)> = Vec::new();
+        {
+            let Ok(mut guard) = self.banned.lock() else {
+                return;
+            };
+            guard.retain(|pid, entry| {
+                if now_unix_secs >= entry.until {
+                    expired.push((*pid, entry.ip));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        for (pid, ip) in expired {
+            if !ip.is_unspecified() {
+                let mut cs = self.chia_ip_bans.lock().await;
+                cs.unban(ip);
+            }
+            if let Ok(mut p) = self.penalties.lock() {
+                p.remove(&pid);
+            }
+        }
+    }
+
+    /// Record a timed ban and synchronously call [`ClientState::ban`] when we know a real IP.
+    ///
+    /// **Call ordering:** callers usually [`Self::prune_expired_dig_bans`] first so clocks
+    /// cannot resurrect stale rows incorrectly.
+    pub(crate) async fn execute_dig_timed_ban(
+        &self,
+        peer_id: PeerId,
+        remote_ip: IpAddr,
+        now_unix_secs: u64,
+    ) {
+        let until = now_unix_secs.saturating_add(crate::constants::BAN_DURATION_SECS);
+        {
+            let Ok(mut g) = self.banned.lock() else {
+                return;
+            };
+            g.insert(
+                peer_id,
+                DigBanEntry {
+                    until,
+                    ip: remote_ip,
+                },
+            );
+        }
+        if !remote_ip.is_unspecified() {
+            let mut cs = self.chia_ip_bans.lock().await;
+            cs.ban(remote_ip);
+        }
+    }
+
+    /// Remove the peer slot (if any), close live TLS, then [`Self::execute_dig_timed_ban`].
+    ///
+    /// Shared by explicit [`super::gossip_handle::GossipHandle::ban_peer`], automatic
+    /// threshold bans, and CON-005 rate-limit bursts that cross the reputation threshold.
+    pub(crate) async fn enforce_timed_ban_and_disconnect(
+        &self,
+        peer_id: PeerId,
+        now_unix_secs: u64,
+    ) {
+        self.prune_expired_dig_bans(now_unix_secs).await;
+        let removed = {
+            let Ok(mut peers) = self.peers.lock() else {
+                return;
+            };
+            peers.remove(&peer_id)
+        };
+        let ip = removed
+            .as_ref()
+            .map(|s| s.remote().ip())
+            .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED.into());
+        if let Some(PeerSlot::Live(l)) = removed {
+            let _ = l.peer.close().await;
+        }
+        self.execute_dig_timed_ban(peer_id, ip, now_unix_secs).await;
+    }
+
+    /// `true` if `peer_id` is currently banned **after** pruning expired rows at `now_unix_secs`.
+    pub(crate) async fn is_peer_id_banned_at(&self, peer_id: PeerId, now_unix_secs: u64) -> bool {
+        self.prune_expired_dig_bans(now_unix_secs).await;
+        self.banned
+            .lock()
+            .ok()
+            .is_some_and(|g| g.contains_key(&peer_id))
     }
 
     /// Self-dial guard: returns `true` when `addr` matches either the *configured*
@@ -436,6 +559,10 @@ impl ServiceState {
 
 /// CON-005: apply [`PenaltyReason::RateLimitExceeded`] when an inbound wire frame fails
 /// [`RateLimiter::handle_message`].
+///
+/// **CON-007:** if [`PeerReputation::apply_penalty`] reports a *fresh* ban threshold crossing,
+/// we spawn [`ServiceState::enforce_timed_ban_and_disconnect`] — this function is synchronous
+/// (called under the inbound forwarder's hot path) and therefore cannot `.await` directly.
 pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: PeerId) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -450,11 +577,17 @@ pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: Pe
         };
         Arc::clone(&live.reputation)
     };
-    // Statement form (`if let` + `;`) ends the `lock()` temporary before `rep_mtx` drops — same
-    // drop-order fix as `match … ;` (avoids E0597); `clippy::single_match` prefers `if let`.
-    if let Ok(mut rep) = rep_mtx.lock() {
-        rep.apply_penalty(PenaltyReason::RateLimitExceeded, now);
+    let triggered = match rep_mtx.lock() {
+        Ok(mut rep) => rep.apply_penalty(PenaltyReason::RateLimitExceeded, now),
+        Err(e) => e.into_inner().apply_penalty(PenaltyReason::RateLimitExceeded, now),
     };
+    if triggered {
+        let st = Arc::clone(state);
+        tokio::spawn(async move {
+            let n = crate::types::peer::metric_unix_timestamp_secs();
+            st.enforce_timed_ban_and_disconnect(peer_id, n).await;
+        });
+    }
 }
 
 /// CON-006 — increment outbound wire counters for a live peer (after a successful `Peer::send_*`).

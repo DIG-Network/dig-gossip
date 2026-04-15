@@ -272,17 +272,15 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
 /// this with numeric penalty accumulation; keepalive failure contributes 10 penalty
 /// points toward the SPEC §2.13 `PENALTY_BAN_THRESHOLD` (100).
 ///
-/// # Penalty dual-write (CON-004 / CON-007)
+/// # Penalty write + optional CON-007 ban (CON-004 / CON-007)
 ///
-/// The penalty is written to **both**:
-///
-/// 1. The per-peer [`PeerReputation`](crate::types::reputation::PeerReputation) inside
-///    the [`LiveSlot`](crate::service::state::LiveSlot) (used for scoring while the
-///    slot is still alive — unlikely here since we are removing it, but ensures the
-///    struct is consistent if anything reads it before drop).
-/// 2. The global `ServiceState::penalties` map keyed by [`PeerId`]. This map survives
-///    slot removal so that reconnection logic and CON-007 ban checks can see
-///    accumulated penalties even after the connection is gone.
+/// 1. Apply [`PenaltyReason::ConnectionIssue`] to the slot's [`PeerReputation`] **before**
+///    closing — if this call is the first to cross [`PENALTY_BAN_THRESHOLD`](crate::constants::PENALTY_BAN_THRESHOLD),
+///    [`PeerReputation::apply_penalty`] returns `true` and we schedule a timed DIG ban +
+///    [`chia_sdk_client::ClientState::ban`] via [`ServiceState::execute_dig_timed_ban`].
+/// 2. Mirror the **exact** post-penalty `penalty_points` into `ServiceState::penalties` so
+///    [`GossipHandle::penalize_peer`](crate::service::gossip_handle::GossipHandle::penalize_peer)
+///    stays consistent with keepalive disconnects (single source of truth: no double add).
 ///
 /// # Errors
 ///
@@ -314,19 +312,33 @@ async fn disconnect_after_keepalive_failure(state: &ServiceState, peer_id: PeerI
     };
 
     // Step 2: per-peer reputation penalty (ConnectionIssue = 10 pts, CON-007 table).
-    if let Ok(mut r) = live.reputation.lock() {
-        r.apply_penalty(PenaltyReason::ConnectionIssue, now);
-    }
+    let remote_ip = live.meta.remote.ip();
+    let (triggered, pts) = match live.reputation.lock() {
+        Ok(mut r) => {
+            let t = r.apply_penalty(PenaltyReason::ConnectionIssue, now);
+            (t, r.penalty_points)
+        }
+        Err(e) => {
+            let mut r = e.into_inner();
+            let t = r.apply_penalty(PenaltyReason::ConnectionIssue, now);
+            (t, r.penalty_points)
+        }
+    };
 
     // Step 3: close the underlying WebSocket/TLS transport.
     // Ignoring the result — the remote may have already hung up.
     let _ = live.peer.close().await;
 
-    // Step 4: mirror the penalty into the global map so it persists past slot removal.
-    // Uses saturating_add to prevent wraparound if a peer is repeatedly reconnecting
-    // and failing (security: avoids u32 overflow resetting penalty to zero).
+    // Step 4: mirror **total** points into the global map (same value `penalize_peer` would use).
     if let Ok(mut p) = state.penalties.lock() {
-        let e = p.entry(peer_id).or_insert(0);
-        *e = e.saturating_add(PenaltyReason::ConnectionIssue.penalty_points());
+        p.insert(peer_id, pts);
+    }
+
+    // Step 5: if this failure was the straw that crossed the ban threshold, enforce CON-007
+    // (timed ban + Chia IP ban) even though the slot is already removed.
+    if triggered {
+        state
+            .execute_dig_timed_ban(peer_id, remote_ip, now)
+            .await;
     }
 }

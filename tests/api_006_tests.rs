@@ -12,6 +12,8 @@ use dig_gossip::{
 };
 
 /// **Row:** `test_reputation_default` -- fresh reputation has zero penalties, no ban, no RTT.
+/// SPEC §2.5 — `PeerReputation` default: `penalty_points: 0`, `is_banned: false`,
+/// `ban_until: None`, `avg_rtt_ms: None`, `score: 0.0`, `as_number: None`.
 ///
 /// This proves the initial state for a newly connected peer: clean slate with neutral score.
 /// All subsequent reputation changes are relative to this baseline.
@@ -35,8 +37,8 @@ fn test_reputation_default() {
 #[test]
 fn test_penalty_accumulation() {
     let mut r = PeerReputation::default();
-    r.apply_penalty(PenaltyReason::ConnectionIssue, 1);
-    r.apply_penalty(PenaltyReason::ConnectionIssue, 1);
+    let _ = r.apply_penalty(PenaltyReason::ConnectionIssue, 1);
+    let _ = r.apply_penalty(PenaltyReason::ConnectionIssue, 1);
     assert_eq!(
         r.penalty_points,
         PenaltyReason::ConnectionIssue.penalty_points() * 2
@@ -53,7 +55,7 @@ fn test_auto_ban_at_threshold() {
     let mut r = PeerReputation::default();
     let t0 = 1_700_000_000u64;
     for _ in 0..10 {
-        r.apply_penalty(PenaltyReason::ConnectionIssue, t0);
+        let _ = r.apply_penalty(PenaltyReason::ConnectionIssue, t0);
     }
     assert!(r.is_banned);
     assert_eq!(r.ban_until, Some(t0 + BAN_DURATION_SECS));
@@ -63,20 +65,19 @@ fn test_auto_ban_at_threshold() {
 /// **Row:** `test_ban_expiry` -- bans are time-limited, not permanent.
 ///
 /// After `InvalidBlock` (100 points, instant ban), `refresh_ban_status` at the exact
-/// `ban_until` boundary should still show banned (inclusive), but one second later the
-/// ban lifts. This proves the timed-ban model: peers get a second chance after cooling off.
+/// `ban_until` timestamp lifts the ban (**CON-007** inclusive `>=` boundary) and resets
+/// `penalty_points` to zero so the peer earns a clean slate.
 #[test]
 fn test_ban_expiry() {
     let mut r = PeerReputation::default();
     let t0 = 1000u64;
-    r.apply_penalty(PenaltyReason::InvalidBlock, t0);
+    let _ = r.apply_penalty(PenaltyReason::InvalidBlock, t0);
     assert!(r.is_banned);
     let until = r.ban_until.expect("ban_until set");
     r.refresh_ban_status(until);
-    assert!(r.is_banned, "still banned at exact expiry boundary");
-    r.refresh_ban_status(until + 1);
     assert!(!r.is_banned);
     assert_eq!(r.ban_until, None);
+    assert_eq!(r.penalty_points, 0);
 }
 
 /// **Row:** `test_rtt_single_measurement` -- a single RTT sample sets `avg_rtt_ms` directly.
@@ -162,7 +163,7 @@ fn test_penalty_points_saturating() {
         penalty_points: u32::MAX - 5,
         ..Default::default()
     };
-    r.apply_penalty(PenaltyReason::InvalidBlock, 0);
+    let _ = r.apply_penalty(PenaltyReason::InvalidBlock, 0);
     assert_eq!(r.penalty_points, u32::MAX);
 }
 
@@ -180,6 +181,8 @@ fn test_as_number_caching() {
 }
 
 /// **Row:** `test_penalty_reason_variants` -- all eight penalty reasons are constructible.
+/// SPEC §2.5 — `PenaltyReason` enum: InvalidBlock, InvalidAttestation, MalformedMessage,
+/// Spam, ConnectionIssue, ProtocolViolation, RateLimitExceeded, ConsensusError.
 ///
 /// This exhaustiveness test ensures no variant was accidentally removed or renamed.
 /// If a new reason is added to the enum, this test should be updated to include it.
@@ -216,7 +219,7 @@ fn test_penalty_reason_clone_copy() {
 #[test]
 fn test_last_penalty_reason_updated() {
     let mut r = PeerReputation::default();
-    r.apply_penalty(PenaltyReason::RateLimitExceeded, 0);
+    let _ = r.apply_penalty(PenaltyReason::RateLimitExceeded, 0);
     assert_eq!(
         r.last_penalty_reason,
         Some(PenaltyReason::RateLimitExceeded)

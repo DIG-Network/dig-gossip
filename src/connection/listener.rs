@@ -61,7 +61,7 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chia_protocol::{
     Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
@@ -275,12 +275,20 @@ async fn handle_inbound_native_inner(
         )));
     }
 
+    // CON-007: expire timed bans before the lookup so a peer can reconnect exactly when `until`
+    // elapses (inclusive boundary, same as [`PeerReputation::refresh_ban_status`]).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    state.prune_expired_dig_bans(now).await;
+
     // Step 4: Ban check — reject peers penalized past the threshold (CON-007 / API-006).
     if state
         .banned
         .lock()
         .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?
-        .contains(&peer_id)
+        .contains_key(&peer_id)
     {
         return Err(ClientError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,

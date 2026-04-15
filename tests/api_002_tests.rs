@@ -528,8 +528,7 @@ async fn test_disconnect_peer() {
 }
 
 /// **Row:** `test_ban_peer` — `ban_peer` disconnects the peer *and* blocks future sends
-/// with `PeerBanned` (SPEC Section 3.3, acceptance: "bans the peer via ClientState::ban
-/// and updates PeerReputation").
+/// with `PeerBanned` (SPEC Section 3.3; **CON-007** wires [`ClientState::ban`] on the stub IP).
 ///
 /// **Precondition:** One stub peer `a` is connected.
 /// **Assertion 1:** After `ban_peer(&pid, ProtocolViolation)`, `peer_count()` drops to `0`
@@ -550,6 +549,10 @@ async fn test_ban_peer() {
     h.ban_peer(&pid, dig_gossip::PenaltyReason::ProtocolViolation)
         .await
         .unwrap();
+    assert!(
+        h.__con007_chia_client_is_ip_banned_for_tests(a.ip()).await,
+        "CON-007: Chia ClientState must mirror the DIG ban for the remote IP"
+    );
     // Ban must disconnect immediately.
     assert_eq!(h.peer_count().await, 0);
     // Subsequent sends must be rejected — the peer id is in the ban list.
@@ -609,6 +612,10 @@ async fn test_penalize_peer_auto_ban() {
             .await
             .unwrap();
     }
+    assert!(
+        h.__con007_chia_client_is_ip_banned_for_tests(a.ip()).await,
+        "threshold crossing must populate ClientState banned_peers"
+    );
     // Auto-ban must disconnect the peer.
     assert_eq!(h.peer_count().await, 0);
     // Peer must be on the ban list, not merely disconnected.

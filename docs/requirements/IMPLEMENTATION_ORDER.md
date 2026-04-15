@@ -37,7 +37,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] CON-004 — Keepalive (Ping/Pong, timeout detection at PEER_TIMEOUT_SECS)
 - [x] CON-005 — Rate limiting (RateLimiter with V2_RATE_LIMITS, DIG extensions)
 - [x] CON-006 — Connection state tracking (per-connection metadata on PeerConnection)
-- [ ] CON-007 — Peer banning (ClientState::ban + PeerReputation penalty)
+- [x] CON-007 — Peer banning (ClientState::ban + PeerReputation penalty)
 - [ ] CON-008 — Software version string sanitization (strip control/format characters)
 - [ ] CON-009 — Mandatory TLS via chia-ssl on ALL peer connections (no unencrypted)
 
