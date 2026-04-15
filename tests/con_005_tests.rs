@@ -60,7 +60,8 @@ fn test_separate_limiter_per_connection() {
     );
 }
 
-/// **Row:** `test_dig_message_types_added` — merged limits include CON-005 table entries `200..=208`.
+/// **Row:** `test_dig_message_types_added` — merged limits include CON-005 table entries `200..=208`
+/// plus **DSC-005** introducer registration (`218` / `219`).
 #[test]
 fn test_dig_message_types_added() {
     let map = dig_extension_rate_limits_map();
@@ -71,8 +72,21 @@ fn test_dig_message_types_added() {
             map.keys().collect::<Vec<_>>()
         );
     }
+    for wire in 218u8..=219 {
+        assert!(
+            map.contains_key(&wire),
+            "missing DIG wire limit for {wire}: keys {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+    }
     let merged = gossip_inbound_rate_limits();
     for wire in 200u8..=208 {
+        assert!(
+            merged.dig_wire.contains_key(&wire),
+            "gossip_inbound_rate_limits missing dig_wire {wire}"
+        );
+    }
+    for wire in 218u8..=219 {
         assert!(
             merged.dig_wire.contains_key(&wire),
             "gossip_inbound_rate_limits missing dig_wire {wire}"

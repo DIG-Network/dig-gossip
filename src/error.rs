@@ -186,7 +186,9 @@ pub enum GossipError {
     ///
     /// **When:** Network error, timeout, or malformed response from the introducer.
     /// **Caller action:** Retry with exponential backoff (SPEC §6.4 step 1).
-    /// **Produced by:** [`crate::discovery::introducer_client::IntroducerClient`] (whole-query timeout).
+    /// **Produced by:** [`crate::discovery::introducer_client::IntroducerClient`] when the
+    /// whole-operation [`tokio::time::timeout`] fires (**DSC-004** query: `"introducer query timed out"`;
+    /// **DSC-005** registration: `"introducer registration timed out"`).
     /// Transport failures during the same call surface as [`ClientError`](Self::ClientError) instead.
     #[error("introducer error: {0}")]
     IntroducerError(String),

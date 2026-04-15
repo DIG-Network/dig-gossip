@@ -13,7 +13,7 @@
 //! Inbound frames are delivered on the per-connection `mpsc` from [`Peer::from_websocket`]; **DIG**
 //! enforces [`RateLimiter::handle_message`] here **before** forwarding to the broadcast hub.
 //!
-//! ## DIG wire types (`200..=208`)
+//! ## DIG wire types (`200..=219` subset here)
 //!
 //! [`crate::types::dig_messages::DigMessageType`] discriminants are **not** [`ProtocolMessageTypes`]
 //! variants in `chia-protocol` 0.26, so they cannot appear in [`chia_sdk_client::RateLimits`] `tx` /
@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 
-use chia_sdk_client::{RateLimit, RateLimits, RateLimiter, V2_RATE_LIMITS};
+use chia_sdk_client::{RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
 
 use crate::types::dig_messages::DigMessageType;
 
@@ -70,6 +70,16 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
         DigMessageType::ValidatorAnnounce as u8,
         RateLimit::new(10.0, 4096.0, None),
     );
+    // DSC-005 — introducer registration is low-frequency but still needs bounded ingress if ever
+    // proxied through a gossip peer path (defensive; primary flow is introducer WSS client).
+    m.insert(
+        DigMessageType::RegisterPeer as u8,
+        RateLimit::new(4.0, 512.0, None),
+    );
+    m.insert(
+        DigMessageType::RegisterAck as u8,
+        RateLimit::new(4.0, 256.0, None),
+    );
     m
 }
 
@@ -83,10 +93,5 @@ pub fn gossip_inbound_rate_limits() -> RateLimits {
 /// Build a per-connection inbound limiter: **incoming = true**, **60 s** window, scaled by
 /// [`crate::types::config::GossipConfig::peer_options`](crate::types::config::GossipConfig::peer_options).
 pub fn new_inbound_rate_limiter(rate_limit_factor: f64) -> RateLimiter {
-    RateLimiter::new(
-        true,
-        60,
-        rate_limit_factor,
-        gossip_inbound_rate_limits(),
-    )
+    RateLimiter::new(true, 60, rate_limit_factor, gossip_inbound_rate_limits())
 }

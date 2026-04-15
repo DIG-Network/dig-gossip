@@ -659,16 +659,12 @@ async fn test_discover_from_introducer() {
     );
 }
 
-/// **Row:** `test_register_with_introducer` — registration call succeeds (stub) when an
-/// introducer is configured (SPEC Section 3.3, acceptance: "`register_with_introducer`
-/// returns `IntroducerNotConfigured` when no introducer" — the inverse proves the
-/// happy path).
+/// **Row:** `test_register_with_introducer` — with `introducer` set but **empty** `endpoint`, the
+/// handle fails fast with [`GossipError::InvalidConfig`] (mirrors DSC-004 / DSC-005 guards).
 ///
-/// **Precondition:** `cfg.introducer = Some(IntroducerConfig::default())`.
-/// **Assertion:** `register_with_introducer()` returns `Ok(())`.
-/// **Why sufficient:** Proves the config guard passes and the stub registration path
-/// completes without error. Real introducer registration (which sends our
-/// `TimestampedPeerInfo` to the introducer server) is tested at the DSC layer.
+/// **Precondition:** `IntroducerConfig::default()` uses an empty-string `endpoint` sentinel (API-010).
+/// **Assertion:** `register_with_introducer()` returns `InvalidConfig` — DSC-005 refuses to dial
+/// before a real `wss://` URL exists. Full registration I/O is in `tests/dsc_005_tests.rs`.
 #[tokio::test]
 async fn test_register_with_introducer() {
     let dir = common::test_temp_dir();
@@ -677,7 +673,11 @@ async fn test_register_with_introducer() {
     cfg.introducer = Some(IntroducerConfig::default());
     let svc = GossipService::new(cfg).expect("new");
     let h = svc.start().await.expect("start");
-    h.register_with_introducer().await.unwrap();
+    let err = h.register_with_introducer().await.unwrap_err();
+    assert!(
+        matches!(err, GossipError::InvalidConfig(_)),
+        "expected InvalidConfig for empty introducer.endpoint, got {err:?}"
+    );
 }
 
 /// **Row:** `test_request_peers_from` — `request_peers_from(&pid)` sends `RequestPeers` and

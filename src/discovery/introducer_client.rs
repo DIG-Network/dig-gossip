@@ -1,4 +1,4 @@
-//! Introducer WebSocket client — **DSC-004** query and (future) **DSC-005** registration.
+//! Introducer WebSocket client — **DSC-004** peer query and **DSC-005** self-registration.
 //!
 //! # Requirements
 //!
@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use chia_protocol::{Bytes32, Handshake, NodeType, ProtocolMessageTypes, TimestampedPeerInfo};
 
+use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
 use chia_sdk_client::{load_ssl_cert, ClientError, Peer, PeerOptions};
 use chia_ssl::ChiaCertificate;
@@ -40,11 +41,24 @@ use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 use crate::connection::outbound::{network_id_handshake_string, tls_connector_for_cert};
 use crate::error::GossipError;
 
-/// Introducer RPC façade — today only **DSC-004** [`IntroducerClient::query_peers`].
+/// Payload for [`IntroducerClient::register_with_introducer`] — **DSC-005** / [`DSC-005.md`](../../../docs/requirements/domains/discovery/specs/DSC-005.md).
 ///
-/// **Why a unit type:** DSC-005 will add `register_with_introducer` helpers on the same type so
-/// `GossipHandle` and the discovery loop share one module-level entry point (matches the spec’s
-/// `IntroducerClient` naming without forcing stateful handles before DSC-006).
+/// Callers supply the **public** reachability tuple the introducer should publish (not necessarily
+/// the socket the process bound locally — operators may NAT or front WSS separately).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRegistration {
+    /// IPv4/IPv6 literal or DNS hostname string placed on the wire in [`RegisterPeer`].
+    pub ip: String,
+    /// P2P port the introducer should hand to querying peers.
+    pub port: u16,
+    /// Declared [`NodeType`] — DIG gossip registers as [`NodeType::FullNode`] in the default handle path.
+    pub node_type: NodeType,
+}
+
+/// Introducer RPC façade — [`IntroducerClient::query_peers`] (DSC-004) and [`IntroducerClient::register_with_introducer`] (DSC-005).
+///
+/// **Why a unit type:** keeps a stable namespace for static helpers shared by [`crate::service::gossip_handle::GossipHandle`]
+/// and future DSC-006 discovery-loop tasks without inventing stateful client handles prematurely.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct IntroducerClient;
 
@@ -133,6 +147,103 @@ impl IntroducerClient {
                 "introducer query timed out".into(),
             )),
         }
+    }
+
+    /// Register this node’s P2P address with a DIG introducer (**DSC-005**).
+    ///
+    /// Mirrors [`Self::query_peers`] for TLS + [`Handshake`] validation, then performs
+    /// `RegisterPeer → RegisterAck` via [`Peer::request_infallible`](chia_sdk_client::Peer::request_infallible).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(ack)` — transport succeeded; inspect `ack.success` for introducer policy (`false` is **not** an I/O error).
+    /// * `Err(GossipError::IntroducerError { timeout })` — [`tokio::time::timeout`] expired (connect + handshake + RPC).
+    /// * `Err(GossipError::ClientError(_))` — TLS / WebSocket / framing errors from `chia-sdk-client`.
+    #[cfg(any(feature = "native-tls", feature = "rustls"))]
+    pub async fn register_with_introducer(
+        wss_uri: &str,
+        local_certificate: &ChiaCertificate,
+        network_id: Bytes32,
+        peer_options: PeerOptions,
+        operation_timeout: Duration,
+        registration: &PeerRegistration,
+    ) -> Result<RegisterAck, GossipError> {
+        let network_string = network_id_handshake_string(network_id);
+
+        let work = async {
+            let connector = tls_connector_for_cert(local_certificate)?;
+            let (peer, mut receiver) =
+                Peer::connect_full_uri(wss_uri, connector, peer_options).await?;
+
+            peer.send(Handshake {
+                network_id: network_string.clone(),
+                protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
+                software_version: "0.0.0".to_string(),
+                server_port: 0,
+                node_type: NodeType::Wallet,
+                capabilities: vec![
+                    (1, "1".to_string()),
+                    (2, "1".to_string()),
+                    (3, "1".to_string()),
+                ],
+            })
+            .await?;
+
+            let Some(message) = receiver.recv().await else {
+                return Err(ClientError::MissingHandshake);
+            };
+
+            if message.msg_type != ProtocolMessageTypes::Handshake {
+                return Err(ClientError::InvalidResponse(
+                    vec![ProtocolMessageTypes::Handshake],
+                    message.msg_type,
+                ));
+            }
+
+            let handshake = Handshake::from_bytes(&message.data)?;
+
+            if handshake.node_type != NodeType::FullNode {
+                return Err(ClientError::WrongNodeType(
+                    NodeType::FullNode,
+                    handshake.node_type,
+                ));
+            }
+
+            if handshake.network_id != network_string {
+                return Err(ClientError::WrongNetwork(
+                    network_string,
+                    handshake.network_id,
+                ));
+            }
+
+            let body = RegisterPeer::new(
+                registration.ip.clone(),
+                registration.port,
+                registration.node_type,
+            );
+            peer.request_infallible::<RegisterAck, _>(body).await
+        };
+
+        match tokio::time::timeout(operation_timeout, work).await {
+            Ok(inner) => inner.map_err(GossipError::from),
+            Err(_) => Err(GossipError::IntroducerError(
+                "introducer registration timed out".into(),
+            )),
+        }
+    }
+
+    /// TLS-disabled builds cannot dial introducers — fail fast with the same error shape other
+    /// transports use when TLS is unavailable.
+    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
+    pub async fn register_with_introducer(
+        _wss_uri: &str,
+        _local_certificate: &ChiaCertificate,
+        _network_id: Bytes32,
+        _peer_options: PeerOptions,
+        _operation_timeout: Duration,
+        _registration: &PeerRegistration,
+    ) -> Result<RegisterAck, GossipError> {
+        Err(ClientError::UnsupportedTls.into())
     }
 
     /// TLS-disabled builds cannot dial introducers — fail fast with the same error shape other

@@ -606,8 +606,6 @@ dependencies = [
 [[package]]
 name = "chia-protocol"
 version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9256179e4c912313532d7a47a50f67f6128313ee86a3798e54050afb73d6042"
 dependencies = [
  "chia-bls 0.26.0",
  "chia-sha2 0.26.0",

@@ -65,9 +65,11 @@ pub mod privacy;
 // ---------------------------------------------------------------------------
 // Chia crates (NOT reimplemented)
 // ---------------------------------------------------------------------------
-// Introducer request/response **wire types** (opcodes 63/64) are defined in-tree — see
-// [`discovery::introducer_wire`](crate::discovery::introducer_wire) — `chia-protocol` 0.26 exposes
+// Introducer **query** wire types (opcodes 63/64) are defined in-tree — see
+// [`discovery::introducer_wire`](crate::discovery::introducer_wire) — crates.io `chia-protocol` 0.26 exposes
 // only [`ProtocolMessageTypes::RequestPeersIntroducer`] / [`RespondPeersIntroducer`] enum variants.
+// Introducer **registration** (**218/219**) uses [`discovery::introducer_register_wire`](crate::discovery::introducer_register_wire)
+// plus the vendored `chia-protocol` fork (`../../vendor/chia-protocol`, DSC-005).
 pub use chia_protocol::{
     Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
     NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
@@ -87,6 +89,7 @@ pub use chia_sdk_client::{
 };
 pub use chia_ssl::ChiaCertificate;
 pub use chia_traits::Streamable;
+pub use discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 pub use discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
 
 // ---------------------------------------------------------------------------
@@ -118,7 +121,7 @@ pub use discovery::address_manager::AddressManager;
 pub use discovery::address_manager_store::{
     AddressManagerState, AddressManagerStore, ADDRESS_MANAGER_STATE_VERSION,
 };
-pub use discovery::introducer_client::IntroducerClient;
+pub use discovery::introducer_client::{IntroducerClient, PeerRegistration};
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
 pub use discovery::node_discovery::{
     dig_network_from_gossip_config, dns_lookup_seed_addrs, dns_seed_resolve_and_merge,

@@ -50,8 +50,9 @@ use chia_protocol::{
 use chia_sdk_client::Peer;
 
 use crate::discovery::introducer_client::{
-    load_local_certificate_for_introducer, IntroducerClient,
+    load_local_certificate_for_introducer, IntroducerClient, PeerRegistration,
 };
+use crate::discovery::introducer_register_wire::RegisterAck;
 use chia_traits::Streamable;
 use std::any::TypeId;
 use std::sync::{Arc, Mutex};
@@ -800,12 +801,48 @@ impl GossipHandle {
         .await
     }
 
-    pub async fn register_with_introducer(&self) -> Result<(), GossipError> {
+    /// Register [`GossipConfig::listen_addr`](crate::types::config::GossipConfig::listen_addr) with the configured introducer (**DSC-005**).
+    ///
+    /// Uses [`IntroducerClient::register_with_introducer`] — same TLS + [`Handshake`] rules as
+    /// [`Self::discover_from_introducer`]. An **empty** trimmed [`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig::endpoint)
+    /// fails with [`GossipError::InvalidConfig`] without opening a socket (mirrors DSC-004 ergonomics).
+    ///
+    /// **Policy:** `RegisterAck.success == false` is still `Ok` — the introducer explicitly declined;
+    /// only transport/protocol failures become [`GossipError`].
+    pub async fn register_with_introducer(&self) -> Result<RegisterAck, GossipError> {
         self.require_running()?;
-        if self.inner.config.introducer.is_none() {
-            return Err(GossipError::IntroducerNotConfigured);
+        let intro = self
+            .inner
+            .config
+            .introducer
+            .as_ref()
+            .ok_or(GossipError::IntroducerNotConfigured)?;
+        let endpoint = intro.endpoint.trim();
+        if endpoint.is_empty() {
+            return Err(GossipError::InvalidConfig(
+                "introducer.endpoint is empty; set a wss:// URL to register with an introducer (DSC-005)"
+                    .into(),
+            ));
         }
-        Ok(())
+        let cert = load_local_certificate_for_introducer(
+            &self.inner.config.cert_path,
+            &self.inner.config.key_path,
+        )?;
+        let timeout = Duration::from_secs(intro.request_timeout_secs.max(1));
+        let registration = PeerRegistration {
+            ip: self.inner.config.listen_addr.ip().to_string(),
+            port: self.inner.config.listen_addr.port(),
+            node_type: NodeType::FullNode,
+        };
+        IntroducerClient::register_with_introducer(
+            endpoint,
+            &cert,
+            self.inner.config.network_id,
+            self.inner.config.peer_options.clone(),
+            timeout,
+            &registration,
+        )
+        .await
     }
 
     pub async fn request_peers_from(&self, peer_id: &PeerId) -> Result<RespondPeers, GossipError> {

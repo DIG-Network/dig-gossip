@@ -187,9 +187,17 @@ name = "dsc_004_tests"
 path = "tests/dsc_004_tests.rs"
 required-features = ["native-tls"]
 
+# DSC-005: introducer RegisterPeer / RegisterAck (`tests/dsc_005_tests.rs`).
+[[test]]
+name = "dsc_005_tests"
+path = "tests/dsc_005_tests.rs"
+required-features = ["native-tls"]
+
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
 [patch.crates-io]
+# DSC-005: `RegisterPeer` / `RegisterAck` opcodes 218/219 on `ProtocolMessageTypes` (see vendor/chia-protocol/README.dig-gossip.md).
+chia-protocol = { path = "vendor/chia-protocol" }
 chia-sdk-client = { path = "vendor/chia-sdk-client" }
 # Patched `native-tls`: OpenSSL server acceptor sets CERT_REQUIRED + Chia CA trust for inbound mTLS
 # (CON-009). See `vendor/native-tls/README.dig-gossip.md`.
