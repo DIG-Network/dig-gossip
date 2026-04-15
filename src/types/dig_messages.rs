@@ -46,7 +46,7 @@
 //! On the wire, a DIG message is wrapped in a Chia [`Message`](chia_protocol::Message)
 //! whose `msg_type` is set to `DigMessageType as u8`. The `data` field contains the
 //! serialized DIG payload. Conversion back from wire bytes uses [`TryFrom<u8>`] which
-//! returns [`UnknownDigMessageType`] for any value outside the assigned 200..=217 band
+//! returns [`UnknownDigMessageType`] for any value outside the assigned 200..=219 band
 //! — this allows the receiver to cleanly reject unknown or corrupt discriminants
 //! without panicking.
 
@@ -77,7 +77,7 @@ impl fmt::Display for UnknownDigMessageType {
 
 impl std::error::Error for UnknownDigMessageType {}
 
-/// DIG L2 wire discriminants (`200..=217`) extending Chia’s protocol namespace.
+/// DIG L2 wire discriminants (`200..=219`) extending Chia’s protocol namespace.
 ///
 /// Each variant maps 1:1 to a `u8` wire value via `#[repr(u8)]`. The discriminant is
 /// written directly into [`chia_protocol::Message::msg_type`] on send and parsed back
@@ -225,6 +225,18 @@ pub enum DigMessageType {
     /// Explicit pull request when a peer needs the full message content identified
     /// by the hash from a lazy announcement. Domain: PLT.
     PlumtreeRequestByHash = 217,
+
+    /// Introducer self-registration request (**DSC-005** / SPEC §6.5).
+    ///
+    /// Numeric **218** matches [`ProtocolMessageTypes::RegisterPeer`](chia_protocol::ProtocolMessageTypes::RegisterPeer)
+    /// on the vendored `chia-protocol` fork so [`Message`](chia_protocol::Message) decode and
+    /// [`DigMessageType`] documentation stay aligned.
+    RegisterPeer = 218,
+
+    /// Introducer registration acknowledgement (**DSC-005**).
+    ///
+    /// Numeric **219** matches [`ProtocolMessageTypes::RegisterAck`](chia_protocol::ProtocolMessageTypes::RegisterAck).
+    RegisterAck = 219,
 }
 
 impl DigMessageType {
@@ -233,14 +245,14 @@ impl DigMessageType {
     /// Used by tests and validators to confirm that no discriminant exceeds the
     /// allocated range. Future DIG message types should be assigned values above
     /// this constant (i.e., 218+).
-    pub const MAX_ASSIGNED: u8 = Self::PlumtreeRequestByHash as u8;
+    pub const MAX_ASSIGNED: u8 = Self::RegisterAck as u8;
 
     /// All 18 defined variants in stable declaration order.
     ///
     /// Useful for exhaustive iteration in tests, serialization round-trip checks,
     /// and registry construction. The order matches the enum definition and will
     /// not change for existing variants (new variants are appended).
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::NewAttestation,
         Self::NewCheckpointProposal,
         Self::NewCheckpointSignature,
@@ -259,6 +271,8 @@ impl DigMessageType {
         Self::PlumtreePrune,
         Self::PlumtreeGraft,
         Self::PlumtreeRequestByHash,
+        Self::RegisterPeer,
+        Self::RegisterAck,
     ];
 }
 
@@ -266,7 +280,7 @@ impl DigMessageType {
 ///
 /// # Why `TryFrom` instead of `From`
 ///
-/// The DIG band occupies only 200..=217 out of the full 0..=255 `u8` range.
+/// The DIG band occupies only 200..=219 out of the full 0..=255 `u8` range.
 /// Values outside that band are not valid DIG discriminants and must be
 /// rejected rather than silently misinterpreted. `TryFrom` makes this
 /// fallibility explicit at the type level — callers are forced to handle the
@@ -276,7 +290,7 @@ impl DigMessageType {
 /// # Errors
 ///
 /// Returns [`UnknownDigMessageType`] wrapping the offending byte if `value`
-/// is not in the assigned 200..=217 range.
+/// is not in the assigned 200..=219 range.
 impl TryFrom<u8> for DigMessageType {
     type Error = UnknownDigMessageType;
 
@@ -303,6 +317,8 @@ impl TryFrom<u8> for DigMessageType {
             215 => Ok(Self::PlumtreePrune),
             216 => Ok(Self::PlumtreeGraft),
             217 => Ok(Self::PlumtreeRequestByHash),
+            218 => Ok(Self::RegisterPeer),
+            219 => Ok(Self::RegisterAck),
             other => Err(UnknownDigMessageType(other)),
         }
     }
@@ -335,7 +351,7 @@ impl Visitor<'_> for DigMessageTypeSerdeVisitor {
     type Value = DigMessageType;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("DigMessageType wire value (u8 in 200..=217)")
+        formatter.write_str("DigMessageType wire value (u8 in 200..=219)")
     }
 
     fn visit_u8<E: de::Error>(self, v: u8) -> Result<Self::Value, E> {

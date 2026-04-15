@@ -105,8 +105,8 @@ items:
     tests:
       - tests/api_009_tests.rs
     notes: >
-      repr(u8) variants 200-217 per NORMATIVE; manual serde as wire u8; TryFrom<u8> with UnknownDigMessageType;
-      DigMessageType::ALL for iteration. Re-export UnknownDigMessageType at crate root. Removed stub ReservedBase.
+      repr(u8) variants 200-219 (includes DSC-005 introducer registration 218/219); manual serde as wire u8;
+      TryFrom<u8> with UnknownDigMessageType; DigMessageType::ALL for iteration. Re-export UnknownDigMessageType at crate root.
   - id: API-010
     section: "2.11, 2.12"
     summary: "IntroducerConfig and RelayConfig"

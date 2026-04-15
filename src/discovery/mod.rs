@@ -8,6 +8,10 @@ pub mod address_manager;
 pub mod address_manager_store;
 pub mod introducer_client;
 pub mod introducer_peers;
+/// DIG introducer **registration** wire types (**218** / **219**) — DSC-005.
+///
+/// Depends on the vendored [`chia_protocol::ProtocolMessageTypes`] extension (see `vendor/chia-protocol`).
+pub mod introducer_register_wire;
 /// Introducer wire structs for protocol IDs **63** / **64** (DSC-004).
 ///
 /// `chia-protocol` 0.26 lists these only on [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes);

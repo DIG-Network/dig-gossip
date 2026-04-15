@@ -24,7 +24,7 @@ use chia_protocol::{
 };
 use chia_ssl::ChiaCertificate;
 use chia_traits::Streamable;
-use dig_gossip::{RequestPeersIntroducer, RespondPeersIntroducer};
+use dig_gossip::{RegisterAck, RegisterPeer, RequestPeersIntroducer, RespondPeersIntroducer};
 use futures_util::{SinkExt, StreamExt};
 use native_tls::{Identity, TlsAcceptor};
 use tokio::net::TcpListener;
@@ -270,6 +270,115 @@ pub async fn spawn_one_shot_introducer(
             &server_handshake_network_id,
             peer_list,
             stall_after_request_peers_introducer,
+        )
+        .await
+    });
+    (addr, jh)
+}
+
+/// One-shot introducer that completes **DSC-005** registration: handshake then `RegisterPeer` → `RegisterAck`.
+///
+/// * `expected_registration` — when `Some`, asserts decoded [`RegisterPeer`] fields match (proves the client sent the configured tuple).
+/// * `ack_success` — forwarded into [`RegisterAck::new`].
+/// * `stall_after_register_peer` — never sends the ack so client timeouts can be exercised.
+async fn serve_introducer_register_one_client(
+    mut ws: Ws,
+    client_expected_network_id: &str,
+    server_handshake_network_id: &str,
+    expected_registration: Option<(String, u16, NodeType)>,
+    ack_success: bool,
+    stall_after_register_peer: bool,
+) -> Result<(), String> {
+    let first = next_chia_message(&mut ws).await?;
+    if first.msg_type != ProtocolMessageTypes::Handshake {
+        return Err(format!("expected Handshake, got {:?}", first.msg_type));
+    }
+    let hs = Handshake::from_bytes(&first.data).map_err(|e| e.to_string())?;
+    if hs.network_id != client_expected_network_id {
+        return Err(format!(
+            "client network_id mismatch: got {} expect {}",
+            hs.network_id, client_expected_network_id
+        ));
+    }
+
+    let reply_hs = Handshake {
+        network_id: server_handshake_network_id.to_string(),
+        protocol_version: "0.0.37".to_string(),
+        software_version: "dig-gossip-test-introducer-register/0".to_string(),
+        server_port: 0,
+        node_type: NodeType::FullNode,
+        capabilities: vec![],
+    };
+    let out = Message {
+        msg_type: ProtocolMessageTypes::Handshake,
+        id: None,
+        data: reply_hs.to_bytes().map_err(|e| e.to_string())?.into(),
+    };
+    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let third = next_chia_message(&mut ws).await?;
+    if third.msg_type != ProtocolMessageTypes::RegisterPeer {
+        return Err(format!("expected RegisterPeer, got {:?}", third.msg_type));
+    }
+    let req = RegisterPeer::from_bytes(&third.data).map_err(|e| e.to_string())?;
+    if let Some((ip, port, nt)) = expected_registration {
+        if req.ip != ip || req.port != port || req.node_type != nt {
+            return Err(format!(
+                "RegisterPeer mismatch: got {}:{} {:?} want {}:{} {:?}",
+                req.ip, req.port, req.node_type, ip, port, nt
+            ));
+        }
+    }
+
+    if stall_after_register_peer {
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        return Ok(());
+    }
+
+    let resp = RegisterAck::new(ack_success);
+    let out = Message {
+        msg_type: ProtocolMessageTypes::RegisterAck,
+        id: third.id,
+        data: resp.to_bytes().map_err(|e| e.to_string())?.into(),
+    };
+    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Bind `127.0.0.1:0`, accept one client, run the DSC-005 introducer registration wire sequence.
+pub async fn spawn_one_shot_introducer_register(
+    cert: ChiaCertificate,
+    client_expected_network_id: String,
+    server_handshake_network_id: String,
+    expected_registration: Option<(String, u16, NodeType)>,
+    ack_success: bool,
+    stall_after_register_peer: bool,
+) -> (SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind introducer register test listener");
+    let addr = listener.local_addr().expect("local_addr");
+    let jh = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let identity = Identity::from_pkcs8(cert.cert_pem.as_bytes(), cert.key_pem.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let acceptor = TlsAcceptor::builder(identity)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let acceptor = TokioTlsAcceptor::from(acceptor);
+        let tls = acceptor.accept(tcp).await.map_err(|e| e.to_string())?;
+        let ws = accept_async(tls).await.map_err(|e| e.to_string())?;
+        serve_introducer_register_one_client(
+            ws,
+            &client_expected_network_id,
+            &server_handshake_network_id,
+            expected_registration,
+            ack_success,
+            stall_after_register_peer,
         )
         .await
     });

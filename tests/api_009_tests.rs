@@ -1,4 +1,4 @@
-//! Tests for **API-009: [`DigMessageType`]** (DIG wire IDs 200–217).
+//! Tests for **API-009: [`DigMessageType`]** (DIG wire IDs 200–219).
 //!
 //! ## Traceability
 //!
@@ -31,6 +31,7 @@ use dig_gossip::{
 // interoperability with other DIG nodes.
 
 /// **Row:** `NewAttestation` = 200 -- first DIG extension opcode.
+/// SPEC §2.3 — `DigMessageType::NewAttestation = 200` (attestation gossip).
 #[test]
 fn test_new_attestation_value() {
     assert_eq!(DigMessageType::NewAttestation as u8, 200);
@@ -132,13 +133,27 @@ fn test_plumtree_graft_value() {
     assert_eq!(DigMessageType::PlumtreeGraft as u8, 216);
 }
 
-/// **Row:** `PlumtreeRequestByHash` = 217 -- last DIG extension opcode.
+/// **Row:** `PlumtreeRequestByHash` = 217.
 #[test]
 fn test_plumtree_request_by_hash_value() {
     assert_eq!(DigMessageType::PlumtreeRequestByHash as u8, 217);
 }
 
+/// **Row:** `RegisterPeer` = 218 (DSC-005 introducer registration request).
+#[test]
+fn test_register_peer_dig_value() {
+    assert_eq!(DigMessageType::RegisterPeer as u8, 218);
+}
+
+/// **Row:** `RegisterAck` = 219 (DSC-005 introducer registration ack).
+#[test]
+fn test_register_ack_dig_value() {
+    assert_eq!(DigMessageType::RegisterAck as u8, 219);
+}
+
 /// **Row:** `test_all_values_above_200` — entire DIG band is ≥ 200 (API-009 acceptance).
+/// SPEC §2.3 — DIG extension message types use IDs 200+ to avoid collision with
+/// Chia's `ProtocolMessageTypes`.
 #[test]
 fn test_all_values_above_200() {
     for v in DigMessageType::ALL {
@@ -190,14 +205,14 @@ fn test_clone_copy() {
     assert_eq!(a, c);
 }
 
-/// **Row:** `test_hash_in_hashset` — API-009 test plan says HashSet; all **18** variants fit.
+/// **Row:** `test_hash_in_hashset` — API-009 test plan says HashSet; all **20** variants fit.
 #[test]
 fn test_hash_in_hashset() {
     let mut set = HashSet::new();
     for v in DigMessageType::ALL {
         assert!(set.insert(v));
     }
-    assert_eq!(set.len(), 18);
+    assert_eq!(set.len(), 20);
 }
 
 /// **Row:** `test_eq_comparison`
@@ -224,17 +239,26 @@ fn test_try_from_u8() {
         DigMessageType::try_from(217).unwrap(),
         DigMessageType::PlumtreeRequestByHash
     );
+    assert_eq!(
+        DigMessageType::try_from(218).unwrap(),
+        DigMessageType::RegisterPeer
+    );
+    assert_eq!(
+        DigMessageType::try_from(219).unwrap(),
+        DigMessageType::RegisterAck
+    );
     assert!(matches!(
         DigMessageType::try_from(199),
         Err(UnknownDigMessageType(199))
     ));
     assert!(matches!(
-        DigMessageType::try_from(218),
-        Err(UnknownDigMessageType(218))
+        DigMessageType::try_from(220),
+        Err(UnknownDigMessageType(220))
     ));
 }
 
 /// **Collision avoidance (representative):** core Chia request/response types stay below 200.
+/// SPEC §2.3 — DIG extension IDs 200+ avoid collision with Chia `ProtocolMessageTypes`.
 ///
 /// This does not exhaust `ProtocolMessageTypes`, but proves the **DIG200+ reservation** does not
 /// intersect common full-node traffic we already use in API-002 tests.

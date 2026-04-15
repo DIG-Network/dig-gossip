@@ -47,10 +47,15 @@ items:
   - id: DSC-005
     section: "6.5"
     summary: "Introducer registration (register_peer)"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#65-introducer-client-dig-extension"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_005_tests.rs
+    notes: >
+      vendor/chia-protocol: ProtocolMessageTypes RegisterPeer=218 / RegisterAck=219 so Message decode works;
+      introducer_register_wire.rs: streamable bodies; IntroducerClient::register_with_introducer;
+      GossipHandle::register_with_introducer -> RegisterAck; empty introducer.endpoint -> InvalidConfig;
+      STR-005 wss_full_node::spawn_one_shot_introducer_register; DigMessageType 218/219 + inbound dig_wire limits.
   - id: DSC-006
     section: "6.4"
     summary: "Discovery loop with DNS-first and backoff"

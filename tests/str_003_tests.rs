@@ -73,16 +73,22 @@ fn test_reexport_protocol_message_types() {
 }
 
 /// **Acceptance:** Introducer opcodes are visible on [`ProtocolMessageTypes`] **and** wire structs
-/// exist at the crate root for DSC-004 (`dig_gossip::{RequestPeersIntroducer, RespondPeersIntroducer}`).
+/// exist at the crate root for DSC-004 (`RequestPeersIntroducer`, `RespondPeersIntroducer`) and
+/// DSC-005 (`RegisterPeer`, `RegisterAck` — **218/219** via vendored `chia-protocol`).
 ///
 /// `chia-protocol` 0.26 names opcodes **63** / **64** only on the enum; DIG defines streamable bodies
 /// in `src/discovery/introducer_wire.rs` (re-exported per STR-003) so `Peer::request_infallible` can run.
+/// DSC-005 adds `RegisterPeer` / `RegisterAck` to the **patched** enum plus `introducer_register_wire.rs`.
 #[test]
 fn test_introducer_ops_are_protocol_message_variants() {
     use dig_gossip::ProtocolMessageTypes as M;
     let _ = M::RequestPeersIntroducer;
     let _ = M::RespondPeersIntroducer;
+    let _ = M::RegisterPeer;
+    let _ = M::RegisterAck;
     let _: dig_gossip::RequestPeersIntroducer = dig_gossip::RequestPeersIntroducer::new();
+    let _: dig_gossip::RegisterPeer =
+        dig_gossip::RegisterPeer::new("127.0.0.1".into(), 9444, dig_gossip::NodeType::FullNode);
 }
 
 /// **Acceptance:** `Peer` (chia-sdk-client WebSocket handle) is re-exported.
@@ -176,7 +182,7 @@ fn test_reexport_peer_reputation() {
     assert_send_sync::<dig_gossip::PeerReputation>();
 }
 
-/// **Acceptance:** `DigMessageType` (DIG extension wire IDs 200-217, API-009) is re-exported.
+/// **Acceptance:** `DigMessageType` (DIG extension wire IDs 200-219, API-009) is re-exported.
 #[test]
 fn test_reexport_dig_message_type() {
     assert_send_sync::<dig_gossip::DigMessageType>();

@@ -886,7 +886,7 @@ impl GossipHandle {
     pub async fn discover_from_introducer(&self) -> Result<Vec<TimestampedPeerInfo>, GossipError>;
 
     /// Register with introducer.
-    pub async fn register_with_introducer(&self) -> Result<(), GossipError>;
+    pub async fn register_with_introducer(&self) -> Result<RegisterAck, GossipError>;
 
     /// Request peers from a connected peer (sends chia-protocol::RequestPeers).
     pub async fn request_peers_from(&self, peer_id: &PeerId) -> Result<RespondPeers, GossipError>;
