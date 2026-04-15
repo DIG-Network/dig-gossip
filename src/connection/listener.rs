@@ -49,11 +49,13 @@
 //!   Linux/OpenSSL `native_tls` typically still receives the leaf cert when the client uses
 //!   [`TlsConnector`](native_tls::TlsConnector) identity material.
 //!
-//! ## `software_version` sanitization
+//! ## `software_version` sanitization (CON-003 / CON-008)
 //!
-//! CON-003 applies [`crate::connection::handshake::sanitize_software_version`] before accepting the
-//! peer; the sanitized string is stored on [`crate::service::state::LiveSlot`]. CON-008 remains the
-//! dedicated normative row for the same Chia `ws_connection.py` behavior — implementation is shared.
+//! Inbound path calls [`crate::connection::handshake::validate_remote_handshake`] before the
+//! Handshake reply; the returned string is stored on the live peer slot’s
+//! `remote_software_version_sanitized` field ([`crate::service::state::LiveSlot`]). **CON-008** is verified by
+//! `tests/con_008_tests.rs` (matrix + “matches Chia category policy”); **CON-003** adds protocol /
+//! network gates around the same helper (`tests/con_003_tests.rs`).
 
 // CON-002: Large `ClientError` payloads are intentional — they propagate upstream
 // `chia_sdk_client` variants verbatim, matching the API-004 `GossipError::ClientError` wrapper.
@@ -83,8 +85,8 @@ use crate::service::state::{
     record_live_peer_outbound_bytes, LiveSlot, PeerSlot, ServiceState, StubPeer,
 };
 use crate::types::peer::{
-    message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der, PeerConnectionWireMetrics,
-    PeerId, PeerInfo,
+    message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der,
+    PeerConnectionWireMetrics, PeerId, PeerInfo,
 };
 
 /// Maximum time we wait for the remote peer to send a [`ProtocolMessageTypes::Handshake`]
@@ -518,9 +520,9 @@ async fn negotiate_inbound_over_ws(
         server_port: listen_port_for_handshake(&state),
         node_type: NodeType::FullNode,
         capabilities: vec![
-            (1, "1".to_string()),  // BASE protocol
-            (2, "1".to_string()),  // BLOCK_HEADERS
-            (3, "1".to_string()),  // RATE_LIMITS_V2
+            (1, "1".to_string()), // BASE protocol
+            (2, "1".to_string()), // BLOCK_HEADERS
+            (3, "1".to_string()), // RATE_LIMITS_V2
         ],
     };
     let reply = Message {

@@ -97,6 +97,8 @@ tokio-native-tls = "0.3"
 futures-util = "0.3"
 # CON-002 tests: derive expected TLS [`PeerId`] from PEM (mirrors SPKI extraction in CON-001).
 x509-parser = "0.16"
+# CON-008 tests: assert sanitized outputs contain no Unicode Cc/Cf (same tables Chia uses via `unicodedata`).
+unicode-general-category = "1.1"
 
 [features]
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
@@ -148,6 +150,11 @@ required-features = ["native-tls"]
 name = "con_004_tests"
 path = "tests/con_004_tests.rs"
 required-features = ["native-tls"]
+
+# CON-008: `Handshake.software_version` Cc/Cf sanitization (`sanitize_software_version` + validate path).
+[[test]]
+name = "con_008_tests"
+path = "tests/con_008_tests.rs"
 
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
