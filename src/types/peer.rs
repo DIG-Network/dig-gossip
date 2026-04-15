@@ -23,6 +23,10 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
+use crate::constants::{
+    BUCKET_SIZE, HORIZON_DAYS, MAX_FAILURES, MAX_RETRIES, MIN_FAIL_DAYS,
+    NEW_BUCKETS_PER_SOURCE_GROUP, NEW_BUCKET_COUNT, TRIED_BUCKETS_PER_GROUP, TRIED_BUCKET_COUNT,
+};
 use chia_protocol::{Bytes32, Message, NodeType};
 use chia_sdk_client::Peer;
 use chia_traits::Streamable;
@@ -164,6 +168,97 @@ pub struct ExtendedPeerInfo {
     pub last_count_attempt: u64,
 }
 
+/// Chia `chia.util.hash.std_hash` — SHA-256; first 8 bytes interpreted as big-endian `u64`
+/// (`address_manager.py` bucket math).
+fn chia_std_hash_u64_prefix(data: &[u8]) -> u64 {
+    let d = Sha256::digest(data);
+    u64::from_be_bytes(d[..8].try_into().expect("sha256 len"))
+}
+
+impl ExtendedPeerInfo {
+    /// Whether this row should be evicted as “terrible” (Chia `ExtendedPeerInfo.is_terrible`,
+    /// `address_manager.py:176+`).
+    ///
+    /// **DSC-001:** [`crate::discovery::address_manager::AddressManager`] uses this for new-table
+    /// replacement policy when a bucket slot is full.
+    pub fn is_terrible(&self, now: u64) -> bool {
+        if self.last_try > 0 && self.last_try >= now.saturating_sub(60) {
+            return false;
+        }
+        if self.timestamp > now.saturating_add(10 * 60) {
+            return true;
+        }
+        let horizon_secs = u64::from(HORIZON_DAYS) * 24 * 60 * 60;
+        if self.timestamp == 0 || now.saturating_sub(self.timestamp) > horizon_secs {
+            return true;
+        }
+        if self.last_success == 0 && self.num_attempts >= MAX_RETRIES {
+            return true;
+        }
+        let min_fail_secs = u64::from(MIN_FAIL_DAYS) * 24 * 60 * 60;
+        if now.saturating_sub(self.last_success) > min_fail_secs
+            && self.num_attempts >= MAX_FAILURES
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Weighting for [`crate::discovery::address_manager::AddressManager::select_peer`] retries
+    /// (Chia `get_selection_chance`, `address_manager.py:201+`).
+    pub fn get_selection_chance(&self, now: u64) -> f64 {
+        let mut chance = 1.0_f64;
+        let since_last_try = now.saturating_sub(self.last_try);
+        if since_last_try < 60 * 10 {
+            chance *= 0.01;
+        }
+        chance * 0.66_f64.powi(self.num_attempts.min(8) as i32)
+    }
+
+    /// Tried-table bucket for this row (`ExtendedPeerInfo.get_tried_bucket` in Chia).
+    pub(crate) fn tried_bucket_index(&self, key: &[u8; 32]) -> usize {
+        let peer = &self.peer_info;
+        let mut buf = Vec::with_capacity(32 + peer.get_key().len());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&peer.get_key());
+        let hash1 = (chia_std_hash_u64_prefix(&buf) as usize) % TRIED_BUCKETS_PER_GROUP;
+        let mut buf2 = Vec::with_capacity(32 + peer.get_group().len() + 1);
+        buf2.extend_from_slice(key);
+        buf2.extend_from_slice(&peer.get_group());
+        buf2.push(hash1 as u8);
+        (chia_std_hash_u64_prefix(&buf2) as usize) % TRIED_BUCKET_COUNT
+    }
+
+    /// New-table bucket for `source` attribution (`get_new_bucket`, Chia `address_manager.py:146+`).
+    pub(crate) fn new_bucket_index(&self, key: &[u8; 32], src_peer: &PeerInfo) -> usize {
+        let mut buf =
+            Vec::with_capacity(32 + self.peer_info.get_group().len() + src_peer.get_group().len());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&self.peer_info.get_group());
+        buf.extend_from_slice(&src_peer.get_group());
+        let hash1 = (chia_std_hash_u64_prefix(&buf) as usize) % NEW_BUCKETS_PER_SOURCE_GROUP;
+        let mut buf2 = Vec::with_capacity(32 + src_peer.get_group().len() + 1);
+        buf2.extend_from_slice(key);
+        buf2.extend_from_slice(&src_peer.get_group());
+        buf2.push(hash1 as u8);
+        (chia_std_hash_u64_prefix(&buf2) as usize) % NEW_BUCKET_COUNT
+    }
+
+    /// Slot within a bucket (`get_bucket_position`, Chia `address_manager.py:161+`).
+    pub(crate) fn bucket_position(&self, key: &[u8; 32], is_new: bool, n_bucket: usize) -> usize {
+        let ch: u8 = if is_new { b'N' } else { b'K' };
+        let nb = n_bucket as u32;
+        let mut buf = Vec::with_capacity(32 + 1 + 3 + self.peer_info.get_key().len());
+        buf.extend_from_slice(key);
+        buf.push(ch);
+        buf.push(((nb >> 16) & 0xff) as u8);
+        buf.push(((nb >> 8) & 0xff) as u8);
+        buf.push((nb & 0xff) as u8);
+        buf.extend_from_slice(&self.peer_info.get_key());
+        (chia_std_hash_u64_prefix(&buf) as usize) % BUCKET_SIZE
+    }
+}
+
 /// Wall-clock **Unix seconds** for [`PeerConnection`] / CON-006 metric timestamps.
 ///
 /// Uses the same “saturating to 0” pattern as keepalive penalties — if the host clock is
@@ -246,12 +341,7 @@ pub fn aggregate_peer_connection_io(peers: &[PeerConnection]) -> (u64, u64, u64,
         bytes_written = bytes_written.saturating_add(p.bytes_written);
         bytes_read = bytes_read.saturating_add(p.bytes_read);
     }
-    (
-        messages_sent,
-        messages_received,
-        bytes_written,
-        bytes_read,
-    )
+    (messages_sent, messages_received, bytes_written, bytes_read)
 }
 
 /// Active connection with gossip bookkeeping.

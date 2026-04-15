@@ -861,7 +861,7 @@ impl GossipHandle {
             messages_received,
             bytes_sent,
             bytes_received,
-            known_addresses: 0,
+            known_addresses: self.inner.address_manager.size(),
             seen_messages,
             // Stub until RLY-*: mirror [`RelayStats::connected`] (always false with `RelayStats::default()`).
             relay_connected: false,
