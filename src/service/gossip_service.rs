@@ -20,7 +20,9 @@ use chia_sdk_client::ClientError;
 use crate::error::GossipError;
 use crate::types::config::GossipConfig;
 
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tokio::sync::Notify;
 
 use super::gossip_handle::GossipHandle;
 use super::state::{PeerSlot, ServiceState, LC_CONSTRUCTED, LC_RUNNING, LC_STOPPED};
@@ -48,8 +50,10 @@ impl GossipService {
 
     /// Transition to running and hand back a [`GossipHandle`] sharing the same [`ServiceState`].
     ///
-    /// Networking (listener, discovery tasks) will attach here in CON-* / CNC-*; API-001 only
-    /// flips the lifecycle flag and returns the handle.
+    /// Binds [`TcpListener`] on [`GossipConfig::listen_addr`](GossipConfig::listen_addr), spawns
+    /// CON-002 inbound accept loop when a TLS feature is enabled (STR-004), and returns the handle.
+    ///
+    /// **Rollback:** if binding fails, lifecycle returns to constructed so callers may retry.
     pub async fn start(&self) -> Result<GossipHandle, GossipError> {
         match self.inner.lifecycle.compare_exchange(
             LC_CONSTRUCTED,
@@ -58,12 +62,61 @@ impl GossipService {
             std::sync::atomic::Ordering::SeqCst,
         ) {
             Ok(_) => {
+                let listener = match TcpListener::bind(self.inner.config.listen_addr).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        self.inner
+                            .lifecycle
+                            .store(LC_CONSTRUCTED, std::sync::atomic::Ordering::SeqCst);
+                        return Err(GossipError::IoError(e.to_string()));
+                    }
+                };
+                let bound = match listener.local_addr() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        self.inner
+                            .lifecycle
+                            .store(LC_CONSTRUCTED, std::sync::atomic::Ordering::SeqCst);
+                        return Err(GossipError::IoError(e.to_string()));
+                    }
+                };
+                *self
+                    .inner
+                    .listen_bound_addr
+                    .lock()
+                    .expect("listen_bound_addr mutex poisoned") = Some(bound);
+
                 let (tx, _rx) = broadcast::channel(256);
                 *self
                     .inner
                     .inbound_tx
                     .lock()
                     .expect("inbound_tx mutex poisoned") = Some(tx);
+
+                let stop = Arc::new(Notify::new());
+                *self
+                    .inner
+                    .listener_stop
+                    .lock()
+                    .expect("listener_stop mutex poisoned") = Some(stop.clone());
+
+                let inner = self.inner.clone();
+                let stop_loop = stop.clone();
+                #[cfg(any(feature = "native-tls", feature = "rustls"))]
+                let jh = tokio::spawn(async move {
+                    crate::connection::listener::accept_loop(inner, listener, stop_loop).await;
+                });
+                #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
+                let jh = tokio::spawn(async move {
+                    let _ = (inner, listener, stop_loop);
+                });
+
+                *self
+                    .inner
+                    .listener_task
+                    .lock()
+                    .expect("listener_task mutex poisoned") = Some(jh);
+
                 Ok(GossipHandle {
                     inner: self.inner.clone(),
                 })
@@ -78,15 +131,34 @@ impl GossipService {
         }
     }
 
-    /// Tear down: marks lifecycle stopped so [`GossipHandle`] calls fail with [`GossipError::ServiceNotStarted`].
-    ///
-    /// With no peers yet (CON-*), this is a state transition only; later it joins tasks and
-    /// closes sockets.
+    /// Tear down: stops CON-002 accept loop, clears inbound fan-out, closes live peers.
     pub async fn stop(&self) -> Result<(), GossipError> {
         let _prev = self
             .inner
             .lifecycle
             .swap(LC_STOPPED, std::sync::atomic::Ordering::SeqCst);
+
+        if let Ok(mut g) = self.inner.listener_stop.lock() {
+            if let Some(n) = g.take() {
+                n.notify_waiters();
+            }
+        }
+        let listener_join = self
+            .inner
+            .listener_task
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        if let Some(jh) = listener_join {
+            jh.abort();
+            let _ = jh.await;
+        }
+        *self
+            .inner
+            .listen_bound_addr
+            .lock()
+            .expect("listen_bound_addr mutex poisoned") = None;
+
         *self
             .inner
             .inbound_tx

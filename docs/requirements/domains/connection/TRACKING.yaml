@@ -17,10 +17,15 @@ items:
   - id: CON-002
     section: "5.2"
     summary: "Inbound connection listener"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#52-inbound-connection"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_002_tests.rs
+    notes: >
+      connection/listener.rs: TcpListener + native_tls accept + raw WSS handshake/RequestPeers handling then
+      Peer::from_websocket; accept_loop respects max_connections; relay TimestampedPeerInfo via RespondPeers to live peers;
+      AddressManager::add_to_new_table. GossipService::start binds listener task; stop aborts/awaits join without holding mutex
+      across await. Windows may use peer_id_for_addr when remote leaf cert unavailable (CON-009).
   - id: CON-003
     section: "5.1, 5.2"
     summary: "Handshake validation"

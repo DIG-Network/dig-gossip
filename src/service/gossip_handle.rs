@@ -224,7 +224,7 @@ impl GossipHandle {
     /// [`peer_id_for_addr`] keys) so API-002 matrices stay offline.
     pub async fn connect_to(&self, addr: std::net::SocketAddr) -> Result<PeerId, GossipError> {
         self.require_running()?;
-        if addr == self.inner.config.listen_addr {
+        if self.inner.dial_targets_local_listen(addr) {
             return Err(GossipError::SelfConnection);
         }
         {
@@ -331,7 +331,7 @@ impl GossipHandle {
         is_outbound: bool,
     ) -> Result<PeerId, GossipError> {
         self.require_running()?;
-        if addr == self.inner.config.listen_addr {
+        if self.inner.dial_targets_local_listen(addr) {
             return Err(GossipError::SelfConnection);
         }
         let pid = peer_id_for_addr(addr);
@@ -578,6 +578,33 @@ impl GossipHandle {
         self.inner
             .address_manager
             .__last_new_table_batch_for_tests()
+    }
+
+    /// CON-002: resolved listen socket after [`crate::service::gossip_service::GossipService::start`] (port `0` → OS assignment).
+    #[doc(hidden)]
+    pub fn __listen_bound_addr_for_tests(&self) -> Option<std::net::SocketAddr> {
+        self.inner.listen_bound_addr.lock().ok().and_then(|g| *g)
+    }
+
+    /// CON-002: live peer metadata — `(remote_addr, is_outbound)` for TLS-derived [`PeerId`] keys.
+    #[doc(hidden)]
+    pub fn __con002_live_peer_meta_for_tests(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<(std::net::SocketAddr, bool)> {
+        let peers = self.inner.peers.lock().ok()?;
+        let slot = peers.get(&peer_id)?;
+        Some((slot.remote(), slot.is_outbound()))
+    }
+
+    /// CON-002: snapshot of [`PeerId`] keys in the live/stub map (order not stable — use for single-peer asserts).
+    #[doc(hidden)]
+    pub fn __peer_ids_for_tests(&self) -> Vec<PeerId> {
+        self.inner
+            .peers
+            .lock()
+            .map(|g| g.keys().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.

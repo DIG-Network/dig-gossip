@@ -41,12 +41,21 @@ x509-parser = "0.16"
 
 # Async runtime / WebSocket framing used by upstream client patterns.
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.24"
+# `native-tls` feature exposes [`MaybeTlsStream::NativeTls`] (required for CON-002 inbound + [`Peer::from_websocket`]).
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# Inbound TLS termination (CON-002) — paired with `native-tls` / `rustls` features (STR-004).
+# Inbound listener (CON-002) uses `native_tls::TlsAcceptor` even when outbound uses rustls — `tokio_tungstenite::MaybeTlsStream::Rustls`
+# only wraps **client** `tokio_rustls` streams; [`chia_sdk_client::Peer::from_websocket`] matches `NativeTls` / client `Rustls` (STR-004 note).
+native-tls = { version = "0.2", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
 
 # Serialization — address manager persistence, relay JSON, bincode payloads.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
+
+# `StreamExt` / `SinkExt` for raw WebSocket framing in CON-002 (before [`chia_sdk_client::Peer`]).
+futures-util = "0.3"
 
 # Utilities — structured logs, error derives, randomness, LRU caches.
 tracing = "0.1"
@@ -83,14 +92,24 @@ tempfile = "3"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 futures-util = "0.3"
+# CON-002 tests: derive expected TLS [`PeerId`] from PEM (mirrors SPKI extraction in CON-001).
+x509-parser = "0.16"
 
 [features]
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
 default = ["native-tls", "relay", "erlay", "compact-blocks", "dandelion"]
 
 # TLS backends — mutually exclusive at the `chia-sdk-client` layer.
-native-tls = ["chia-sdk-client/native-tls"]
-rustls = ["chia-sdk-client/rustls"]
+native-tls = [
+    "chia-sdk-client/native-tls",
+    "dep:native-tls",
+    "dep:tokio-native-tls",
+]
+rustls = [
+    "chia-sdk-client/rustls",
+    "dep:native-tls",
+    "dep:tokio-native-tls",
+]
 
 # Relay fallback / introducer flows (SPEC Section 7).
 relay = []
@@ -108,3 +127,9 @@ dandelion = []
 
 # Tor / SOCKS5 — opt-in only (not in `default`).
 tor = ["dep:arti-client", "dep:tokio-socks"]
+
+# CON-002 integration tests dial `wss://` with the same TLS stack as production defaults.
+[[test]]
+name = "con_002_tests"
+path = "tests/con_002_tests.rs"
+required-features = ["native-tls"]

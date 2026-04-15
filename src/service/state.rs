@@ -2,7 +2,8 @@
 //!
 //! **Requirements:** API-001 (lifecycle + TLS), API-002 (handle RPC wiring) /
 //! [`API-002.md`](../../../docs/requirements/domains/crate_api/specs/API-002.md), API-008 (stats atomics) /
-//! [`API-008.md`](../../../docs/requirements/domains/crate_api/specs/API-008.md).
+//! [`API-008.md`](../../../docs/requirements/domains/crate_api/specs/API-008.md), CON-002 (inbound listener) /
+//! [`CON-002.md`](../../../docs/requirements/domains/connection/specs/CON-002.md).
 //!
 //! ## Stub peers (pre–CON-001)
 //!
@@ -22,6 +23,8 @@ use chia_sdk_client::Peer;
 use chia_ssl::ChiaCertificate;
 use lru::LruCache;
 use tokio::sync::broadcast;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
 use chia_protocol::Bytes32;
 
@@ -105,6 +108,14 @@ pub(crate) struct ServiceState {
     pub bytes_received: AtomicU64,
     /// Cumulative successful stub/live `connect` completions (never decremented on disconnect).
     pub total_connections: AtomicU64,
+    /// OS-assigned listen socket after [`TcpListener::bind`](tokio::net::TcpListener::bind) (`127.0.0.1:0` in tests).
+    ///
+    /// **Why:** [`GossipConfig::listen_addr`](crate::types::config::GossipConfig::listen_addr) may use port `0`;
+    /// [`Handshake::server_port`](chia_protocol::Handshake::server_port) and self-dial checks need the resolved endpoint.
+    pub listen_bound_addr: Mutex<Option<SocketAddr>>,
+    /// Signals [`crate::connection::listener::accept_loop`] to exit on [`GossipService::stop`](super::gossip_service::GossipService::stop).
+    pub(crate) listener_stop: Mutex<Option<std::sync::Arc<Notify>>>,
+    pub(crate) listener_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Deterministic [`PeerId`] from a remote socket (stub peers / tests only — live peers use TLS SPKI).
@@ -145,11 +156,26 @@ impl ServiceState {
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             total_connections: AtomicU64::new(0),
+            listen_bound_addr: Mutex::new(None),
+            listener_stop: Mutex::new(None),
+            listener_task: Mutex::new(None),
         }
     }
 
     pub(crate) fn is_running(&self) -> bool {
         self.lifecycle.load(Ordering::SeqCst) == LC_RUNNING
+    }
+
+    /// `true` when `addr` is our configured or bound P2P listen address (CON-002 / self-dial guard).
+    pub(crate) fn dial_targets_local_listen(&self, addr: SocketAddr) -> bool {
+        if addr == self.config.listen_addr {
+            return true;
+        }
+        self.listen_bound_addr
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|b| b == addr)
     }
 }
 
