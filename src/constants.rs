@@ -25,6 +25,27 @@
 //! * **SPEC §10.2** -- lists `constants::*` in the public re-export block.
 
 // ---------------------------------------------------------------------------
+// Peer exchange limits (DSC-007)
+//
+// Caps on peers received via RespondPeers to prevent memory exhaustion and
+// eclipse attacks from a single peer flooding the address manager.
+// Chia: node_discovery.py:34-35.
+// SPEC §6.6 (Peer Exchange via Gossip), §1.6#10, §1.6#11.
+// ---------------------------------------------------------------------------
+
+/// Maximum peers accepted from a single `RespondPeers` message.
+/// Peers beyond this cap are silently discarded.
+/// Chia: `node_discovery.py:34` (`MAX_PEERS_RECEIVED_PER_REQUEST = 1000`).
+/// SPEC §1.6#10.
+pub const MAX_PEERS_RECEIVED_PER_REQUEST: usize = 1000;
+
+/// Maximum total peers received across all `RespondPeers` messages during
+/// the lifetime of the service. Excess peers are silently discarded.
+/// Chia: `node_discovery.py:35` (`MAX_TOTAL_PEERS_RECEIVED = 3000`).
+/// SPEC §1.6#11.
+pub const MAX_TOTAL_PEERS_RECEIVED: usize = 3000;
+
+// ---------------------------------------------------------------------------
 // Address manager constants
 //
 // Ported from Chia’s Python `address_manager.py` (itself a port of Bitcoin’s
