@@ -1,3 +1,6 @@
+# Node (local tooling; install with npm install)
+/node_modules/
+
 # Build artifacts
 /target/
 

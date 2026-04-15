@@ -1,0 +1,7 @@
+{
+  "name": "dig-gossip",
+  "private": true,
+  "devDependencies": {
+    "gitnexus": "^1.6.1"
+  }
+}
