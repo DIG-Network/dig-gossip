@@ -48,9 +48,14 @@ use chia_protocol::{
     TimestampedPeerInfo,
 };
 use chia_sdk_client::Peer;
+
+use crate::discovery::introducer_client::{
+    load_local_certificate_for_introducer, IntroducerClient,
+};
 use chia_traits::Streamable;
 use std::any::TypeId;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::broadcast;
 
 use crate::constants::PENALTY_BAN_THRESHOLD;
@@ -767,10 +772,32 @@ impl GossipHandle {
 
     pub async fn discover_from_introducer(&self) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
         self.require_running()?;
-        if self.inner.config.introducer.is_none() {
-            return Err(GossipError::IntroducerNotConfigured);
+        let intro = self
+            .inner
+            .config
+            .introducer
+            .as_ref()
+            .ok_or(GossipError::IntroducerNotConfigured)?;
+        let endpoint = intro.endpoint.trim();
+        if endpoint.is_empty() {
+            return Err(GossipError::InvalidConfig(
+                "introducer.endpoint is empty; set a wss:// URL to query an introducer (DSC-004)"
+                    .into(),
+            ));
         }
-        Ok(Vec::new())
+        let cert = load_local_certificate_for_introducer(
+            &self.inner.config.cert_path,
+            &self.inner.config.key_path,
+        )?;
+        let timeout = Duration::from_secs(intro.request_timeout_secs.max(1));
+        IntroducerClient::query_peers(
+            endpoint,
+            &cert,
+            self.inner.config.network_id,
+            self.inner.config.peer_options.clone(),
+            timeout,
+        )
+        .await
     }
 
     pub async fn register_with_introducer(&self) -> Result<(), GossipError> {

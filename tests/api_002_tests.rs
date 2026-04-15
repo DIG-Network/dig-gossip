@@ -638,17 +638,12 @@ async fn test_discover_no_introducer() {
     assert!(matches!(err, GossipError::IntroducerNotConfigured));
 }
 
-/// **Row:** `test_discover_from_introducer` — with an introducer configured, the method
-/// returns `Ok(Vec<TimestampedPeerInfo>)` (empty in stub mode) rather than an error
-/// (SPEC Section 3.3 discovery methods).
+/// **Row:** `test_discover_from_introducer` — with `introducer` set but **empty** `endpoint`, the
+/// handle fails fast with [`GossipError::InvalidConfig`] (SPEC §3.3 + DSC-004 guard).
 ///
-/// **Precondition:** The config has `introducer = Some(IntroducerConfig::default())`,
-/// which provides a placeholder introducer address.
-/// **Assertion:** `discover_from_introducer()` returns `Ok(v)` where `v.is_empty()`.
-/// **Why sufficient:** In stub/offline mode there is no real introducer to query, so the
-/// empty list is the correct response. The important thing is that the method does *not*
-/// return `IntroducerNotConfigured` — the config check passes. Real introducer
-/// connectivity is tested at the DSC (discovery) layer.
+/// **Precondition:** `IntroducerConfig::default()` uses an empty-string `endpoint` sentinel (API-010).
+/// **Assertion:** `discover_from_introducer()` returns `InvalidConfig` — DSC-004 refuses to dial
+/// before a real `wss://` URL exists. End-to-end introducer I/O lives in `tests/dsc_004_tests.rs`.
 #[tokio::test]
 async fn test_discover_from_introducer() {
     let dir = common::test_temp_dir();
@@ -657,9 +652,11 @@ async fn test_discover_from_introducer() {
     cfg.introducer = Some(IntroducerConfig::default());
     let svc = GossipService::new(cfg).expect("new");
     let h = svc.start().await.expect("start");
-    // Stub mode: no real introducer, so the list is empty but the call succeeds.
-    let v = h.discover_from_introducer().await.unwrap();
-    assert!(v.is_empty());
+    let err = h.discover_from_introducer().await.unwrap_err();
+    assert!(
+        matches!(err, GossipError::InvalidConfig(_)),
+        "expected InvalidConfig for empty introducer.endpoint, got {err:?}"
+    );
 }
 
 /// **Row:** `test_register_with_introducer` — registration call succeeds (stub) when an

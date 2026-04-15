@@ -31,6 +31,10 @@ readme = "README.md"
 # Chia ecosystem — reuse wire types, peer IO, TLS helpers, serialization traits.
 # See STR-001 "Dependency Purposes" and SPEC Section 1.4 (no redefinitions).
 chia-protocol = "0.26"
+# Wire structs for introducer opcodes 63/64 — omitted as standalone types in chia-protocol 0.26
+# (see `src/discovery/introducer_wire.rs` / STR-003 / DSC-004).
+chia-sha2 = "0.26"
+chia_streamable_macro = "0.26"
 chia-sdk-client = { version = "0.28", default-features = false }
 chia-ssl = "0.26"
 chia-traits = "0.26"
@@ -176,6 +180,12 @@ path = "tests/dsc_002_tests.rs"
 [[test]]
 name = "dsc_003_tests"
 path = "tests/dsc_003_tests.rs"
+
+# DSC-004: Introducer RequestPeersIntroducer flow (`tests/dsc_004_tests.rs`).
+[[test]]
+name = "dsc_004_tests"
+path = "tests/dsc_004_tests.rs"
+required-features = ["native-tls"]
 
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.

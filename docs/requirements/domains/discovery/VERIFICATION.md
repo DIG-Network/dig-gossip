@@ -10,7 +10,7 @@
 | DSC-001 | verified | AddressManager with tried/new tables       | `tests/dsc_001_tests.rs` — buckets, penalty, mark_good/tried, collisions, select_peer, threading; heavy full-slot eviction `#[ignore]` |
 | DSC-002 | verified | Address manager persistence (save/load)    | `tests/dsc_002_tests.rs` — round-trip empty/populated, atomic tmp+rename, corrupt file → `AddressManagerStore`, version field/mismatch, `create` reload vs fresh, async save |
 | DSC-003 | verified | DNS seeding via Network::lookup_all()      | `tests/dsc_003_tests.rs` — Network clone from config; SocketAddr→TimestampedPeerInfo; merge→AddressManager; empty/unresolvable/timeout soft-fail; optional localhost resolution |
-| DSC-004 | gap    | Introducer query (get_peers)                 | Integration test with mock WebSocket introducer; verify peer list returned            |
+| DSC-004 | verified | Introducer query (get_peers)               | `tests/dsc_004_tests.rs` — TLS+WS mock introducer; success/empty/timeout/handshake-mismatch/connect-fail; wire `msg_type` 63/64 |
 | DSC-005 | gap    | Introducer registration (register_peer)      | Integration test with mock WebSocket introducer; verify register_ack received         |
 | DSC-006 | gap    | Discovery loop with DNS-first and backoff    | Integration test verifying DNS attempted first, then introducer with backoff timing   |
 | DSC-007 | gap    | Peer exchange (RequestPeers/RespondPeers)    | Unit test: mock peer responds with peer list, verify added to address manager         |
