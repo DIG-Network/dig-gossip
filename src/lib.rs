@@ -125,8 +125,9 @@ pub use discovery::introducer_client::{IntroducerClient, PeerRegistration};
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
 pub use discovery::node_discovery::{
     cap_received_peers, dig_network_from_gossip_config, dns_lookup_seed_addrs,
-    dns_seed_resolve_and_merge, merge_dns_seed_addrs_into_address_manager, run_discovery_loop,
-    timestamped_peer_infos_from_dns_addrs, DiscoveryAction,
+    dns_seed_resolve_and_merge, merge_dns_seed_addrs_into_address_manager, poisson_next_interval,
+    run_discovery_loop, run_feeler_loop, timestamped_peer_infos_from_dns_addrs, DiscoveryAction,
+    FeelerAction,
 };
 
 pub use error::GossipError;

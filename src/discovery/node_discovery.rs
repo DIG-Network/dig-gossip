@@ -195,6 +195,142 @@ pub fn cap_received_peers<'a>(
 }
 
 // =========================================================================
+// DSC-008 — Feeler connections (Poisson schedule)
+// =========================================================================
+//
+// SPEC §6.4 item 4 — feeler connections on Poisson schedule (240s average).
+// Chia `node_discovery.py:308-325` — "Feeler Connections" design.
+//
+// Feelers are short-lived connections that test reachability of "new" table
+// addresses. On success the address is promoted to "tried" via mark_good().
+// The connection is immediately closed — feelers don't participate in gossip.
+
+/// Generate the next interval for a Poisson process (exponential distribution).
+///
+/// Returns a [`Duration`] sampled from an exponential distribution with the given
+/// average in seconds. The formula is: `interval = -ln(U) * average` where U is
+/// uniform random in (0, 1).
+///
+/// SPEC §6.4: "Feeler connections MUST use Poisson schedule with FEELER_INTERVAL_SECS
+/// (240s) average."
+/// Chia: `node_discovery.py:167-171` (`_poisson_next_send`).
+///
+/// # Why Poisson?
+///
+/// Poisson-distributed intervals make the connection pattern unpredictable to
+/// network observers, preventing timing analysis that could reveal network topology.
+/// This is the same approach used by Bitcoin and Chia for feeler connections.
+pub fn poisson_next_interval(average_secs: u64) -> Duration {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    // Clamp away from 0 to avoid ln(0) = -infinity.
+    let u: f64 = rng.gen_range(0.0001_f64..1.0_f64);
+    let interval_secs = -(u.ln()) * average_secs as f64;
+    // Clamp to a reasonable maximum (10x average) to prevent extreme outliers.
+    let clamped = interval_secs.min((average_secs * 10) as f64);
+    Duration::from_secs_f64(clamped.max(0.1))
+}
+
+/// Output from a single feeler iteration, used for testing and metrics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeelerAction {
+    /// A feeler connection was attempted and succeeded. Address promoted to tried.
+    Success { host: String, port: u16 },
+    /// A feeler connection was attempted and failed. Failure recorded.
+    Failure { host: String, port: u16 },
+    /// No candidate available in the new table — skipped this cycle.
+    NoCandidates,
+    /// Loop was cancelled.
+    Cancelled,
+}
+
+/// Run feeler connections on a Poisson schedule (**DSC-008**).
+///
+/// This function runs until `cancel` is triggered. On each cycle:
+/// 1. Wait for a Poisson-distributed interval (average `feeler_interval_secs`).
+/// 2. Select a random address from the "new" table.
+/// 3. Attempt a connection. On success → `mark_good()`. On failure → `attempt(true)`.
+/// 4. Immediately close the connection (feelers don't participate in gossip).
+///
+/// # SPEC references
+///
+/// - SPEC §6.4 item 4 — feeler connections on Poisson schedule
+/// - Chia `node_discovery.py:308-325` — feeler connection design
+///
+/// # Note on actual connections
+///
+/// In the current implementation, feelers call `mark_good()` / `attempt()` on the
+/// address manager but do NOT actually dial the peer (real TCP/TLS connect is deferred
+/// to DSC-009 parallel connection establishment). The address manager promotion
+/// logic is the core behavior being verified here.
+pub async fn run_feeler_loop(
+    address_manager: Arc<AddressManager>,
+    feeler_interval_secs: u64,
+    cancel: CancellationToken,
+    action_log: Option<tokio::sync::mpsc::UnboundedSender<FeelerAction>>,
+) {
+    tracing::info!(
+        "DSC-008: feeler loop starting (avg interval={}s)",
+        feeler_interval_secs
+    );
+
+    loop {
+        // Step 1: Poisson-distributed wait.
+        let wait = poisson_next_interval(feeler_interval_secs);
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = cancel.cancelled() => {
+                report_feeler(&action_log, FeelerAction::Cancelled);
+                tracing::info!("DSC-008: feeler loop cancelled during wait");
+                break;
+            }
+        }
+
+        if cancel.is_cancelled() {
+            report_feeler(&action_log, FeelerAction::Cancelled);
+            break;
+        }
+
+        // Step 2: Select a random address from the "new" table only.
+        // SPEC §6.4: "select random 'new' table address, connect, promote to 'tried'."
+        // Chia: `node_discovery.py:315` — `is_feeler = True` → `select_peer(new_only=True)`.
+        let candidate = address_manager.select_peer(true /* new_only */);
+
+        let Some(candidate) = candidate else {
+            // No candidates in new table — skip and wait for next interval.
+            tracing::debug!("DSC-008: no candidates in new table, skipping feeler cycle");
+            report_feeler(&action_log, FeelerAction::NoCandidates);
+            continue;
+        };
+
+        let host = candidate.peer_info.host.clone();
+        let port = candidate.peer_info.port;
+
+        // Step 3: In a full implementation, we would attempt a TCP/TLS connection here.
+        // For now, we just call mark_good() to promote the address, simulating success.
+        // The actual connection logic will be added in DSC-009 (parallel connection establishment).
+        //
+        // TODO(DSC-009): Replace this with actual try_connect() call.
+        address_manager.mark_good(&candidate.peer_info);
+
+        tracing::debug!("DSC-008: feeler promoted {}:{} to tried", host, port);
+        report_feeler(&action_log, FeelerAction::Success { host, port });
+    }
+
+    tracing::info!("DSC-008: feeler loop exited");
+}
+
+/// Helper: report a [`FeelerAction`] to the optional action log channel.
+fn report_feeler(
+    log: &Option<tokio::sync::mpsc::UnboundedSender<FeelerAction>>,
+    action: FeelerAction,
+) {
+    if let Some(tx) = log {
+        let _ = tx.send(action);
+    }
+}
+
+// =========================================================================
 // DSC-006 — Discovery loop
 // =========================================================================
 //

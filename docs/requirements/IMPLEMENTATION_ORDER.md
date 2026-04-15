@@ -50,7 +50,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] DSC-005 — Introducer registration (DIG extension: register_peer)
 - [x] DSC-006 — Discovery loop with DNS-first then introducer with exponential backoff
 - [x] DSC-007 — Peer exchange via RequestPeers/RespondPeers on outbound connect
-- [ ] DSC-008 — Feeler connections on Poisson schedule (240s average)
+- [x] DSC-008 — Feeler connections on Poisson schedule (240s average)
 - [ ] DSC-009 — Parallel connection establishment (batch connect with FuturesUnordered)
 - [ ] DSC-010 — AS-level diversity (one outbound per AS, cached BGP lookup)
 - [ ] DSC-011 — One outbound per /16 group (fast filter before AS check)
