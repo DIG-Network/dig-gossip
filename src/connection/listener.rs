@@ -40,14 +40,12 @@
 //! - **`rustls` without `native-tls` (outbound):** [`chia_sdk_client`] uses rustls for `wss://` dials.
 //!   **Inbound** still uses [`native_tls::TlsAcceptor`] so [`MaybeTlsStream::NativeTls`] matches
 //!   [`Peer::from_websocket`] (upstream only types **client** `MaybeTlsStream::Rustls`).
-//! - **CON-009 (mTLS `CERT_REQUIRED`):** not enforced here yet. **Windows note:** `native_tls` uses
-//!   SChannel, which exposes no API to *request* client certificates; `peer_certificate()` may be
-//!   `None` even when the outbound peer presents a Chia identity. Until CON-009 lands with an
-//!   OpenSSL/rustls server configuration that forces client auth, we fall back to
-//!   [`crate::service::state::peer_id_for_addr`] (deterministic, **test / dev only** shape) so the
-//!   WebSocket upgrade and [`Peer::from_websocket`] path can complete on Windows CI machines.
-//!   Linux/OpenSSL `native_tls` typically still receives the leaf cert when the client uses
-//!   [`TlsConnector`](native_tls::TlsConnector) identity material.
+//! - **CON-009 (mTLS):** On **Linux / non-Apple Unix** (OpenSSL-backed `native-tls`), we use a
+//!   **vendored** [`native-tls`](../../../vendor/native-tls/README.dig-gossip.md) fork that sets
+//!   `CERT_REQUIRED` + Chia CA trust (Chia `server.py:67`). **Windows (SChannel)** and **macOS
+//!   (SecureTransport)** often hide the peer leaf from `peer_certificate()` even for legitimate
+//!   mutual TLS sessions, so we retain a **fallback** to [`peer_id_for_addr`] there (CON-002 / dev
+//!   ergonomics) while OpenSSL-backed production Linux gets strict SPKI binding.
 //!
 //! ## `software_version` sanitization (CON-003 / CON-008)
 //!
@@ -122,6 +120,10 @@ use tokio_native_tls::TlsAcceptor as TokioNativeTlsAcceptor;
 /// creates new node certificates on first run. `load_ssl_cert()` loads existing certificates."
 /// See also SPEC §1.5 #3 — TLS mutual authentication via `chia-ssl`.
 ///
+/// **CON-009 (OpenSSL targets):** this crate patches crates.io `native-tls` (see
+/// `vendor/native-tls/README.dig-gossip.md`) so the OpenSSL server acceptor sets **client certificate
+/// required** + Chia CA trust — matching Chia `server.py:67` (`CERT_REQUIRED`).
+///
 /// This is the **server-side** TLS identity used when accepting inbound connections on
 /// [`crate::types::config::GossipConfig::listen_addr`]. The certificate is typically generated
 /// by [`chia_ssl`] at node startup (API-001 lifecycle) and stored in
@@ -164,10 +166,9 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
 ///
 /// # Errors
 ///
-/// - [`ClientError::MissingHandshake`] — the remote did not present a client certificate.
-///   This is **expected on Windows/SChannel** where `peer_certificate()` returns `None` even
-///   when the client sends one (see module-level CON-009 notes). The caller falls back to
-///   [`peer_id_for_addr`] in that case.
+/// - [`ClientError::MissingHandshake`] — the remote did not present a client certificate, or the
+///   OS TLS stack cannot expose it. On **Windows** the caller may fall back to [`peer_id_for_addr`]
+///   (see [`handle_inbound_native_inner`]); on **OpenSSL** backends anonymous clients fail earlier.
 /// - [`ClientError::Io`] — the leaf cert DER could not be extracted or parsed.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn remote_spki_from_native_tls_stream(
@@ -218,8 +219,8 @@ async fn handle_inbound_native(
 /// **CON-002 acceptance flow (in order):**
 ///
 /// 1. **TLS accept** — negotiate server-side TLS with the node's [`ChiaCertificate`].
-/// 2. **SPKI extraction** — read the remote peer's leaf certificate to derive [`PeerId`].
-///    On Windows/SChannel this may fail (CON-009), so we fall back to [`peer_id_for_addr`].
+/// 2. **SPKI extraction** — read the remote peer's leaf certificate to derive [`PeerId`] (CON-009).
+///    Windows-only: may fall back to [`peer_id_for_addr`] when SChannel hides the leaf.
 /// 3. **Self-connection guard** — reject if the derived `peer_id` matches our own
 ///    [`GossipConfig::peer_id`](crate::types::config::GossipConfig::peer_id).
 /// 4. **Ban check** — reject peers in the [`ServiceState::banned`] set.
@@ -248,18 +249,19 @@ async fn handle_inbound_native_inner(
         .await
         .map_err(|e| ClientError::Io(std::io::Error::other(format!("tls accept: {e}"))))?;
 
-    // Step 2: Derive PeerId from the remote's TLS certificate SPKI.
-    // On Windows, SChannel's `peer_certificate()` often returns `None` even when the client
-    // presents identity material, because SChannel does not expose a "request client cert"
-    // API without explicit CERT_REQUIRED configuration (CON-009 future work). We use a
-    // deterministic address-based fallback so the inbound pipeline still works on Windows CI.
+    // Step 2: Derive PeerId from the remote's TLS certificate SPKI (CON-009 / API-005).
+    //
+    // **OpenSSL (Linux, etc.):** vendored `native-tls` requires a client cert; missing SPKI after
+    // a successful accept is unexpected. **Windows (SChannel):** `peer_certificate()` may be
+    // `None` even for legitimate Chia peers — keep the historical `peer_id_for_addr` fallback so
+    // CON-002 integration tests and developer laptops keep working (see module TLS note above).
     let peer_id = match remote_spki_from_native_tls_stream(&tls) {
         Ok(spki) => peer_id_from_tls_spki_der(&spki),
         Err(e) => {
-            if cfg!(target_os = "windows") {
+            if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
                 tracing::warn!(
                     target: "dig_gossip::listener",
-                    "no remote TLS leaf cert after accept (SChannel — see CON-009); using peer_id_for_addr fallback: {e}"
+                    "no remote TLS leaf cert after accept (non-OpenSSL native-tls); using peer_id_for_addr fallback: {e}"
                 );
                 peer_id_for_addr(remote_addr)
             } else {

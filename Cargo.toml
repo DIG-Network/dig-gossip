@@ -156,7 +156,16 @@ required-features = ["native-tls"]
 name = "con_008_tests"
 path = "tests/con_008_tests.rs"
 
+# CON-009: mandatory mTLS (`tests/con_009_tests.rs`).
+[[test]]
+name = "con_009_tests"
+path = "tests/con_009_tests.rs"
+required-features = ["native-tls"]
+
 # Patched `chia-sdk-client`: forwards inbound `RequestPeers` with remote-issued ids to the
 # application channel (full-duplex RPC). See `vendor/chia-sdk-client/src/peer.rs`.
 [patch.crates-io]
 chia-sdk-client = { path = "vendor/chia-sdk-client" }
+# Patched `native-tls`: OpenSSL server acceptor sets CERT_REQUIRED + Chia CA trust for inbound mTLS
+# (CON-009). See `vendor/native-tls/README.dig-gossip.md`.
+native-tls = { path = "vendor/native-tls" }
