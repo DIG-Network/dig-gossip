@@ -56,7 +56,7 @@ use tokio::sync::broadcast;
 use crate::constants::PENALTY_BAN_THRESHOLD;
 use crate::error::GossipError;
 use crate::types::peer::{
-    message_wire_len, peer_id_from_tls_spki_der, metric_unix_timestamp_secs, PeerConnection,
+    message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der, PeerConnection,
     PeerConnectionWireMetrics, PeerId, PeerInfo,
 };
 use crate::types::reputation::PeerReputation;
@@ -227,10 +227,9 @@ impl GossipHandle {
             }
             (stub_n, live)
         };
-        self.inner.messages_sent.fetch_add(
-            stub_deliveries as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.inner
+            .messages_sent
+            .fetch_add(stub_deliveries as u64, std::sync::atomic::Ordering::Relaxed);
         self.inner.bytes_sent.fetch_add(
             wire_len.saturating_mul(stub_deliveries as u64),
             std::sync::atomic::Ordering::Relaxed,
@@ -324,14 +323,12 @@ impl GossipHandle {
             p.send(body).await.map_err(GossipError::from)?;
             record_live_peer_outbound_bytes(&self.inner, peer_id, wire_len);
         } else {
-            self.inner.messages_sent.fetch_add(
-                1,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            self.inner.bytes_sent.fetch_add(
-                wire_len,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            self.inner
+                .messages_sent
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .bytes_sent
+                .fetch_add(wire_len, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
     }
@@ -757,10 +754,7 @@ impl GossipHandle {
     /// **CON-007 test hook:** [`chia_sdk_client::ClientState::is_banned`] for `ip` on the service's
     /// shadow [`super::state::ServiceState::chia_ip_bans`] table.
     #[doc(hidden)]
-    pub async fn __con007_chia_client_is_ip_banned_for_tests(
-        &self,
-        ip: std::net::IpAddr,
-    ) -> bool {
+    pub async fn __con007_chia_client_is_ip_banned_for_tests(&self, ip: std::net::IpAddr) -> bool {
         self.inner.chia_ip_bans.lock().await.is_banned(&ip)
     }
 
@@ -768,9 +762,7 @@ impl GossipHandle {
     /// [`super::state::DigBanEntry::until`] timestamp has passed (also calls [`ClientState::unban`]).
     #[doc(hidden)]
     pub async fn __con007_prune_expired_bans_for_tests(&self, now_unix_secs: u64) {
-        self.inner
-            .prune_expired_dig_bans(now_unix_secs)
-            .await;
+        self.inner.prune_expired_dig_bans(now_unix_secs).await;
     }
 
     pub async fn discover_from_introducer(&self) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
@@ -914,8 +906,8 @@ impl GossipHandle {
         Some((slot.remote(), slot.is_outbound()))
     }
 
-    /// CON-003: `(remote_protocol_version, remote_software_version_sanitized)` after
-    /// [`crate::connection::handshake::validate_remote_handshake`].
+    /// CON-003 / **CON-008**: `(remote_protocol_version, remote_software_version_sanitized)` after
+    /// [`crate::connection::handshake::validate_remote_handshake`] (second tuple element is Cc/Cf-sanitized).
     #[doc(hidden)]
     pub fn __con003_peer_versions_for_tests(&self, peer_id: PeerId) -> Option<(String, String)> {
         let peers = self.inner.peers.lock().ok()?;
@@ -941,12 +933,7 @@ impl GossipHandle {
     /// CON-004 / CON-007: accumulated penalty points (includes keepalive disconnect path).
     #[doc(hidden)]
     pub fn __con004_penalty_points_for_tests(&self, peer_id: PeerId) -> Option<u32> {
-        self.inner
-            .penalties
-            .lock()
-            .ok()?
-            .get(&peer_id)
-            .copied()
+        self.inner.penalties.lock().ok()?.get(&peer_id).copied()
     }
 
     /// CON-002: snapshot of [`PeerId`] keys in the live/stub map (order not stable — use for single-peer asserts).
@@ -978,10 +965,9 @@ impl GossipHandle {
         self.inner
             .messages_received
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.bytes_received.fetch_add(
-            wl,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.inner
+            .bytes_received
+            .fetch_add(wl, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }

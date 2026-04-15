@@ -142,7 +142,8 @@ pub(crate) struct LiveSlot {
     /// Remote’s declared protocol version string from the Chia `Handshake`, retained
     /// after [`crate::connection::handshake::validate_remote_handshake`] succeeds (CON-003).
     pub remote_protocol_version: String,
-    /// Remote’s software version after stripping Chia-specific prefixes ("Cc"/"Cf").
+    /// Remote’s [`Handshake::software_version`](chia_protocol::Handshake) after CON-008
+    /// Unicode **Cc**/**Cf** sanitization ([`crate::connection::handshake::sanitize_software_version`]).
     /// Stored sanitized so [`crate::types::peer::PeerConnection::software_version`]
     /// reflects exactly what we accepted.
     pub remote_software_version_sanitized: String,
@@ -579,7 +580,9 @@ pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: Pe
     };
     let triggered = match rep_mtx.lock() {
         Ok(mut rep) => rep.apply_penalty(PenaltyReason::RateLimitExceeded, now),
-        Err(e) => e.into_inner().apply_penalty(PenaltyReason::RateLimitExceeded, now),
+        Err(e) => e
+            .into_inner()
+            .apply_penalty(PenaltyReason::RateLimitExceeded, now),
     };
     if triggered {
         let st = Arc::clone(state);
@@ -591,7 +594,11 @@ pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: Pe
 }
 
 /// CON-006 — increment outbound wire counters for a live peer (after a successful `Peer::send_*`).
-pub(crate) fn record_live_peer_outbound_bytes(state: &ServiceState, peer_id: PeerId, wire_len: u64) {
+pub(crate) fn record_live_peer_outbound_bytes(
+    state: &ServiceState,
+    peer_id: PeerId,
+    wire_len: u64,
+) {
     let traffic = {
         let Ok(peers) = state.peers.lock() else {
             return;
@@ -645,12 +652,7 @@ pub(crate) fn sum_live_peer_wire_metrics(state: &ServiceState) -> (u64, u64, u64
             }
         }
     }
-    (
-        messages_sent,
-        messages_received,
-        bytes_written,
-        bytes_read,
-    )
+    (messages_sent, messages_received, bytes_written, bytes_read)
 }
 
 impl fmt::Debug for ServiceState {

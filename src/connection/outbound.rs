@@ -75,7 +75,9 @@ pub struct OutboundConnectResult {
     pub their_handshake: Handshake,
     /// Raw SPKI DER bytes for [`crate::types::peer::peer_id_from_tls_spki_der`].
     pub remote_spki_der: Vec<u8>,
-    /// CON-003: [`Handshake::software_version`] after Cc/Cf strip (matches what we store on [`crate::service::state::LiveSlot`]).
+    /// CON-003 / **CON-008**: [`Handshake::software_version`] after Cc/Cf sanitization via
+    /// [`validate_remote_handshake`](crate::connection::handshake::validate_remote_handshake) — same
+    /// string stored on the live peer slot (`remote_software_version_sanitized`, see `tests/con_008_tests.rs`).
     pub remote_software_version_sanitized: String,
 }
 
@@ -198,9 +200,9 @@ pub(crate) async fn connect_outbound_peer(
         server_port: 0,
         node_type: NodeType::Wallet,
         capabilities: vec![
-            (1, "1".to_string()),  // SPEC §1.5 #1 — BASE protocol capability
-            (2, "1".to_string()),  // BLOCK_HEADERS capability
-            (3, "1".to_string()),  // RATE_LIMITS_V2 capability
+            (1, "1".to_string()), // SPEC §1.5 #1 — BASE protocol capability
+            (2, "1".to_string()), // BLOCK_HEADERS capability
+            (3, "1".to_string()), // RATE_LIMITS_V2 capability
         ],
     })
     .await?;

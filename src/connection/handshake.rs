@@ -1,4 +1,11 @@
-//! CON-003 — validate remote [`Handshake`] before accepting a P2P session.
+//! **CON-003** — validate remote [`Handshake`] before accepting a P2P session.
+//!
+//! **CON-008** — [`sanitize_software_version`] strips Unicode **Cc** (control) and **Cf** (format)
+//! from [`Handshake::software_version`] before length checks or storage, matching Chia
+//! `ws_connection.py:61-63`. Outbound ([`crate::connection::outbound::connect_outbound_peer`]) and
+//! inbound ([`crate::connection::listener::negotiate_inbound_over_ws`]) both call
+//! [`validate_remote_handshake`], which delegates sanitization to this module — see
+//! `tests/con_008_tests.rs` for the CON-008–specific acceptance matrix.
 //!
 //! ## SPEC traceability
 //!
@@ -12,7 +19,8 @@
 //! ## Normative trace
 //!
 //! - [`CON-003.md`](../../../docs/requirements/domains/connection/specs/CON-003.md) (test plan + acceptance criteria)
-//! - [`NORMATIVE.md`](../../../docs/requirements/domains/connection/NORMATIVE.md) §CON-003
+//! - [`CON-008.md`](../../../docs/requirements/domains/connection/specs/CON-008.md) (Cc/Cf sanitization matrix)
+//! - [`NORMATIVE.md`](../../../docs/requirements/domains/connection/NORMATIVE.md) §CON-003, §CON-008
 //! - Chia reference for Cc/Cf stripping: `ws_connection.py` (lines cited in CON-003 / CON-008)
 //!
 //! ## Design
@@ -20,7 +28,8 @@
 //! - **Single policy function** [`validate_remote_handshake`] is invoked from **both** outbound
 //!   ([`crate::connection::outbound::connect_outbound_peer`]) and inbound
 //!   ([`crate::connection::listener::negotiate_inbound_over_ws`]) so “both directions validated” is
-//!   a literal shared code path (see `tests/con_003_tests.rs`).
+//!   a literal shared code path (see `tests/con_003_tests.rs` integration + `tests/con_008_tests.rs`
+//!   for the sanitization-focused traceability suite).
 //! - We map semantic failures onto existing [`chia_sdk_client::ClientError`] variants where they
 //!   fit ([`ClientError::WrongNetwork`]); remaining policy failures use [`ClientError::Io`] with a
 //!   stable prefix so integration tests can substring-match without inventing new upstream enum
@@ -56,16 +65,25 @@ pub const MIN_COMPATIBLE_PROTOCOL_VERSION: &str = "0.0.30";
 pub const ADVERTISED_PROTOCOL_VERSION: &str = "0.0.37";
 
 /// Sanitize [`Handshake::software_version`] by removing Unicode **Cc** (control) and **Cf** (format)
-/// characters — mirrors Chia `ws_connection.py:61-63` behavior referenced in CON-003 / CON-008.
+/// characters — mirrors Chia `ws_connection.py:61-63` behavior.
 ///
-/// SPEC §1.6 #1 — "Peer exchange on outbound connect" implies the handshake carries metadata
-/// whose `software_version` must be sanitized before storage. Chia equivalent:
-/// `ws_connection.py:61-63` strips control characters from the version string.
+/// **Normative:** [`CON-008.md`](../../../docs/requirements/domains/connection/specs/CON-008.md),
+/// [`NORMATIVE.md`](../../../docs/requirements/domains/connection/NORMATIVE.md) §CON-008.
+///
+/// ## Implementation choice (Cf vs `char::is_control`)
+///
+/// Rust’s [`char::is_control`] covers **Cc** but not **Cf** (e.g. zero-width space, BOM). We use the
+/// `unicode-general-category` crate’s [`get_general_category`](unicode_general_category::get_general_category)
+/// so category membership tracks the same Unicode data files Chia’s Python `unicodedata.category`
+/// consults — this is the “matches Chia” row in CON-008’s test plan (`test_matches_chia_category_policy`).
+///
+/// SPEC §1.6 #1 — "Peer exchange on outbound connect" implies the handshake carries metadata whose
+/// `software_version` must be sanitized before storage.
 ///
 /// ## Empty result
 ///
 /// A string consisting only of stripped characters becomes `""`, which is **valid** for length
-/// checks (CON-003 implementation notes).
+/// checks (CON-003 / CON-008 implementation notes).
 pub fn sanitize_software_version(version: &str) -> String {
     version
         .chars()
@@ -163,7 +181,9 @@ impl From<HandshakeValidationError> for ClientError {
 /// protocols match Chia's networking protocol.
 ///
 /// Returns the **sanitized** software version string for storage on [`crate::service::state::LiveSlot`]
-/// / future [`crate::types::peer::PeerConnection`] (CON-003 acceptance: “stored sanitized”).
+/// ([`crate::service::state::LiveSlot::remote_software_version_sanitized`]) and for any
+/// [`crate::types::peer::PeerConnection::software_version`] snapshot built from that field
+/// (CON-003 / CON-008: “stored sanitized”).
 pub fn validate_remote_handshake(
     their_handshake: &Handshake,
     expected_network_id: &str,

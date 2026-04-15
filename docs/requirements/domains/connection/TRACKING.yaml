@@ -86,10 +86,15 @@ items:
   - id: CON-008
     section: "5.1, 5.2"
     summary: "Version string sanitization"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#51-outbound-connection-reuses-chia-sdk-client"
-    tests: []
-    notes: ""
+    tests:
+      - tests/con_008_tests.rs
+    notes: >
+      `connection/handshake.rs::sanitize_software_version` uses `unicode-general-category` (Cc+Cf),
+      matching Chia `ws_connection.py:61-63`. Inbound + outbound call `validate_remote_handshake` before
+      storing `remote_software_version_sanitized` on `LiveSlot` / `OutboundConnectResult`. CON-003 shares
+      the helper for length and protocol gates; CON-008 suite is the dedicated traceability file.
 
   - id: CON-009
     section: "5.3"
