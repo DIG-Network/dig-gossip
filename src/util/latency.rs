@@ -39,7 +39,7 @@ pub fn prefer_by_score<'a>(
 ///
 /// PRF-003: "When a lower-latency peer is discovered, replace higher-latency eager."
 /// Returns the peer with highest avg_rtt_ms (worst latency).
-pub fn worst_rtt_peer<'a>(peers: &'a [(PeerId, PeerReputation)]) -> Option<&'a PeerId> {
+pub fn worst_rtt_peer(peers: &[(PeerId, PeerReputation)]) -> Option<&PeerId> {
     peers
         .iter()
         .filter(|(_, rep)| rep.avg_rtt_ms.is_some())
@@ -50,7 +50,7 @@ pub fn worst_rtt_peer<'a>(peers: &'a [(PeerId, PeerReputation)]) -> Option<&'a P
 /// Find the best-RTT peer among a set (for Plumtree tree optimization).
 ///
 /// PRF-003: candidate lazy peer to promote to eager if faster than worst eager.
-pub fn best_rtt_peer<'a>(peers: &'a [(PeerId, PeerReputation)]) -> Option<&'a PeerId> {
+pub fn best_rtt_peer(peers: &[(PeerId, PeerReputation)]) -> Option<&PeerId> {
     peers
         .iter()
         .filter(|(_, rep)| rep.avg_rtt_ms.is_some() && rep.avg_rtt_ms.unwrap_or(0) > 0)

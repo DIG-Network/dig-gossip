@@ -23,11 +23,11 @@ fn test_chia_certificate_generate_succeeds() {
     let cert = ChiaCertificate::generate().expect("ChiaCertificate::generate must succeed");
     assert!(
         !cert.cert_pem.is_empty(),
-        "generated certificate PEM must not be empty"
+        "generated certificate PEM string must not be empty"
     );
     assert!(
         !cert.key_pem.is_empty(),
-        "generated key PEM must not be empty"
+        "generated key PEM string must not be empty"
     );
 }
 
@@ -57,16 +57,14 @@ fn test_chia_certificate_generate_produces_distinct_certs() {
 #[test]
 fn test_chia_certificate_pem_format() {
     let cert = ChiaCertificate::generate().expect("generate");
-    let cert_str = std::str::from_utf8(&cert.cert_pem).expect("cert PEM must be valid UTF-8");
     assert!(
-        cert_str.starts_with("-----BEGIN CERTIFICATE-----"),
+        cert.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"),
         "certificate PEM must start with BEGIN CERTIFICATE header"
     );
-    let key_str = std::str::from_utf8(&cert.key_pem).expect("key PEM must be valid UTF-8");
     // chia-ssl generates RSA keys wrapped in PKCS#8 (BEGIN PRIVATE KEY) or
     // traditional (BEGIN RSA PRIVATE KEY); accept either.
     assert!(
-        key_str.contains("PRIVATE KEY"),
+        cert.key_pem.contains("PRIVATE KEY"),
         "key PEM must contain a PRIVATE KEY block"
     );
 }

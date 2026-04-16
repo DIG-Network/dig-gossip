@@ -6,105 +6,164 @@ items:
   - id: INT-001
     section: "Broadcast Pipeline"
     summary: "broadcast() routes through Plumtree eager/lazy push"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#81-plumtree-structured-gossip"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_001_tests.rs
+    notes: >
+      broadcaster.rs: PlumtreeState eager push (full msg to eager_peers, exclude origin) +
+      lazy push (hash-only LazyAnnounce to lazy_peers) + duplicate → PRUNE + GRAFT pull;
+      message_cache lookup for GRAFT responses. GossipHandle::broadcast routes through
+      Plumtree before fan-out.
   - id: INT-002
     section: "Broadcast Pipeline"
     summary: "broadcast() uses PriorityOutbound per connection"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#84-message-priority-lanes"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_002_tests.rs
+    notes: >
+      priority.rs: PriorityOutbound three VecDeque per connection; drain order
+      Critical→Normal→Bulk; starvation prevention 1 bulk per PRIORITY_STARVATION_RATIO;
+      from_chia_type + from_dig_type classification. broadcast_typed wires through
+      per-connection priority lanes.
   - id: INT-003
     section: "Broadcast Pipeline"
     summary: "broadcast() applies adaptive backpressure"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#85-adaptive-backpressure"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_003_tests.rs
+    notes: >
+      backpressure.rs: BackpressureConfig thresholds; tx dedup at TX_DEDUP_THRESHOLD;
+      bulk drop at BULK_DROP_THRESHOLD; normal delay at NORMAL_DELAY_THRESHOLD.
+      broadcast path checks queue depth and applies policy before enqueue.
   - id: INT-004
     section: "Broadcast Pipeline"
     summary: "NewTransaction routed via ERLAY flood set"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_004_tests.rs
+    notes: >
+      erlay.rs: ErlayState flood_set selection (outbound only, capped at flood_peer_count);
+      NewTransaction sent to flood set only; non-flood peers get reconciliation sketch;
+      flood_set rotation every ERLAY_FLOOD_SET_ROTATION_SECS; inbound excluded (ERL-007).
   - id: INT-005
     section: "Broadcast Pipeline"
     summary: "Relay broadcast in Plumtree step 7"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#7-relay-fallback"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_005_tests.rs
+    notes: >
+      broadcaster.rs step 7: if relay connected, call relay.broadcast for relay-reachable
+      peers. RelayMessage::Broadcast wiring; relay_stats.messages_sent incremented;
+      broadcast return count includes relay peers.
   - id: INT-006
     section: "Connection Filtering"
     summary: "/16 SubnetGroupFilter on connect_to"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_006_tests.rs
+    notes: >
+      gossip_handle.rs connect_to: SubnetGroupFilter.is_allowed check before TLS;
+      same /16 → ConnectionFiltered error; different /16 → allowed; IPv6 passthrough.
   - id: INT-007
     section: "Connection Filtering"
     summary: "AsDiversityFilter on connect_to"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_007_tests.rs
+    notes: >
+      gossip_handle.rs connect_to: AsDiversityFilter.is_allowed check after subnet;
+      same AS → ConnectionFiltered error; different AS → allowed; cached BGP lookup.
   - id: INT-008
     section: "Task Spawning"
     summary: "start() spawns discovery loop"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_008_tests.rs
+    notes: >
+      gossip_service.rs start(): spawns run_discovery_loop task; DNS seed resolution →
+      AddressManager merge; introducer backoff; parallel connect batches; loop repeats
+      on peer_connect_interval.
   - id: INT-009
     section: "Task Spawning"
     summary: "start() spawns feeler loop"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_009_tests.rs
+    notes: >
+      gossip_service.rs start(): spawns run_feeler_loop task; Poisson 240s schedule;
+      feeler connects, probes, disconnects; marks good peers in tried table.
   - id: INT-010
     section: "Task Spawning"
     summary: "start() spawns cleanup task"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#91-concurrency"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_010_tests.rs
+    notes: >
+      gossip_service.rs start(): spawns periodic cleanup task; stale connections removed;
+      expired bans pruned; address manager flush; configurable interval.
   - id: INT-011
     section: "Privacy Integration"
     summary: "Dandelion stem phase on locally-originated tx"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#191-dandelion"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_011_tests.rs
+    notes: >
+      gossip_handle.rs broadcast: locally-originated NewTransaction enters Dandelion stem;
+      single relay forwarding (not full gossip); 10% fluff coin flip; stem timeout 30s →
+      force fluff; epoch rotation 600s re-randomizes stem relay.
   - id: INT-012
     section: "Task Spawning"
     summary: "start() spawns relay reconnect task"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#7-relay-fallback"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_012_tests.rs
+    notes: >
+      gossip_service.rs start(): with RelayConfig, spawns relay reconnect task;
+      exponential backoff on failure; max_reconnect_attempts cap; successful reconnect
+      resets attempts counter.
   - id: INT-013
     section: "Public API Quality"
     summary: "Clean public API — only user-facing types exported"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#102-public-re-exports"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_013_tests.rs
+    notes: >
+      lib.rs reorganized into clear sections: Core (GossipService, GossipHandle, GossipError),
+      Config (GossipConfig, IntroducerConfig, RelayConfig), Peer types, DIG types, Discovery,
+      Chia re-exports, Feature-gated. Internal types (ServiceState, wire utils, address manager
+      store) moved to #[doc(hidden)] — accessible by tests but hidden from cargo doc.
   - id: INT-014
     section: "Public API Quality"
     summary: "Crate-level docs with lifecycle example"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#1-overview"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_014_tests.rs
+    notes: >
+      lib.rs //! docs: what the crate does / does NOT do; lifecycle code example
+      (Config → new → start → Handle → stop); I/O contract table (Message in,
+      (PeerId,Message) out); feature flag table; SPEC reference links.
   - id: INT-015
     section: "Public API Quality"
     summary: "End-to-end lifecycle integration test"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#3-public-api"
-    tests: []
-    notes: ""
+    tests:
+      - tests/int_015_tests.rs
+    notes: >
+      test_full_lifecycle: Config → GossipService::new() → start() → health_check() +
+      stats() + peer_count() → stop() → verify ServiceNotStarted error. test_broadcast_no_peers:
+      broadcast returns 0 when no peers connected. Proves complete public interface works as a unit.

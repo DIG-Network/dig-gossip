@@ -214,10 +214,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
                 if RespondPeers::from_bytes(&wire_msg.data).is_err() {
                     continue;
                 }
-                let wl = wire_msg
-                    .to_bytes()
-                    .map(|b| b.len() as u64)
-                    .unwrap_or(0);
+                let wl = wire_msg.to_bytes().map(|b| b.len() as u64).unwrap_or(0);
                 record_live_peer_inbound_bytes(&state, peer_id, wl);
                 last_success = std::time::Instant::now();
                 let rtt_ms = start.elapsed().as_millis() as u64;
@@ -337,8 +334,6 @@ async fn disconnect_after_keepalive_failure(state: &ServiceState, peer_id: PeerI
     // Step 5: if this failure was the straw that crossed the ban threshold, enforce CON-007
     // (timed ban + Chia IP ban) even though the slot is already removed.
     if triggered {
-        state
-            .execute_dig_timed_ban(peer_id, remote_ip, now)
-            .await;
+        state.execute_dig_timed_ban(peer_id, remote_ip, now).await;
     }
 }

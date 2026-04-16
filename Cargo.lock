@@ -1363,6 +1363,7 @@ dependencies = [
  "tokio-native-tls",
  "tokio-socks",
  "tokio-tungstenite",
+ "tokio-util",
  "toml 0.8.23",
  "tracing",
  "unicode-general-category",
@@ -4365,6 +4366,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

@@ -69,7 +69,7 @@ impl MessagePriority {
     pub fn from_dig_type(msg_type: u8) -> Self {
         match msg_type {
             // NewAttestation, NewCheckpointProposal, NewCheckpointSignature → Critical
-            200 | 201 | 202 => Self::Critical,
+            200..=202 => Self::Critical,
             // Status, checkpoint sigs → Normal
             203..=206 => Self::Normal,
             // ValidatorAnnounce → Bulk

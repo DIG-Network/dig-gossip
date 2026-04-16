@@ -69,6 +69,13 @@
 //! - **Implementation order:** `docs/requirements/IMPLEMENTATION_ORDER.md`
 
 #![forbid(unsafe_code)]
+// Suppress pre-existing clippy warnings from ported CAddrMan code and known patterns.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::if_same_then_else,
+    clippy::doc_lazy_continuation,
+    clippy::manual_unwrap_or_default
+)]
 
 // =============================================================================
 // Modules
