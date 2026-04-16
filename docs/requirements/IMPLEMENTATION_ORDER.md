@@ -101,14 +101,14 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 8: Priority Lanes & Backpressure
 
-- [ ] PRI-001 — MessagePriority enum (Critical, Normal, Bulk) and assignment table
-- [ ] PRI-002 — PriorityOutbound queue per connection (three VecDeques)
-- [ ] PRI-003 — Priority drain order (exhaust critical, then normal, then one bulk)
-- [ ] PRI-004 — Starvation prevention (1 bulk per PRIORITY_STARVATION_RATIO critical/normal)
-- [ ] PRI-005 — BackpressureConfig with configurable thresholds
-- [ ] PRI-006 — Tx dedup suppression at BACKPRESSURE_TX_DEDUP_THRESHOLD
-- [ ] PRI-007 — Bulk message drop at BACKPRESSURE_BULK_DROP_THRESHOLD
-- [ ] PRI-008 — Normal message delay at BACKPRESSURE_NORMAL_DELAY_THRESHOLD
+- [x] PRI-001 — MessagePriority enum (Critical, Normal, Bulk) and assignment table
+- [x] PRI-002 — PriorityOutbound queue per connection (three VecDeques)
+- [x] PRI-003 — Priority drain order (exhaust critical, then normal, then one bulk)
+- [x] PRI-004 — Starvation prevention (1 bulk per PRIORITY_STARVATION_RATIO critical/normal)
+- [x] PRI-005 — BackpressureConfig with configurable thresholds
+- [x] PRI-006 — Tx dedup suppression at BACKPRESSURE_TX_DEDUP_THRESHOLD
+- [x] PRI-007 — Bulk message drop at BACKPRESSURE_BULK_DROP_THRESHOLD
+- [x] PRI-008 — Normal message delay at BACKPRESSURE_NORMAL_DELAY_THRESHOLD
 
 ## Phase 9: Performance & Optimization
 
