@@ -19,11 +19,11 @@
 
 use std::net::SocketAddr;
 
+use dig_gossip::ChiaCertificate;
+use dig_gossip::Streamable;
 use dig_gossip::{
     Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
 };
-use dig_gossip::ChiaCertificate;
-use dig_gossip::Streamable;
 use dig_gossip::{RegisterAck, RegisterPeer, RequestPeersIntroducer, RespondPeersIntroducer};
 use futures_util::{SinkExt, StreamExt};
 use native_tls::{Identity, TlsAcceptor};

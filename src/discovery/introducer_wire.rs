@@ -19,8 +19,8 @@
 //! - **DSC-004:** [`docs/requirements/domains/discovery/specs/DSC-004.md`](../../docs/requirements/domains/discovery/specs/DSC-004.md)
 //! - **STR-003:** re-exported from [`crate::lib`](../../lib.rs) alongside other protocol surface types.
 
-use dig_protocol::TimestampedPeerInfo;
 use chia_streamable_macro::streamable;
+use dig_protocol::TimestampedPeerInfo;
 
 /// Empty introducer “get peers” request (protocol type **63**).
 #[streamable(message)]

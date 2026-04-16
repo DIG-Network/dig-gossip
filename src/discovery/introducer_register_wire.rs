@@ -22,8 +22,8 @@
 //!   documentation, inbound rate-limit tables, and future non-`Peer` transports.
 //! - **STR-003:** re-exported from [`crate::lib`](../../lib.rs).
 
-use dig_protocol::NodeType;
 use chia_streamable_macro::streamable;
+use dig_protocol::NodeType;
 
 /// Registration request: advertise this node’s P2P reachability to the introducer index.
 #[streamable(message)]

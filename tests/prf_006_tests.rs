@@ -7,8 +7,8 @@
 //!
 //! PRF-006 latency benchmarks are SHOULD. Placeholder asserting infrastructure exists.
 
-use dig_gossip::ProtocolMessageTypes;
 use dig_gossip::gossip::priority::MessagePriority;
+use dig_gossip::ProtocolMessageTypes;
 
 /// **PRF-006: NewPeak is Critical priority — ensures lowest latency.**
 ///

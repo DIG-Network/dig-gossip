@@ -44,8 +44,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use dig_protocol::Bytes32;
 use dig_protocol::load_ssl_cert;
+use dig_protocol::Bytes32;
 use dig_protocol::{ClientError, ClientState};
 
 use crate::error::GossipError;

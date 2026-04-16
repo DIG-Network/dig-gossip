@@ -63,12 +63,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dig_protocol::ChiaCertificate;
+use dig_protocol::Streamable;
+use dig_protocol::{ClientError, Peer, PeerOptions};
 use dig_protocol::{
     Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
 };
-use dig_protocol::{ClientError, Peer, PeerOptions};
-use dig_protocol::ChiaCertificate;
-use dig_protocol::Streamable;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;

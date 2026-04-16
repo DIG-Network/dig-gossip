@@ -5,8 +5,8 @@
 //! - **Spec:** `docs/requirements/domains/priority/specs/PRI-003.md`
 //! - **Master SPEC:** `docs/resources/SPEC.md` SS8.4
 
-use dig_gossip::{Message, ProtocolMessageTypes};
 use dig_gossip::gossip::priority::{MessagePriority, PriorityOutbound};
+use dig_gossip::{Message, ProtocolMessageTypes};
 
 fn make_msg(msg_type: ProtocolMessageTypes) -> Message {
     Message {
