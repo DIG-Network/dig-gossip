@@ -18,4 +18,4 @@
 | DSC-009 | verified | Parallel connection establishment           | `tests/dsc_009_tests.rs` — constant=8, empty manager, batch produces results, batch size limits, size=1 works, mark_good called |
 | DSC-010 | verified | AS-level diversity enforcement             | `tests/dsc_010_tests.rs` — BGP lookup, longest-prefix-match, unknown fail-open, filter blocks/allows, remove re-allows, no-BGP fallback, count tracking |
 | DSC-011 | verified | /16 group filter for outbound connections  | `tests/dsc_011_tests.rs` — IPv4/IPv6 grouping, same/different subnet, filter blocks/allows, remove re-allows, count tracking |
-| DSC-012 | gap    | IntroducerPeers/VettedPeer tracking          | Unit test: verify vetting state transitions (unvetted, failed, success)               |
+| DSC-012 | verified | IntroducerPeers/VettedPeer tracking        | `tests/dsc_012_tests.rs` — add/remove/duplicate, vetting state (0/+/-), success/failure resets, get_vetted_peers filter, Hash/Eq by (host,port) |
