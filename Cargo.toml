@@ -18,9 +18,6 @@
 # features; we use the conventional implicit optional-dep features
 # (`siphasher`, `minisketch-rs`) from the `[features]` table.
 
-[workspace]
-members = [".", "crates/dig-protocol"]
-
 [package]
 name = "dig-gossip"
 version = "0.1.0"
@@ -34,7 +31,7 @@ readme = "README.md"
 # DIG protocol — superset of chia-protocol, re-exports all chia-* crate types plus
 # DIG extension opcodes (200-219), DigMessage, DigMessageType, introducer wire types.
 # Single import replaces: chia-protocol, chia-sdk-client, chia-ssl, chia-traits, chia_streamable_macro.
-dig-protocol = { path = "crates/dig-protocol", default-features = false }
+dig-protocol = { version = "0.1.1", default-features = false }
 # chia_streamable_macro needed directly because the proc-macro reads Cargo.toml for chia-protocol
 # and generates `chia_protocol::` paths at compile time.
 chia_streamable_macro = "0.26"
