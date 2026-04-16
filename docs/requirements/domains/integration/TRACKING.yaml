@@ -87,3 +87,24 @@ items:
     spec_ref: "SPEC.md#7-relay-fallback"
     tests: []
     notes: ""
+  - id: INT-013
+    section: "Public API Quality"
+    summary: "Clean public API — only user-facing types exported"
+    status: gap
+    spec_ref: "SPEC.md#102-public-re-exports"
+    tests: []
+    notes: ""
+  - id: INT-014
+    section: "Public API Quality"
+    summary: "Crate-level docs with lifecycle example"
+    status: gap
+    spec_ref: "SPEC.md#1-overview"
+    tests: []
+    notes: ""
+  - id: INT-015
+    section: "Public API Quality"
+    summary: "End-to-end lifecycle integration test"
+    status: gap
+    spec_ref: "SPEC.md#3-public-api"
+    tests: []
+    notes: ""

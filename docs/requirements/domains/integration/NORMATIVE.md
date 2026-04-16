@@ -59,3 +59,16 @@ and algorithms exist but are not connected to the live message flow.
 
 <a id="INT-012"></a>**INT-012** `GossipService::start()` MUST spawn relay auto-reconnect task when relay is configured. MUST use `ReconnectState` for backoff. SPEC §7, RLY-004, CNC-002.
 > **Spec:** [`INT-012.md`](specs/INT-012.md)
+
+---
+
+## §5 Public API Quality
+
+<a id="INT-013"></a>**INT-013** The crate's `lib.rs` re-exports MUST expose only types external callers need. Internal types (`ServiceState`, `LiveSlot`, `StubPeer`, test helpers) MUST be `pub(crate)` or `#[doc(hidden)]`. Re-exports organized into clear sections.
+> **Spec:** [`INT-013.md`](specs/INT-013.md)
+
+<a id="INT-014"></a>**INT-014** The crate root MUST have comprehensive `//!` documentation showing lifecycle (Config → new → start → Handle), input/output contract (Message in, (PeerId, Message) out), feature flags, and hard boundaries.
+> **Spec:** [`INT-014.md`](specs/INT-014.md)
+
+<a id="INT-015"></a>**INT-015** A single integration test MUST prove the complete lifecycle: GossipConfig → GossipService::new() → start() → GossipHandle methods → stop() → methods return error.
+> **Spec:** [`INT-015.md`](specs/INT-015.md)
