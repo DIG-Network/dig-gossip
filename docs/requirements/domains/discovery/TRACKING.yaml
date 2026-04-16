@@ -112,10 +112,13 @@ items:
   - id: DSC-010
     section: "6.4"
     summary: "AS-level diversity enforcement"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_010_tests.rs
+    notes: >
+      util/as_lookup.rs: AsLookupTable (sorted entries, longest-prefix-match), AsDiversityFilter
+      (HashSet<AsNumber> tracking). Fail-open for unknown IPs. No BGP data = all allowed (/16 sole guard).
   - id: DSC-011
     section: "6.4"
     summary: "/16 group filter for outbound connections"
