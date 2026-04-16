@@ -135,7 +135,12 @@ items:
   - id: DSC-012
     section: "6.5"
     summary: "IntroducerPeers/VettedPeer tracking"
-    status: gap
+    status: verified
     spec_ref: "SPEC.md#65-introducer-client-dig-extension"
-    tests: []
-    notes: ""
+    tests:
+      - tests/dsc_012_tests.rs
+    notes: >
+      introducer_peers.rs: IntroducerPeers (HashSet<VettedPeer>) with add/remove/record_success/record_failure.
+      VettedPeer Hash/Eq by (host,port) only (Chia introducer_peers.py:29-30).
+      State machine: 0→positive on success, 0→negative on failure, positive→-1 on failure, negative→1 on success.
+      get_vetted_peers() returns only vetted > 0.
