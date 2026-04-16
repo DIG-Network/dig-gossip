@@ -81,9 +81,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dig_protocol::{RequestPeers, RespondPeers};
 use dig_protocol::Peer;
 use dig_protocol::Streamable;
+use dig_protocol::{RequestPeers, RespondPeers};
 
 // SPEC §2.13 — PING_INTERVAL_SECS (default 30) and PEER_TIMEOUT_SECS (default 90)
 // are DIG-specific constants not present in Chia crates.

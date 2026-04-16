@@ -63,9 +63,9 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dig_protocol::{Message, NodeType};
-use dig_protocol::{ClientState, Peer, RateLimiter};
 use dig_protocol::ChiaCertificate;
+use dig_protocol::{ClientState, Peer, RateLimiter};
+use dig_protocol::{Message, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;

@@ -43,11 +43,11 @@
 //! (`full_node.py`, `server.py`). The key difference is that Chia's `Server` object is not
 //! `Clone` — callers must borrow it. Our `Arc` wrapper avoids lifetime gymnastics in async code.
 
+use dig_protocol::Peer;
 use dig_protocol::{
     ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
     TimestampedPeerInfo,
 };
-use dig_protocol::Peer;
 
 use crate::discovery::introducer_client::{
     load_local_certificate_for_introducer, IntroducerClient, PeerRegistration,

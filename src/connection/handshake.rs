@@ -40,8 +40,8 @@
 
 #![allow(clippy::result_large_err)]
 
-use dig_protocol::Handshake;
 use dig_protocol::ClientError;
+use dig_protocol::Handshake;
 use thiserror::Error;
 use unicode_general_category::{get_general_category, GeneralCategory};
 

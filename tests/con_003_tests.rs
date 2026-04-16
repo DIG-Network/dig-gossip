@@ -19,11 +19,11 @@
 
 mod common;
 
-use dig_gossip::Handshake;
 use dig_gossip::connection::handshake::{
     is_compatible_protocol_version, sanitize_software_version, validate_remote_handshake,
     HandshakeValidationError, MAX_SOFTWARE_VERSION_BYTES, MIN_COMPATIBLE_PROTOCOL_VERSION,
 };
+use dig_gossip::Handshake;
 use dig_gossip::{NodeType, PeerId};
 
 /// Build a valid baseline [`Handshake`] for mutation in individual tests.

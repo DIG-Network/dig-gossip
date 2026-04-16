@@ -32,9 +32,9 @@ use dig_protocol::{Bytes32, Handshake, NodeType, ProtocolMessageTypes, Timestamp
 
 use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
-use dig_protocol::{load_ssl_cert, ClientError, Peer, PeerOptions};
 use dig_protocol::ChiaCertificate;
 use dig_protocol::Streamable;
+use dig_protocol::{load_ssl_cert, ClientError, Peer, PeerOptions};
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 #[cfg(any(feature = "native-tls", feature = "rustls"))]

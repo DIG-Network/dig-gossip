@@ -124,6 +124,12 @@ pub use discovery::introducer_client::IntroducerClient;
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
 
 // -- Chia protocol types (re-exported, not reimplemented) --
+pub use dig_protocol::ChiaCertificate;
+pub use dig_protocol::Streamable;
+pub use dig_protocol::{
+    load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
+    RateLimiter, RateLimits, V2_RATE_LIMITS,
+};
 pub use dig_protocol::{
     Bytes, Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
     NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
@@ -131,12 +137,6 @@ pub use dig_protocol::{
     RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
     RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
 };
-pub use dig_protocol::{
-    load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
-    RateLimiter, RateLimits, V2_RATE_LIMITS,
-};
-pub use dig_protocol::ChiaCertificate;
-pub use dig_protocol::Streamable;
 
 // -- Feature-gated public types --
 #[cfg(feature = "native-tls")]

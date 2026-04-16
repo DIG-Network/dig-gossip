@@ -33,8 +33,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dig_protocol::TimestampedPeerInfo;
 use dig_protocol::Network;
+use dig_protocol::TimestampedPeerInfo;
 
 use crate::discovery::address_manager::AddressManager;
 use crate::types::config::GossipConfig;
