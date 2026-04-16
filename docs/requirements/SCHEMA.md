@@ -41,6 +41,7 @@ Each requirement also has a dedicated specification file in
 | Performance | `performance/` | `PRF` | Latency scoring, parallel connect, benchmarks |
 | Concurrency | `concurrency/` | `CNC` | Thread safety, task architecture, shared state, shutdown |
 | Privacy | `privacy/` | `PRV` | Dandelion++ tx origin privacy, ephemeral PeerId rotation, Tor transport |
+| Integration | `integration/` | `INT` | Wiring components into live broadcast/connect/task paths |
 
 **Immutability:** Requirement IDs are permanent. Deprecate requirements rather
 than renumbering.
