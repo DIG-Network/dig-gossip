@@ -19,7 +19,10 @@ use dig_gossip::PeerIdRotationConfig;
 #[test]
 fn test_peer_id_rotation_config_enabled_default() {
     let cfg = PeerIdRotationConfig::default();
-    assert!(cfg.enabled, "PeerIdRotationConfig default must be enabled=true");
+    assert!(
+        cfg.enabled,
+        "PeerIdRotationConfig default must be enabled=true"
+    );
 }
 
 /// SPEC §1.9.2 default: `rotation_interval_secs = 86400` (24 hours).

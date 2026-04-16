@@ -1,17 +1,12 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **dig-gossip**. Run `npx gitnexus analyze` to build or refresh the index. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **dig-gossip** (3082 symbols, 6220 relationships, 260 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
-## Tests layout
-
-- **`tests/` is flat:** one dedicated file per requirement: `tests/{DOMAIN}_{NNN}_tests.rs`. Only `tests/common/` is allowed for STR-005 harness — no other requirement subfolders. See `.cursor/rules/dig-gossip-tests-flat.mdc`.
-
 ## Always Do
 
-- **MUST run GitNexus before any code change** (`npx gitnexus status` / `analyze`, then MCP `gitnexus_impact` / `gitnexus_context` on symbols you will touch). If the CLI fails, use MCP or tell the user the index could not be refreshed.
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
 - **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.

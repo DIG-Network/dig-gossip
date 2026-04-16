@@ -560,13 +560,13 @@ impl GossipHandle {
             .map_err(GossipError::from)?;
 
         // DSC-007: Cap received peers per SPEC §1.6#10 (1000/request) and §1.6#11 (3000 total).
+        // Always call add_to_new_table even with an empty list so the address-manager log records
+        // that the RequestPeers exchange occurred — CON-001 test hook relies on this.
         let capped = crate::discovery::node_discovery::cap_received_peers(
             &respond.peer_list,
             &self.inner.total_peers_received,
         );
-        if !capped.is_empty() {
-            self.inner.address_manager.add_to_new_table(capped, &src, 0);
-        }
+        self.inner.address_manager.add_to_new_table(capped, &src, 0);
 
         // CON-005: one inbound [`RateLimiter`] per live slot (insert **before** the forwarder).
         let inbound_limiter = Arc::new(Mutex::new(

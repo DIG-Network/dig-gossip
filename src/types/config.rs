@@ -76,14 +76,40 @@ pub use crate::privacy::tor::TorConfig;
 ///   if `reconnect_on_rotation` is `true`.
 /// - The address manager tracks peers by `IP:port`, not `PeerId`, so rotation does not cause churn.
 ///
-/// # Future expansion
-///
-/// PRV-006 will add `enabled: bool`, `rotation_interval_secs: u64`, and `reconnect_on_rotation: bool`
-/// fields. Currently a zero-sized placeholder so [`GossipConfig`] carries the slot.
-///
 /// **Requirement:** [`docs/requirements/domains/privacy/specs/PRV-006.md`](../../../docs/requirements/domains/privacy/specs/PRV-006.md)
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PeerIdRotationConfig {}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerIdRotationConfig {
+    /// Enable periodic PeerId rotation. Default: `true`.
+    pub enabled: bool,
+    /// Rotation interval in seconds. Default: `86400` (24 hours).
+    /// Set to `0` to disable rotation entirely (PRV-008).
+    pub rotation_interval_secs: u64,
+    /// Whether to reconnect to all peers after rotation. Default: `true`.
+    /// If `false`, only new connections use the new identity; existing connections
+    /// retain the old PeerId until they naturally close.
+    pub reconnect_on_rotation: bool,
+}
+
+impl Default for PeerIdRotationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rotation_interval_secs: 86400,
+            reconnect_on_rotation: true,
+        }
+    }
+}
+
+impl PeerIdRotationConfig {
+    /// Returns `true` if rotation is effectively disabled (**PRV-008**).
+    ///
+    /// Rotation is disabled when:
+    /// - `enabled` is `false`, OR
+    /// - `rotation_interval_secs` is `0` (zero interval is nonsensical)
+    pub fn is_rotation_disabled(&self) -> bool {
+        !self.enabled || self.rotation_interval_secs == 0
+    }
+}
 
 /// Top-level gossip service configuration, consumed by
 /// [`GossipService::new`](crate::service::gossip_service::GossipService::new).
