@@ -130,16 +130,16 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 11: Privacy
 
-- [ ] PRV-001 — DandelionConfig struct (enabled, fluff_probability, stem_timeout, epoch)
-- [ ] PRV-002 — Stem phase forwarding (single relay, not in mempool, not served)
-- [ ] PRV-003 — Fluff transition (10% coin flip, mempool + broadcast on fluff)
-- [ ] PRV-004 — Stem timeout force-fluff (30s liveness guarantee)
-- [ ] PRV-005 — Stem relay epoch rotation (re-randomize every 600s)
-- [ ] PRV-006 — PeerIdRotationConfig struct (enabled, interval, reconnect)
-- [ ] PRV-007 — Certificate rotation (fresh ChiaCertificate, reconnect, independent of BLS keys)
-- [ ] PRV-008 — Rotation opt-out (interval=0 disables)
-- [ ] PRV-009 — TorConfig struct (enabled, socks5_proxy, onion_address, prefer_tor)
-- [ ] PRV-010 — Tor transport (SOCKS5 outbound, .onion inbound, hybrid, selection order)
+- [x] PRV-001 — DandelionConfig struct (enabled, fluff_probability, stem_timeout, epoch)
+- [x] PRV-002 — Stem phase forwarding (single relay, not in mempool, not served)
+- [x] PRV-003 — Fluff transition (10% coin flip, mempool + broadcast on fluff)
+- [x] PRV-004 — Stem timeout force-fluff (30s liveness guarantee)
+- [x] PRV-005 — Stem relay epoch rotation (re-randomize every 600s)
+- [x] PRV-006 — PeerIdRotationConfig struct (enabled, interval, reconnect)
+- [x] PRV-007 — Certificate rotation (fresh ChiaCertificate, reconnect, independent of BLS keys)
+- [x] PRV-008 — Rotation opt-out (interval=0 disables)
+- [x] PRV-009 — TorConfig struct (enabled, socks5_proxy, onion_address, prefer_tor)
+- [x] PRV-010 — Tor transport (SOCKS5 outbound, .onion inbound, hybrid, selection order)
 
 ---
 
