@@ -81,12 +81,12 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 6: Compact Block Relay
 
-- [ ] CBK-001 — CompactBlock encoding (header + short TX IDs + prefilled transactions)
-- [ ] CBK-002 — Short TX ID computation (SipHash with block-header-derived key, 6 bytes)
-- [ ] CBK-003 — Compact block reconstruction from mempool (match short IDs)
-- [ ] CBK-004 — Missing transaction request/response (RequestBlockTransactions)
-- [ ] CBK-005 — Fallback to full block request on >5 missing transactions
-- [ ] CBK-006 — SipHash key derivation from block header hash
+- [x] CBK-001 — CompactBlock encoding (header + short TX IDs + prefilled transactions)
+- [x] CBK-002 — Short TX ID computation (SipHash with block-header-derived key, 6 bytes)
+- [x] CBK-003 — Compact block reconstruction from mempool (match short IDs)
+- [x] CBK-004 — Missing transaction request/response (RequestBlockTransactions)
+- [x] CBK-005 — Fallback to full block request on >5 missing transactions
+- [x] CBK-006 — SipHash key derivation from block header hash
 
 ## Phase 7: ERLAY Transaction Relay
 
