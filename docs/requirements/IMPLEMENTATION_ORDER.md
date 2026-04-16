@@ -155,6 +155,9 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] INT-010 — Cleanup task spawned in start()
 - [x] INT-011 — Dandelion stem phase on locally-originated transactions
 - [x] INT-012 — Relay reconnect task spawned in start()
+- [ ] INT-013 — Clean public API surface (only user-facing types exported)
+- [ ] INT-014 — Crate-level documentation with lifecycle example
+- [ ] INT-015 — End-to-end lifecycle integration test
 
 ---
 
@@ -174,5 +177,5 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 | 9 | Performance | 6 |
 | 10 | Concurrency | 6 |
 | 11 | Privacy | 10 |
-| 12 | Integration | 12 |
-| **Total** | | **110** |
+| 12 | Integration | 15 |
+| **Total** | | **113** |
