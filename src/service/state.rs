@@ -78,6 +78,8 @@ use crate::error::GossipError;
 use crate::types::config::GossipConfig;
 use crate::types::peer::{PeerConnectionWireMetrics, PeerId};
 use crate::types::reputation::{PeerReputation, PenaltyReason};
+use crate::util::as_lookup::AsDiversityFilter;
+use crate::util::ip_address::SubnetGroupFilter;
 
 /// Lifecycle state: service has been constructed but `start()` has not been called.
 /// Config is validated and TLS is loaded, but no tasks are running and no ports are bound.
@@ -295,6 +297,16 @@ pub struct ServiceState {
     /// SPEC §8.1 — "Message cache: LRU capacity 1000, TTL 60s."
     pub message_cache: Mutex<crate::gossip::message_cache::MessageCache>,
 
+    /// **INT-006** — /16 subnet diversity filter for outbound connections.
+    /// Blocks candidates whose /16 group already has an outbound connection.
+    /// SPEC §6.4 item 3: "one outbound per IPv4 /16 subnet."
+    pub subnet_filter: Mutex<SubnetGroupFilter>,
+
+    /// **INT-007** — AS-level diversity filter for outbound connections.
+    /// Blocks candidates whose AS is already represented in outbound set.
+    /// SPEC §6.4 item 3: "AS-level diversity — one outbound per AS."
+    pub as_filter: Mutex<AsDiversityFilter>,
+
     /// Map of currently connected peers (stubs for tests, live for real connections).
     /// Keyed by [`PeerId`] (SHA256 of remote TLS public key for live peers, or
     /// deterministic hash of `SocketAddr` for stubs).
@@ -438,6 +450,8 @@ impl ServiceState {
             seen_messages: Mutex::new(LruCache::new(cap)),
             plumtree: Mutex::new(crate::gossip::plumtree::PlumtreeState::new()),
             message_cache: Mutex::new(crate::gossip::message_cache::MessageCache::new()),
+            subnet_filter: Mutex::new(SubnetGroupFilter::new()),
+            as_filter: Mutex::new(AsDiversityFilter::no_bgp_data()),
             peers: Mutex::new(HashMap::new()),
             banned: Mutex::new(HashMap::new()),
             chia_ip_bans: Arc::new(tokio::sync::Mutex::new(ClientState::default())),

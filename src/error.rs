@@ -213,6 +213,15 @@ pub enum GossipError {
     #[error("relay error: {0}")]
     RelayError(String),
 
+    /// A connection was rejected by a diversity filter (INT-006 /16 subnet, INT-007 AS).
+    ///
+    /// **When:** `connect_to` detects that the target's /16 subnet group or AS number
+    /// already has an outbound connection in the filter.
+    /// **Caller action:** Skip this candidate and try another peer.
+    /// **Produced by:** [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle).
+    #[error("connection filtered: {0}")]
+    ConnectionFiltered(String),
+
     /// Address manager peers-file snapshot failed (DSC-002 — corrupt bincode, version mismatch, or invariant violation).
     ///
     /// **When:** [`crate::discovery::address_manager_store::AddressManagerStore::load`] /

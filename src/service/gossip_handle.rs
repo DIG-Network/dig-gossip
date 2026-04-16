@@ -496,6 +496,26 @@ impl GossipHandle {
             }
         }
 
+        // INT-006: /16 subnet group filter — one outbound per /16.
+        if let Ok(sf) = self.inner.subnet_filter.lock() {
+            if !sf.is_allowed(&addr.ip()) {
+                return Err(GossipError::ConnectionFiltered(format!(
+                    "INT-006: /16 subnet group already has an outbound connection for {}",
+                    addr.ip()
+                )));
+            }
+        }
+
+        // INT-007: AS diversity filter — one outbound per AS.
+        if let Ok(af) = self.inner.as_filter.lock() {
+            if !af.is_allowed(&addr.ip()) {
+                return Err(GossipError::ConnectionFiltered(format!(
+                    "INT-007: AS already has an outbound connection for {}",
+                    addr.ip()
+                )));
+            }
+        }
+
         let connector = crate::connection::outbound::tls_connector_for_cert(&self.inner.tls)
             .map_err(GossipError::from)?;
         let network_id =
@@ -588,6 +608,16 @@ impl GossipHandle {
         // INT-001: Register peer in Plumtree state (starts as eager per SPEC §8.1).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
             pt.add_peer(peer_id);
+        }
+
+        // INT-006: Record outbound /16 group.
+        if let Ok(mut sf) = self.inner.subnet_filter.lock() {
+            sf.add_outbound(&addr.ip());
+        }
+
+        // INT-007: Record outbound AS.
+        if let Ok(mut af) = self.inner.as_filter.lock() {
+            af.add_outbound(&addr.ip());
         }
 
         // Answer inbound `RequestPeers` (keepalive / discovery) with correlated `RespondPeers`.
@@ -733,12 +763,24 @@ impl GossipHandle {
             .lock()
             .map_err(|_| GossipError::ChannelClosed)?
             .remove(peer_id);
+        let remote_ip = removed.as_ref().map(|s| s.remote().ip());
         if let Some(PeerSlot::Live(l)) = removed {
             let _ = l.peer.close().await;
         }
         // INT-001: Remove peer from Plumtree state (PLT-006 tree self-healing).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
             pt.remove_peer(peer_id);
+        }
+
+        // INT-006: Remove outbound /16 group on disconnect.
+        if let Some(ip) = remote_ip {
+            if let Ok(mut sf) = self.inner.subnet_filter.lock() {
+                sf.remove_outbound(&ip);
+            }
+            // INT-007: Remove outbound AS on disconnect.
+            if let Ok(mut af) = self.inner.as_filter.lock() {
+                af.remove_outbound(&ip);
+            }
         }
         Ok(())
     }
