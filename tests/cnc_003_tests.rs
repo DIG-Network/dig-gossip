@@ -25,8 +25,5 @@ fn test_stats_use_atomic_counters() {
 /// Private fields — verified structurally via CNC-001 (Send+Sync bounds require correct primitives).
 #[test]
 fn test_sync_primitives_documented() {
-    assert!(
-        true,
-        "CNC-003 verified via module docs + CNC-001 trait bounds"
-    );
+    // CNC-003 verified via module docs + CNC-001 trait bounds.
 }

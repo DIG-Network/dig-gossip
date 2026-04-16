@@ -127,7 +127,7 @@ fn test_filter_allows_different_as() {
 #[test]
 fn test_filter_unknown_ip_allowed() {
     let table = test_table();
-    let mut filter = AsDiversityFilter::new(table);
+    let filter = AsDiversityFilter::new(table);
 
     let unknown: IpAddr = "192.168.1.1".parse().unwrap();
 

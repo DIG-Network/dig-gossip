@@ -52,7 +52,7 @@ mod tests {
         let trials = 1000;
         let fluff_count: usize = (0..trials).filter(|_| should_fluff(0.10)).count();
         assert!(
-            fluff_count >= 50 && fluff_count <= 150,
+            (50..=150).contains(&fluff_count),
             "expected ~100 fluffs in {trials} trials with p=0.10, got {fluff_count}"
         );
     }
@@ -66,7 +66,7 @@ mod tests {
         let trials = 1000;
         let fluff_count: usize = (0..trials).filter(|_| should_fluff(0.50)).count();
         assert!(
-            fluff_count >= 400 && fluff_count <= 600,
+            (400..=600).contains(&fluff_count),
             "expected ~500 fluffs in {trials} trials with p=0.50, got {fluff_count}"
         );
     }

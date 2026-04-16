@@ -19,8 +19,5 @@ fn test_task_architecture_documented() {
     // - Feeler task: DSC-008 (run_feeler_loop)
     // - Relay task: RLY-004 (relay_service)
     // These are integration-tested in their respective test files.
-    assert!(
-        true,
-        "CNC-002 verified by structural composition of CON/DSC/RLY tasks"
-    );
+    // CNC-002 verified by structural composition of CON/DSC/RLY tasks.
 }
