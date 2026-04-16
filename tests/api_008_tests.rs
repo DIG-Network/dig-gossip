@@ -413,7 +413,11 @@ async fn test_stats_cumulative_messages() {
     assert_eq!(n, 2); // fan-out count: one delivery per peer
     let after = h.stats().await.messages_sent;
     // Counter must increase by 2 (one per peer delivery), not by 1 (one per broadcast).
-    assert_eq!(after, before + 2, "two stub peers -> two counted deliveries");
+    assert_eq!(
+        after,
+        before + 2,
+        "two stub peers -> two counted deliveries"
+    );
 }
 
 /// **Extension:** `send_to` increments `messages_sent` by exactly 1 — the cumulative

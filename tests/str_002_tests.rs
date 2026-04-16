@@ -179,7 +179,13 @@ fn test_connection_module_structure() {
     }
     assert_mod_rs_declares_pub_children(
         "src/connection/mod.rs",
-        &["handshake", "inbound_limits", "keepalive", "listener", "outbound"],
+        &[
+            "handshake",
+            "inbound_limits",
+            "keepalive",
+            "listener",
+            "outbound",
+        ],
     );
 }
 
