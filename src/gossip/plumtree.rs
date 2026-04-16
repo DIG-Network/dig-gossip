@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 
 use crate::constants::PLUMTREE_LAZY_TIMEOUT_MS;
 use crate::types::peer::{metric_unix_timestamp_secs, PeerId};

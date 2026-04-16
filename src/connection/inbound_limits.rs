@@ -1,4 +1,4 @@
-//! CON-005 — per-connection **inbound** rate limits on top of [`V2_RATE_LIMITS`](chia_sdk_client::V2_RATE_LIMITS).
+//! CON-005 — per-connection **inbound** rate limits on top of [`V2_RATE_LIMITS`](dig_protocol::V2_RATE_LIMITS).
 //!
 //! ## Normative trace
 //!
@@ -8,7 +8,7 @@
 //!
 //! ## Outbound vs inbound
 //!
-//! Outbound sends go through [`chia_sdk_client::Peer::send_raw`] which already applies
+//! Outbound sends go through [`dig_protocol::Peer::send_raw`] which already applies
 //! [`RateLimiter`] with `incoming = false` (CON-005 acceptance: *no custom outbound implementation*).
 //! Inbound frames are delivered on the per-connection `mpsc` from [`Peer::from_websocket`]; **DIG**
 //! enforces [`RateLimiter::handle_message`] here **before** forwarding to the broadcast hub.
@@ -16,15 +16,15 @@
 //! ## DIG wire types (`200..=219` subset here)
 //!
 //! [`crate::types::dig_messages::DigMessageType`] discriminants are **not** [`ProtocolMessageTypes`]
-//! variants in `chia-protocol` 0.26, so they cannot appear in [`chia_sdk_client::RateLimits`] `tx` /
-//! `other` maps. We attach them to [`RateLimits::dig_wire`](chia_sdk_client::RateLimits::dig_wire)
+//! variants in `chia-protocol` 0.26, so they cannot appear in [`dig_protocol::RateLimits`] `tx` /
+//! `other` maps. We attach them to [`RateLimits::dig_wire`](dig_protocol::RateLimits::dig_wire)
 //! (vendored `chia-sdk-client`) and validate with [`RateLimiter::check_dig_extension`] when a future
 //! ingress path decodes raw DIG frames. Today’s integration path only sees Chia [`Message`] values;
 //! the extension table is still installed so limits are centralized and unit-tested per CON-005.
 
 use std::collections::HashMap;
 
-use chia_sdk_client::{RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
+use dig_protocol::{RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
 
 use crate::types::dig_messages::DigMessageType;
 

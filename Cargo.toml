@@ -31,16 +31,18 @@ repository = "https://github.com/DIG-Network/dig-gossip"
 readme = "README.md"
 
 [dependencies]
-# Chia ecosystem — reuse wire types, peer IO, TLS helpers, serialization traits.
-# See STR-001 "Dependency Purposes" and SPEC Section 1.4 (no redefinitions).
-chia-protocol = "0.26"
-# Wire structs for introducer opcodes 63/64 — omitted as standalone types in chia-protocol 0.26
-# (see `src/discovery/introducer_wire.rs` / STR-003 / DSC-004).
-chia-sha2 = "0.26"
+# DIG protocol — superset of chia-protocol, re-exports all chia-* crate types plus
+# DIG extension opcodes (200-219), DigMessage, DigMessageType, introducer wire types.
+# Single import replaces: chia-protocol, chia-sdk-client, chia-ssl, chia-traits, chia_streamable_macro.
+dig-protocol = { path = "crates/dig-protocol", default-features = false }
+# chia_streamable_macro needed directly because the proc-macro reads Cargo.toml for chia-protocol
+# and generates `chia_protocol::` paths at compile time.
 chia_streamable_macro = "0.26"
-chia-sdk-client = { version = "0.28", default-features = false }
-chia-ssl = "0.26"
+# Required by chia_streamable_macro — the proc-macro panics if these aren't in Cargo.toml.
+# Code should import these types through dig-protocol, not directly.
+chia-protocol = "0.26"
 chia-traits = "0.26"
+chia-sha2 = "0.26"
 # SHA256(peer TLS SubjectPublicKeyInfo DER) — API-005 / CON-001 peer_id derivation (NIST SHA-256).
 sha2 = "0.10"
 # Parse peer X.509 after outbound TLS (CON-001) — extract SPKI DER for [`peer_id_from_tls_spki_der`].
@@ -118,14 +120,14 @@ unicode-general-category = "1.1"
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
 default = ["native-tls", "relay", "erlay", "compact-blocks", "dandelion"]
 
-# TLS backends — mutually exclusive at the `chia-sdk-client` layer.
+# TLS backends — forwarded through dig-protocol to chia-sdk-client.
 native-tls = [
-    "chia-sdk-client/native-tls",
+    "dig-protocol/native-tls",
     "dep:native-tls",
     "dep:tokio-native-tls",
 ]
 rustls = [
-    "chia-sdk-client/rustls",
+    "dig-protocol/rustls",
     "dep:native-tls",
     "dep:tokio-native-tls",
 ]

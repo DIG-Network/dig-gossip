@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use chia_protocol::TimestampedPeerInfo;
+use dig_gossip::TimestampedPeerInfo;
 use dig_gossip::{
     parallel_connect_batch, AddressManager, ConnectResult, PeerInfo, PARALLEL_CONNECT_BATCH_SIZE,
 };

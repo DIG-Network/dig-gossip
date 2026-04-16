@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv6Addr;
 
-use chia_protocol::Bytes32;
+use dig_gossip::Bytes32;
 use dig_gossip::PeerId;
 use dig_gossip::PeerInfo;
 

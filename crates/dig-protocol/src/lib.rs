@@ -1,38 +1,69 @@
 //! # dig-protocol
 //!
-//! DIG Network L2 protocol types extending Chia's wire protocol.
+//! DIG Network L2 protocol types — a superset of `chia-protocol`.
 //!
-//! ## Purpose
+//! This crate re-exports the entire Chia protocol ecosystem (`chia-protocol`,
+//! `chia-sdk-client`, `chia-ssl`, `chia-traits`) plus DIG-specific extensions
+//! (opcodes 200–219). Consumers depend on `dig-protocol` alone instead of
+//! importing multiple `chia-*` crates individually.
 //!
-//! Chia's `ProtocolMessageTypes` enum (crates.io `chia-protocol` 0.26) covers opcodes 0–107.
-//! DIG's L2 overlay adds opcodes **200–219** for attestation gossip, checkpoint protocol,
-//! compact block relay, ERLAY reconciliation, Dandelion++ stem, Plumtree gossip, and
-//! introducer registration.
+//! ## What's included
 //!
-//! This crate provides:
+//! | Source crate | What's re-exported |
+//! |-------------|-------------------|
+//! | `chia-protocol` | All wire types: `Message`, `Handshake`, `ProtocolMessageTypes`, `NodeType`, etc. |
+//! | `chia-sdk-client` | `Peer`, `Client`, `ClientError`, `ClientState`, `Network`, `PeerOptions`, rate limiting, TLS connectors |
+//! | `chia-ssl` | `ChiaCertificate` |
+//! | `chia-traits` | `Streamable` trait |
+//! | `chia_streamable_macro` | `#[streamable]` proc macro |
+//! | **DIG extensions** | `DigMessage`, `DigMessageType`, `RegisterPeer`, `RegisterAck`, introducer wire types |
 //!
-//! - [`DigMessage`] — same wire format as `chia_protocol::Message` but stores `msg_type`
-//!   as raw `u8`, so DIG extension opcodes decode without patching the Chia enum.
-//! - [`DigMessageType`] — `#[repr(u8)]` enum for all DIG opcodes (200–219).
-//! - Wire body structs for DIG-specific RPCs: [`RegisterPeer`], [`RegisterAck`],
-//!   [`RequestPeersIntroducer`], [`RespondPeersIntroducer`].
-//! - Full re-export of `chia-protocol` types for one-stop imports.
+//! ## Feature flags
 //!
-//! ## Wire format
-//!
-//! On the wire, both Chia and DIG messages share the same framing:
-//!
-//! ```text
-//! [u8 msg_type] [Option<u16> id] [Bytes data]
-//! ```
-//!
-//! The receiver dispatches on numeric value: `< 200` → Chia handler, `>= 200` → DIG handler.
-//! [`DigMessage`] can represent either.
+//! | Flag | Forwards to |
+//! |------|-------------|
+//! | `native-tls` | `chia-sdk-client/native-tls` — OS-native TLS |
+//! | `rustls` | `chia-sdk-client/rustls` — pure-Rust TLS |
 
-// Re-export all chia-protocol types — consumers import from dig-protocol instead
+// ============================================================================
+// Re-export: chia-protocol (all wire types)
+// ============================================================================
 pub use chia_protocol::*;
+
+// ============================================================================
+// Re-export: chia-sdk-client (peer IO, TLS, rate limiting)
+// ============================================================================
+pub use chia_sdk_client::{
+    Client, ClientError, ClientState, Connector, Network, Peer, PeerOptions, RateLimit,
+    RateLimiter, RateLimits, V2_RATE_LIMITS,
+};
+
+#[cfg(feature = "native-tls")]
+pub use chia_sdk_client::create_native_tls_connector;
+
+#[cfg(feature = "rustls")]
+pub use chia_sdk_client::create_rustls_connector;
+
+pub use chia_sdk_client::load_ssl_cert;
+
+// ============================================================================
+// Re-export: chia-ssl (certificate types)
+// ============================================================================
+pub use chia_ssl::ChiaCertificate;
+
+// ============================================================================
+// Re-export: chia-traits (serialization)
+// ============================================================================
 pub use chia_traits::Streamable;
 
+// ============================================================================
+// Re-export: chia_streamable_macro (proc macro for wire structs)
+// ============================================================================
+pub use chia_streamable_macro::streamable;
+
+// ============================================================================
+// DIG extensions
+// ============================================================================
 mod dig_message;
 mod dig_message_type;
 mod introducer_wire;

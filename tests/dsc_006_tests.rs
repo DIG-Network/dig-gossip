@@ -113,7 +113,7 @@ async fn test_cycle_sleep_when_peers_available() {
     // Pre-populate with several fake peers so the address manager is definitely not empty.
     // Using multiple peers across different /16 subnets to ensure bucket placement succeeds
     // (the address manager may reject duplicates or entries in the same bucket).
-    use chia_protocol::TimestampedPeerInfo;
+    use dig_gossip::TimestampedPeerInfo;
     use dig_gossip::PeerInfo;
     let source = PeerInfo {
         host: "127.0.0.1".to_string(),

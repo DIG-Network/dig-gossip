@@ -17,7 +17,7 @@
 //!
 //! `PeerConnection` intentionally **does not** implement [`Clone`]: it owns an
 //! [`tokio::sync::mpsc::Receiver`] for inbound wire messages (SPEC 2.4), which is not clonable.
-//! Upstream [`chia_sdk_client::Peer`] is cloneable (`Arc` inside), but duplicating a connection’s
+//! Upstream [`dig_protocol::Peer`] is cloneable (`Arc` inside), but duplicating a connection’s
 //! receiver would violate single-consumer semantics.
 
 use std::fmt;
@@ -27,9 +27,9 @@ use crate::constants::{
     BUCKET_SIZE, HORIZON_DAYS, MAX_FAILURES, MAX_RETRIES, MIN_FAIL_DAYS,
     NEW_BUCKETS_PER_SOURCE_GROUP, NEW_BUCKET_COUNT, TRIED_BUCKETS_PER_GROUP, TRIED_BUCKET_COUNT,
 };
-use chia_protocol::{Bytes32, Message, NodeType};
-use chia_sdk_client::Peer;
-use chia_traits::Streamable;
+use dig_protocol::{Bytes32, Message, NodeType};
+use dig_protocol::Peer;
+use dig_protocol::Streamable;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
@@ -276,10 +276,10 @@ pub fn metric_unix_timestamp_secs() -> u64 {
 /// **See:** [`CON-006.md`](../../../docs/requirements/domains/connection/specs/CON-006.md) —
 /// “`bytes_read`/`bytes_written` should count the serialized wire size”.
 #[allow(clippy::result_large_err)] // mirrors `encode_message` / Chia `Streamable` error surface
-pub fn message_wire_len(msg: &Message) -> Result<u64, chia_sdk_client::ClientError> {
+pub fn message_wire_len(msg: &Message) -> Result<u64, dig_protocol::ClientError> {
     msg.to_bytes()
         .map(|b| b.len() as u64)
-        .map_err(chia_sdk_client::ClientError::Streamable)
+        .map_err(dig_protocol::ClientError::Streamable)
 }
 
 /// Per-connection byte/message counters shared by [`LiveSlot`](crate::service::state::LiveSlot)

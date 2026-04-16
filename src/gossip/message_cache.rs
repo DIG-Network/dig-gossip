@@ -12,7 +12,7 @@
 //! the message bytes and insertion timestamp. `get()` checks TTL and
 //! returns None for expired entries.
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 

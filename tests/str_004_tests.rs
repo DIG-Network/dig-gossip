@@ -101,9 +101,9 @@ fn read_source(rel: &str) -> String {
 
 /// **Row:** `test_feature_native_tls_forwards_to_chia_sdk_client`
 ///
-/// Verifies the `native-tls` feature activates `chia-sdk-client/native-tls`.
-/// This ensures downstream consumers who enable `native-tls` on `dig-gossip`
-/// automatically get TLS support from the underlying SDK without extra flags.
+/// Verifies the `native-tls` feature forwards through `dig-protocol/native-tls`,
+/// which in turn activates `chia-sdk-client/native-tls`. dig-protocol is the
+/// single protocol dependency that wraps all chia-* crates.
 #[test]
 fn test_feature_native_tls_forwards_to_chia_sdk_client() {
     let m = load_cargo_toml();
@@ -114,16 +114,15 @@ fn test_feature_native_tls_forwards_to_chia_sdk_client() {
         .expect("native-tls feature");
     let e: Vec<&str> = v.iter().filter_map(Value::as_str).collect();
     assert!(
-        e.contains(&"chia-sdk-client/native-tls"),
-        "native-tls must forward, got {e:?}"
+        e.contains(&"dig-protocol/native-tls"),
+        "native-tls must forward through dig-protocol, got {e:?}"
     );
 }
 
 /// **Row:** `test_feature_rustls_forwards_to_chia_sdk_client`
 ///
-/// Verifies the `rustls` feature activates `chia-sdk-client/rustls`, providing
-/// a pure-Rust TLS backend as an alternative to `native-tls`. This proves the
-/// forwarding declared in STR-004 NORMATIVE so CI can validate rustls-only builds.
+/// Verifies the `rustls` feature forwards through `dig-protocol/rustls`,
+/// which in turn activates `chia-sdk-client/rustls`.
 #[test]
 fn test_feature_rustls_forwards_to_chia_sdk_client() {
     let m = load_cargo_toml();
@@ -134,8 +133,8 @@ fn test_feature_rustls_forwards_to_chia_sdk_client() {
         .expect("rustls feature");
     let e: Vec<&str> = v.iter().filter_map(Value::as_str).collect();
     assert!(
-        e.contains(&"chia-sdk-client/rustls"),
-        "rustls must forward, got {e:?}"
+        e.contains(&"dig-protocol/rustls"),
+        "rustls must forward through dig-protocol, got {e:?}"
     );
 }
 

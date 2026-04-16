@@ -16,7 +16,7 @@
 //! - SPEC §8.1 step 2: "if seen_set.contains(hash) → return 0 (already seen)."
 //! - SPEC §8.1: "hash = SHA256(msg_type || data)."
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 use lru::LruCache;
 use sha2::{Digest, Sha256};
 use std::num::NonZeroUsize;

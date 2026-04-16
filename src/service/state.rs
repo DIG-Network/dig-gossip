@@ -42,7 +42,7 @@
 //!
 //! # Stub peers (pre-CON-001)
 //!
-//! Real [`crate::types::peer::PeerConnection`] values require a live [`chia_sdk_client::Peer`].
+//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_protocol::Peer`].
 //! Until CON-001 (outbound WSS connect) was implemented, we tracked synthetic peers in
 //! [`ServiceState::peers`] via [`PeerSlot::Stub`] so `peer_count`, `broadcast`, and
 //! `connect_to` semantics could be tested without TLS sockets. Stubs remain for
@@ -63,15 +63,15 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use chia_protocol::{Message, NodeType};
-use chia_sdk_client::{ClientState, Peer, RateLimiter};
-use chia_ssl::ChiaCertificate;
+use dig_protocol::{Message, NodeType};
+use dig_protocol::{ClientState, Peer, RateLimiter};
+use dig_protocol::ChiaCertificate;
 use lru::LruCache;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 
 use crate::discovery::address_manager::AddressManager;
 use crate::error::GossipError;
@@ -480,7 +480,7 @@ impl ServiceState {
     }
 
     // -------------------------------------------------------------------------
-    // CON-007 — timed `PeerId` bans mirrored into `chia_sdk_client::ClientState`
+    // CON-007 — timed `PeerId` bans mirrored into `dig_protocol::ClientState`
     // -------------------------------------------------------------------------
 
     /// Drop [`DigBanEntry`] rows whose `until` timestamp has passed, call [`ClientState::unban`]

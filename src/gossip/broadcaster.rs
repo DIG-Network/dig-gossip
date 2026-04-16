@@ -32,7 +32,7 @@
 //! 7. Relay broadcast: if relay connected, send via relay (INT-005)
 //! 8. Return count sent
 
-use chia_protocol::ProtocolMessageTypes;
+use dig_protocol::ProtocolMessageTypes;
 
 use crate::gossip::priority::MessagePriority;
 

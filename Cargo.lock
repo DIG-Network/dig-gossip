@@ -1344,11 +1344,10 @@ dependencies = [
  "arti-client",
  "bincode 1.3.3",
  "chia-protocol",
- "chia-sdk-client",
  "chia-sha2 0.26.0",
- "chia-ssl",
  "chia-traits 0.26.0",
  "chia_streamable_macro 0.26.0",
+ "dig-protocol",
  "futures-util",
  "lru",
  "native-tls",
@@ -1375,7 +1374,9 @@ name = "dig-protocol"
 version = "0.1.0"
 dependencies = [
  "chia-protocol",
+ "chia-sdk-client",
  "chia-sha2 0.26.0",
+ "chia-ssl",
  "chia-traits 0.26.0",
  "chia_streamable_macro 0.26.0",
  "serde",

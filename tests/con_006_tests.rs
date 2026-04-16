@@ -21,8 +21,8 @@ mod common;
 use std::thread;
 use std::time::Duration;
 
-use chia_protocol::{Bytes, Message, ProtocolMessageTypes, RequestPeers};
-use chia_traits::Streamable;
+use dig_gossip::{Bytes, Message, ProtocolMessageTypes, RequestPeers};
+use dig_gossip::Streamable;
 
 use dig_gossip::{aggregate_peer_connection_io, message_wire_len, metric_unix_timestamp_secs};
 

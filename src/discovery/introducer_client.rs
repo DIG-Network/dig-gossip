@@ -12,10 +12,10 @@
 //!
 //! # Design decisions
 //!
-//! - **Mirror `chia_sdk_client::connect_peer` handshake:** Upstream
-//!   [`connect_peer`](chia_sdk_client::connect_peer) only accepts a [`std::net::SocketAddr`].
+//! - **Mirror `dig_protocol::connect_peer` handshake:** Upstream
+//!   [`connect_peer`](dig_protocol::connect_peer) only accepts a [`std::net::SocketAddr`].
 //!   Introducers advertise a full `wss://…/ws` URL ([`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig)),
-//!   so we call [`Peer::connect_full_uri`](chia_sdk_client::Peer::connect_full_uri) then replay the same
+//!   so we call [`Peer::connect_full_uri`](dig_protocol::Peer::connect_full_uri) then replay the same
 //!   outbound [`Handshake`] + FullNode validation as `vendor/chia-sdk-client/src/connect.rs` —
 //!   any drift vs upstream should be fixed in lockstep when bumping `chia-sdk-client`.
 //! - **Whole-operation timeout:** DSC-004 requires one timeout covering connect + handshake + RPC.
@@ -28,13 +28,13 @@
 
 use std::time::Duration;
 
-use chia_protocol::{Bytes32, Handshake, NodeType, ProtocolMessageTypes, TimestampedPeerInfo};
+use dig_protocol::{Bytes32, Handshake, NodeType, ProtocolMessageTypes, TimestampedPeerInfo};
 
 use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
-use chia_sdk_client::{load_ssl_cert, ClientError, Peer, PeerOptions};
-use chia_ssl::ChiaCertificate;
-use chia_traits::Streamable;
+use dig_protocol::{load_ssl_cert, ClientError, Peer, PeerOptions};
+use dig_protocol::ChiaCertificate;
+use dig_protocol::Streamable;
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
@@ -70,7 +70,7 @@ impl IntroducerClient {
     /// * `wss_uri` — full WebSocket URI (`wss://host:port/ws`, …) from [`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig).
     /// * `local_certificate` — this node’s TLS identity (mutual TLS with the introducer).
     /// * `network_id` — DIG genesis id; encoded for the Chia handshake string via [`network_id_handshake_string`].
-    /// * `peer_options` — forwarded to [`Peer::connect_full_uri`](chia_sdk_client::Peer::connect_full_uri) (rate limits, etc.).
+    /// * `peer_options` — forwarded to [`Peer::connect_full_uri`](dig_protocol::Peer::connect_full_uri) (rate limits, etc.).
     /// * `operation_timeout` — hard cap for **connect + handshake + introducer request** (DSC-004 acceptance).
     ///
     /// # Returns
@@ -152,7 +152,7 @@ impl IntroducerClient {
     /// Register this node’s P2P address with a DIG introducer (**DSC-005**).
     ///
     /// Mirrors [`Self::query_peers`] for TLS + [`Handshake`] validation, then performs
-    /// `RegisterPeer → RegisterAck` via [`Peer::request_infallible`](chia_sdk_client::Peer::request_infallible).
+    /// `RegisterPeer → RegisterAck` via [`Peer::request_infallible`](dig_protocol::Peer::request_infallible).
     ///
     /// # Returns
     ///

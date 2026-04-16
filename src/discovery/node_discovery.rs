@@ -3,7 +3,7 @@
 //! # Requirements
 //!
 //! - **DSC-003** — [`docs/requirements/domains/discovery/specs/DSC-003.md`](../../docs/requirements/domains/discovery/specs/DSC-003.md):
-//!   DNS resolution MUST go through [`chia_sdk_client::Network::lookup_all`] (normative
+//!   DNS resolution MUST go through [`dig_protocol::Network::lookup_all`] (normative
 //!   [`NORMATIVE.md`](../../docs/requirements/domains/discovery/NORMATIVE.md) — no custom resolver).
 //! - **DSC-006** — [`docs/requirements/domains/discovery/specs/DSC-006.md`](../../docs/requirements/domains/discovery/specs/DSC-006.md):
 //!   The discovery loop orchestrates DNS-first seeding with introducer exponential backoff.
@@ -33,8 +33,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use chia_protocol::TimestampedPeerInfo;
-use chia_sdk_client::Network;
+use dig_protocol::TimestampedPeerInfo;
+use dig_protocol::Network;
 
 use crate::discovery::address_manager::AddressManager;
 use crate::types::config::GossipConfig;
@@ -50,7 +50,7 @@ pub fn dig_network_from_gossip_config(config: &GossipConfig) -> Network {
 }
 
 /// Resolve DNS introducer hostnames to [`SocketAddr`] values using **only**
-/// [`Network::lookup_all`](chia_sdk_client::Network::lookup_all).
+/// [`Network::lookup_all`](dig_protocol::Network::lookup_all).
 ///
 /// # Parameters
 ///
@@ -694,10 +694,10 @@ async fn try_introducer_query(
 
     let cert = match (&config.cert_path, &config.key_path) {
         (cert_p, key_p) if !cert_p.is_empty() && !key_p.is_empty() => {
-            chia_sdk_client::load_ssl_cert(cert_p, key_p)
+            dig_protocol::load_ssl_cert(cert_p, key_p)
                 .map_err(|e| crate::error::GossipError::IntroducerError(format!("TLS load: {e}")))?
         }
-        _ => chia_ssl::ChiaCertificate::generate()
+        _ => dig_protocol::ChiaCertificate::generate()
             .map_err(|e| crate::error::GossipError::IntroducerError(format!("TLS gen: {e}")))?,
     };
 

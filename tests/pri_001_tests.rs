@@ -5,7 +5,7 @@
 //! - **Spec:** `docs/requirements/domains/priority/specs/PRI-001.md`
 //! - **Master SPEC:** `docs/resources/SPEC.md` SS8.4
 
-use chia_protocol::ProtocolMessageTypes;
+use dig_gossip::ProtocolMessageTypes;
 use dig_gossip::gossip::priority::MessagePriority;
 
 /// **PRI-001: NewPeak is Critical.**

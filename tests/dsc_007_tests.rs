@@ -19,7 +19,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use chia_protocol::TimestampedPeerInfo;
+use dig_gossip::TimestampedPeerInfo;
 use dig_gossip::{cap_received_peers, MAX_PEERS_RECEIVED_PER_REQUEST, MAX_TOTAL_PEERS_RECEIVED};
 
 /// Helper: generate N fake TimestampedPeerInfo entries with unique IPs.

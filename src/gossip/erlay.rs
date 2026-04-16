@@ -27,7 +27,7 @@
 
 use std::collections::HashSet;
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 
 use crate::constants::{
     ERLAY_FLOOD_PEER_COUNT, ERLAY_FLOOD_SET_ROTATION_SECS, ERLAY_RECONCILIATION_INTERVAL_MS,

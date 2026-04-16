@@ -124,25 +124,25 @@ pub use discovery::introducer_client::IntroducerClient;
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
 
 // -- Chia protocol types (re-exported, not reimplemented) --
-pub use chia_protocol::{
-    Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
+pub use dig_protocol::{
+    Bytes, Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
     NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
     RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
     RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
     RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
 };
-pub use chia_sdk_client::{
+pub use dig_protocol::{
     load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
     RateLimiter, RateLimits, V2_RATE_LIMITS,
 };
-pub use chia_ssl::ChiaCertificate;
-pub use chia_traits::Streamable;
+pub use dig_protocol::ChiaCertificate;
+pub use dig_protocol::Streamable;
 
 // -- Feature-gated public types --
 #[cfg(feature = "native-tls")]
-pub use chia_sdk_client::create_native_tls_connector;
+pub use dig_protocol::create_native_tls_connector;
 #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
-pub use chia_sdk_client::create_rustls_connector;
+pub use dig_protocol::create_rustls_connector;
 
 #[cfg(feature = "relay")]
 pub use relay::relay_types::{RelayMessage, RelayPeerInfo};

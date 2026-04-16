@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chia_protocol::TimestampedPeerInfo;
+use dig_gossip::TimestampedPeerInfo;
 use dig_gossip::{
     poisson_next_interval, run_feeler_loop, AddressManager, FeelerAction, PeerInfo,
     FEELER_INTERVAL_SECS,

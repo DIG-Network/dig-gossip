@@ -5,7 +5,7 @@
 //! - **Spec:** `docs/requirements/domains/priority/specs/PRI-004.md`
 //! - **Master SPEC:** `docs/resources/SPEC.md` SS8.4
 
-use chia_protocol::{Message, ProtocolMessageTypes};
+use dig_gossip::{Message, ProtocolMessageTypes};
 use dig_gossip::gossip::priority::{MessagePriority, PriorityOutbound};
 use dig_gossip::PRIORITY_STARVATION_RATIO;
 

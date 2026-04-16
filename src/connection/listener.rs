@@ -1,4 +1,4 @@
-//! Inbound P2P acceptance: [`tokio::net::TcpListener`] -> TLS -> WebSocket -> [`chia_sdk_client::Peer`].
+//! Inbound P2P acceptance: [`tokio::net::TcpListener`] -> TLS -> WebSocket -> [`dig_protocol::Peer`].
 //!
 //! ## SPEC traceability
 //!
@@ -25,12 +25,12 @@
 //! **Normative:** [CON-002](../../../docs/requirements/domains/connection/specs/CON-002.md) /
 //! [NORMATIVE.md](../../../docs/requirements/domains/connection/NORMATIVE.md).
 //!
-//! ## Why this is not `chia_sdk_client::connect_peer`
+//! ## Why this is not `dig_protocol::connect_peer`
 //!
-//! Upstream [`Peer`](chia_sdk_client::Peer) is built for **outbound** `wss://` clients. DIG must
+//! Upstream [`Peer`](dig_protocol::Peer) is built for **outbound** `wss://` clients. DIG must
 //! **listen** on [`crate::types::config::GossipConfig::listen_addr`], terminate TLS with the node
-//! [`chia_ssl::ChiaCertificate`], run [`tokio_tungstenite::accept_async`], then call
-//! [`Peer::from_websocket`](chia_sdk_client::Peer::from_websocket) — mirroring the pseudo-code in
+//! [`dig_protocol::ChiaCertificate`], run [`tokio_tungstenite::accept_async`], then call
+//! [`Peer::from_websocket`](dig_protocol::Peer::from_websocket) — mirroring the pseudo-code in
 //! CON-002 and [`SPEC.md`](../../../docs/resources/SPEC.md) §5.2.
 //!
 //! ## TLS backends (STR-004)
@@ -63,12 +63,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chia_protocol::{
+use dig_protocol::{
     Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
 };
-use chia_sdk_client::{ClientError, Peer, PeerOptions};
-use chia_ssl::ChiaCertificate;
-use chia_traits::Streamable;
+use dig_protocol::{ClientError, Peer, PeerOptions};
+use dig_protocol::ChiaCertificate;
+use dig_protocol::Streamable;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -102,7 +102,7 @@ const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Inbound TLS (`native_tls::TlsAcceptor`) — used for **both** `native-tls` and `rustls` features.
 //
 // Why `native_tls` for *inbound* even when `rustls` is enabled:
-// Upstream `chia_sdk_client::Peer::from_websocket` types the stream as
+// Upstream `dig_protocol::Peer::from_websocket` types the stream as
 // `MaybeTlsStream::NativeTls` on the server side. The `rustls` feature only
 // affects *outbound* dialing (CON-001). Using `native_tls` here keeps the
 // type system happy without forking upstream abstractions. See module-level
@@ -135,7 +135,7 @@ use tokio_native_tls::TlsAcceptor as TokioNativeTlsAcceptor;
 /// or if the platform TLS library rejects the certificate (e.g., expired, unsupported algo).
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor, ClientError> {
-    // PKCS#8 is the Chia default PEM format produced by `chia_ssl::ChiaCertificate`.
+    // PKCS#8 is the Chia default PEM format produced by `dig_protocol::ChiaCertificate`.
     let ident =
         Identity::from_pkcs8(cert.cert_pem.as_bytes(), cert.key_pem.as_bytes()).map_err(|e| {
             ClientError::Io(std::io::Error::new(
@@ -428,7 +428,7 @@ async fn relay_new_peer_to_live_peers(
 /// may arrive before our `Peer` reader task exists, so we answer that **initial** probe on the raw
 /// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives use the vendored
 /// [`chia_sdk_client`] patch (`vendor/chia-sdk-client`): inbound `RequestPeers` is forwarded to the
-/// application and answered with [`Peer::send_protocol_message`](chia_sdk_client::Peer::send_protocol_message).
+/// application and answered with [`Peer::send_protocol_message`](dig_protocol::Peer::send_protocol_message).
 async fn read_next_wire_message(
     ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
 ) -> Result<Message, ClientError> {
