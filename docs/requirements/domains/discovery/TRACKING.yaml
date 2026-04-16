@@ -122,6 +122,12 @@ items:
   - id: DSC-011
     section: "6.4"
     summary: "/16 group filter for outbound connections"
+    status: verified
+    tests:
+      - tests/dsc_011_tests.rs
+    notes: >
+      util/ip_address.rs: subnet_group() returns u32 group key (IPv4: 2 octets, IPv6: 4 bytes).
+      SubnetGroupFilter wraps HashSet<u32>. Fast O(1) check before AS filter (DSC-010).
     status: gap
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
     tests: []

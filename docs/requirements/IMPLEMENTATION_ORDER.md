@@ -53,7 +53,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] DSC-008 — Feeler connections on Poisson schedule (240s average)
 - [x] DSC-009 — Parallel connection establishment (batch connect with FuturesUnordered)
 - [x] DSC-010 — AS-level diversity (one outbound per AS, cached BGP lookup)
-- [ ] DSC-011 — One outbound per /16 group (fast filter before AS check)
+- [x] DSC-011 — One outbound per /16 group (fast filter before AS check)
 - [ ] DSC-012 — IntroducerPeers/VettedPeer tracking (vetting state machine)
 
 ## Phase 4: Relay
