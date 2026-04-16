@@ -112,12 +112,12 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 9: Performance & Optimization
 
-- [ ] PRF-001 — Latency-aware peer scoring (RTT tracking from Ping/Pong, rolling average)
-- [ ] PRF-002 — Peer selection preference by composite score
-- [ ] PRF-003 — Plumtree tree optimization (prefer low-latency peers as eager)
-- [ ] PRF-004 — Parallel bootstrap (PARALLEL_CONNECT_BATCH_SIZE concurrent connects)
-- [ ] PRF-005 — Bandwidth benchmarks (Plumtree vs flood, compact vs full, ERLAY vs flood)
-- [ ] PRF-006 — Latency benchmarks (NewPeak p99 during bulk sync < 50ms)
+- [x] PRF-001 — Latency-aware peer scoring (RTT tracking from Ping/Pong, rolling average)
+- [x] PRF-002 — Peer selection preference by composite score
+- [x] PRF-003 — Plumtree tree optimization (prefer low-latency peers as eager)
+- [x] PRF-004 — Parallel bootstrap (PARALLEL_CONNECT_BATCH_SIZE concurrent connects)
+- [x] PRF-005 — Bandwidth benchmarks (Plumtree vs flood, compact vs full, ERLAY vs flood)
+- [x] PRF-006 — Latency benchmarks (NewPeak p99 during bulk sync < 50ms)
 
 ## Phase 10: Concurrency
 
