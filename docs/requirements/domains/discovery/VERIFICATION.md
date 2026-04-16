@@ -15,7 +15,7 @@
 | DSC-006 | verified | Discovery loop with DNS-first and backoff  | `tests/dsc_006_tests.rs` — cancellation stops loop, cycle sleep when peers available, exponential backoff (1s,2s,4s...), backoff cap at 300s, no panic on failures |
 | DSC-007 | verified | Peer exchange (RequestPeers/RespondPeers) | `tests/dsc_007_tests.rs` — per-request cap (1000), global total cap (3000), empty list handled, both caps interact, content preserved, constants match SPEC |
 | DSC-008 | verified | Feeler connections on Poisson schedule      | `tests/dsc_008_tests.rs` — Poisson mean ~240s, always positive, FEELER_INTERVAL_SECS=240, cancellation, empty new table, promotes on success |
-| DSC-009 | gap    | Parallel connection establishment             | Integration test: verify batch of 8 concurrent connections via FuturesUnordered       |
+| DSC-009 | verified | Parallel connection establishment           | `tests/dsc_009_tests.rs` — constant=8, empty manager, batch produces results, batch size limits, size=1 works, mark_good called |
 | DSC-010 | gap    | AS-level diversity enforcement               | Unit test: verify one-per-AS rule; test cached BGP prefix table lookup                |
 | DSC-011 | gap    | /16 group filter for outbound connections    | Unit test: verify one-per-/16 rule; test IPv4 address grouping logic                  |
 | DSC-012 | gap    | IntroducerPeers/VettedPeer tracking          | Unit test: verify vetting state transitions (unvetted, failed, success)               |

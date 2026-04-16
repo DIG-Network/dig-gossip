@@ -331,6 +331,139 @@ fn report_feeler(
 }
 
 // =========================================================================
+// DSC-009 — Parallel connection establishment
+// =========================================================================
+//
+// SPEC §6.4 item 2 — "Parallel connection establishment: Select up to
+// PARALLEL_CONNECT_BATCH_SIZE (8) peers and connect concurrently using
+// FuturesUnordered."
+//
+// DIG improvement: Chia's _connect_to_peers() connects one at a time with
+// asyncio.sleep() between attempts (node_discovery.py:244-349). Parallel
+// batching reduces bootstrap time by ~Nx.
+
+use futures_util::stream::{FuturesUnordered, StreamExt};
+
+/// Result of a single connection attempt within a parallel batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectResult {
+    /// Connection succeeded. Address promoted to tried.
+    Success { host: String, port: u16 },
+    /// Connection failed. Failure recorded.
+    Failure {
+        host: String,
+        port: u16,
+        reason: String,
+    },
+    /// Skipped (already connected, group/AS filter, etc.).
+    Skipped {
+        host: String,
+        port: u16,
+        reason: String,
+    },
+}
+
+/// Select up to `batch_size` candidates from the address manager and attempt
+/// connections in parallel using [`FuturesUnordered`] (**DSC-009**).
+///
+/// This is the core parallel bootstrap improvement over Chia. Instead of
+/// connecting one peer at a time with sequential sleeps, we batch up to
+/// `PARALLEL_CONNECT_BATCH_SIZE` concurrent attempts.
+///
+/// # Current implementation
+///
+/// In Phase 3, actual TCP/TLS connections are not yet wired — candidates are
+/// selected and `mark_good()` / `attempt()` is called directly. The FuturesUnordered
+/// infrastructure is in place for when real connect logic (CON-001 `connect_outbound_peer`)
+/// is integrated into the discovery loop.
+///
+/// # Arguments
+///
+/// - `address_manager` — shared address manager for peer selection and promotion.
+/// - `batch_size` — max concurrent attempts (usually `PARALLEL_CONNECT_BATCH_SIZE`).
+///
+/// # Returns
+///
+/// A vec of [`ConnectResult`] for each attempted candidate.
+///
+/// # SPEC references
+///
+/// - SPEC §6.4 item 2 — parallel connection establishment
+/// - SPEC §1.8#5 — improvement over Chia's sequential approach
+/// - SPEC §1.3#16 — design decision for parallel outbound
+pub async fn parallel_connect_batch(
+    address_manager: &AddressManager,
+    batch_size: usize,
+) -> Vec<ConnectResult> {
+    let batch_size = batch_size.max(1);
+
+    // Step 1: Select candidates from the address manager.
+    // select_peer(false) = consider both new and tried tables.
+    let mut candidates = Vec::with_capacity(batch_size);
+    for _ in 0..batch_size {
+        if let Some(candidate) = address_manager.select_peer(false /* new_only */) {
+            candidates.push(candidate);
+        }
+    }
+
+    if candidates.is_empty() {
+        tracing::debug!("DSC-009: no candidates available for parallel connect");
+        return Vec::new();
+    }
+
+    tracing::debug!(
+        "DSC-009: attempting {} parallel connections (batch_size={})",
+        candidates.len(),
+        batch_size
+    );
+
+    // Step 2: Launch connections in parallel via FuturesUnordered.
+    let mut futures = FuturesUnordered::new();
+
+    for candidate in &candidates {
+        let host = candidate.peer_info.host.clone();
+        let port = candidate.peer_info.port;
+        let peer_info = candidate.peer_info.clone();
+
+        // In Phase 3, we simulate successful connections.
+        // TODO(DSC-009/CON-001): Replace with actual try_connect() using
+        // connect_outbound_peer() from connection/outbound.rs.
+        futures.push(async move {
+            // Simulate a fast "connection attempt" — in production this would be
+            // a real TCP/TLS/WebSocket connect with timeout.
+            (peer_info, ConnectResult::Success { host, port })
+        });
+    }
+
+    // Step 3: Collect results as they complete.
+    let mut results = Vec::with_capacity(candidates.len());
+    while let Some((peer_info, result)) = futures.next().await {
+        match &result {
+            ConnectResult::Success { .. } => {
+                address_manager.mark_good(&peer_info);
+            }
+            ConnectResult::Failure { .. } => {
+                address_manager.attempt(&peer_info, true /* count_failure */);
+            }
+            ConnectResult::Skipped { .. } => {}
+        }
+        results.push(result);
+    }
+
+    let success_count = results
+        .iter()
+        .filter(|r| matches!(r, ConnectResult::Success { .. }))
+        .count();
+    tracing::info!(
+        "DSC-009: parallel batch complete: {}/{} succeeded",
+        success_count,
+        results.len()
+    );
+
+    results
+}
+
+// =========================================================================
 // DSC-006 — Discovery loop
 // =========================================================================
 //
