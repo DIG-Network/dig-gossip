@@ -77,7 +77,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] PLT-006 — Tree self-healing on peer disconnect (lazy promotion)
 - [x] PLT-007 — Message cache (LRU, capacity 1000, TTL 60s) for GRAFT responses
 - [x] PLT-008 — Seen set (LRU deduplication, capacity 100K)
-- [ ] PLT-009 — PlumtreeMessage wire types (LazyAnnounce, Prune, Graft, RequestByHash with DigMessageType IDs 214-217)
+- [x] PLT-009 — PlumtreeMessage wire types (LazyAnnounce, Prune, Graft, RequestByHash with DigMessageType IDs 214-217)
 
 ## Phase 6: Compact Block Relay
 

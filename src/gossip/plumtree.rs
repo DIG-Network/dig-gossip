@@ -163,3 +163,53 @@ impl Default for PlumtreeState {
         Self::new()
     }
 }
+
+// =========================================================================
+// PLT-009 — Plumtree wire types
+// =========================================================================
+//
+// SPEC §8.1 — LazyAnnounce, Prune, Graft, RequestByHash.
+// DigMessageType IDs 214-217 defined in types/dig_messages.rs.
+// These structs are the serializable message bodies.
+
+/// Hash-only announcement sent to lazy peers (**PLT-003**, DigMessageType 214).
+///
+/// SPEC §8.1: "LazyAnnounce { hash, msg_type } to lazy_peers."
+/// Lazy peers that don't receive the message eagerly within `lazy_timeout_ms`
+/// will GRAFT this hash from the announcer.
+///
+/// Wire format: bincode-serialized (not JSON). `hash` is 32 raw bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LazyAnnounce {
+    /// SHA256(msg_type || data) of the full message (32 bytes).
+    pub hash: Bytes32,
+    /// Original message type (so the receiver knows what to expect on GRAFT).
+    pub msg_type: u8,
+}
+
+/// Tree pruning message (**PLT-004**, DigMessageType 215).
+///
+/// SPEC §8.1: "On receiving duplicate via eager, send PRUNE to sender."
+/// Empty body — the message type ID is sufficient.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prune;
+
+/// Tree grafting message (**PLT-005**, DigMessageType 216).
+///
+/// SPEC §8.1: "On lazy timeout, send GRAFT to announcer."
+/// Includes the hash of the message to request (combined with RequestByHash).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Graft {
+    /// Hash of the message being requested (from LazyAnnounce).
+    pub hash: Option<Bytes32>,
+}
+
+/// Request a specific message by hash (**PLT-005**, DigMessageType 217).
+///
+/// SPEC §8.1: "Send GRAFT + RequestByHash { hash } to announcer."
+/// The receiver looks up the hash in their MessageCache and sends it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestByHash {
+    /// SHA256 hash of the requested message (32 bytes).
+    pub hash: Bytes32,
+}
