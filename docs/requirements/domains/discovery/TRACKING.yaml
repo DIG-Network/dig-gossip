@@ -99,7 +99,13 @@ items:
   - id: DSC-009
     section: "6.4"
     summary: "Parallel connection establishment"
-    status: gap
+    status: verified
+    tests:
+      - tests/dsc_009_tests.rs
+    notes: >
+      parallel_connect_batch() in node_discovery.rs uses FuturesUnordered for concurrent connects.
+      PARALLEL_CONNECT_BATCH_SIZE=8. ConnectResult enum (Success/Failure/Skipped).
+      mark_good on success, attempt(true) on failure. Actual TCP deferred — simulated in Phase 3.
     spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
     tests: []
     notes: ""

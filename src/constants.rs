@@ -51,6 +51,12 @@ pub const MAX_TOTAL_PEERS_RECEIVED: usize = 3000;
 /// SPEC §6.4 item 4, §2.13.
 pub const FEELER_INTERVAL_SECS: u64 = 240;
 
+/// Maximum number of concurrent connection attempts in a single batch.
+/// DIG improvement over Chia's sequential one-at-a-time approach
+/// (Chia `node_discovery.py:244-349` connects one peer at a time with sleep).
+/// SPEC §6.4 item 2, §1.8#5.
+pub const PARALLEL_CONNECT_BATCH_SIZE: usize = 8;
+
 // ---------------------------------------------------------------------------
 // Address manager constants
 //
