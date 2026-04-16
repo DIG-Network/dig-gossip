@@ -1,0 +1,24 @@
+[package]
+name = "dig-protocol"
+version = "0.1.0"
+edition = "2021"
+authors = ["Michael Taylor <michael@berkeleycompute.com>"]
+description = "DIG Network L2 protocol types extending Chia's wire protocol (opcodes 200+)"
+license = "Apache-2.0"
+repository = "https://github.com/DIG-Network/dig-gossip"
+
+[dependencies]
+# Chia protocol — stock crates.io; DIG extension opcodes handled via DigMessage (raw u8 msg_type)
+chia-protocol = "0.26"
+chia-traits = "0.26"
+chia_streamable_macro = "0.26"
+chia-sha2 = "0.26"
+
+# Serialization for DigMessageType
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "deny"
