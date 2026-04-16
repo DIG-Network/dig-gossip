@@ -1,18 +1,15 @@
-//! Tests for **RLY-004** (auto-reconnect), **RLY-007** (NAT traversal),
-//! **RLY-008** (transport selection).
+//! Tests for **RLY-004: Auto-Reconnect on Disconnect**.
 //!
 //! ## Requirement traceability
 //!
-//! - RLY-004: `docs/requirements/domains/relay/specs/RLY-004.md`
-//! - RLY-007: `docs/requirements/domains/relay/specs/RLY-007.md`
-//! - RLY-008: `docs/requirements/domains/relay/specs/RLY-008.md`
-//! - Master SPEC §7, §7.1
+//! - **Spec:** `docs/requirements/domains/relay/specs/RLY-004.md`
+//! - **Master SPEC:** `docs/resources/SPEC.md` SS7
 
 #[cfg(feature = "relay")]
 mod tests {
-    use dig_gossip::relay::relay_service::{
-        select_transport, HolePunchState, ReconnectState, TransportChoice, HOLE_PUNCH_RETRY_SECS,
-    };
+    use dig_gossip::relay::relay_client::RelayClient;
+    use dig_gossip::relay::relay_service::ReconnectState;
+    use dig_gossip::relay::relay_types::RelayPeerInfo;
     use dig_gossip::RelayConfig;
 
     fn test_config() -> RelayConfig {
@@ -27,7 +24,9 @@ mod tests {
         }
     }
 
-    // ===================== RLY-004: Auto-Reconnect =====================
+    fn test_client() -> RelayClient {
+        RelayClient::new("peer_a".to_string(), "net1".to_string(), 1)
+    }
 
     /// **RLY-004: first failure returns Some(delay).**
     ///
@@ -45,7 +44,7 @@ mod tests {
 
     /// **RLY-004: max attempts exceeded returns None.**
     ///
-    /// Proves SPEC §7: "stop after max_reconnect_attempts (default 10)."
+    /// Proves SPEC SS7: "stop after max_reconnect_attempts (default 10)."
     #[test]
     fn test_reconnect_max_exceeded() {
         let config = test_config(); // max_attempts = 3
@@ -76,89 +75,29 @@ mod tests {
         assert!(!state.is_exhausted());
     }
 
-    // ===================== RLY-007: NAT Traversal =====================
-
-    /// **RLY-007: hole punch state machine transitions.**
-    ///
-    /// Proves SPEC §7.1: Idle → WaitingForCoordination → Connecting → Succeeded/Failed.
+    /// **RLY-004: reset clears registered state but keeps seq numbers.**
     #[test]
-    fn test_hole_punch_success_path() {
-        let mut state = HolePunchState::Idle;
-        assert!(!state.is_active());
+    fn test_reset() {
+        let mut client = test_client();
+        client.handle_register_ack(true, "ok", 0).unwrap();
+        client.build_send_to_peer("peer_b", vec![1]);
+        let peer = RelayPeerInfo {
+            peer_id: "p1".into(),
+            network_id: "n1".into(),
+            protocol_version: 1,
+            connected_at: 100,
+            last_seen: 200,
+        };
+        client.handle_peer_connected(peer);
 
-        state.request_sent();
-        assert_eq!(state, HolePunchState::WaitingForCoordination);
-        assert!(state.is_active());
+        client.reset();
 
-        state.coordination_received();
-        assert_eq!(state, HolePunchState::Connecting);
-        assert!(state.is_active());
-
-        state.connect_succeeded();
-        assert_eq!(state, HolePunchState::Succeeded);
-        assert!(!state.is_active());
-    }
-
-    /// **RLY-007: hole punch failure sets retry delay.**
-    ///
-    /// Proves SPEC §7.1: "failure retry after 300s."
-    #[test]
-    fn test_hole_punch_failure() {
-        let mut state = HolePunchState::Idle;
-        state.request_sent();
-        state.coordination_received();
-        state.connect_failed();
-
+        assert!(!client.is_registered(), "reset clears registered");
+        assert_eq!(client.peer_count(), 0, "reset clears known peers");
         assert_eq!(
-            state,
-            HolePunchState::Failed {
-                retry_after_secs: HOLE_PUNCH_RETRY_SECS
-            }
+            client.seq_for_target("peer_b"),
+            1,
+            "seq NOT reset -- monotonic across reconnects"
         );
-        assert_eq!(HOLE_PUNCH_RETRY_SECS, 300);
-        assert!(!state.is_active());
-    }
-
-    // ===================== RLY-008: Transport Selection =====================
-
-    /// **RLY-008: prefer_relay forces Relay.**
-    ///
-    /// Proves SPEC §7: "prefer_relay overrides to always use relay."
-    #[test]
-    fn test_transport_prefer_relay() {
-        let choice = select_transport(true, true, true);
-        assert_eq!(choice, TransportChoice::Relay);
-    }
-
-    /// **RLY-008: direct connection preferred when available.**
-    ///
-    /// Proves SPEC §7: "direct P2P first."
-    #[test]
-    fn test_transport_direct_preferred() {
-        let choice = select_transport(false, true, true);
-        assert_eq!(choice, TransportChoice::Direct);
-    }
-
-    /// **RLY-008: relay used as fallback.**
-    ///
-    /// Proves SPEC §7: "relay fallback when direct P2P fails."
-    #[test]
-    fn test_transport_relay_fallback() {
-        let choice = select_transport(false, false, true);
-        assert_eq!(choice, TransportChoice::Relay);
-    }
-
-    /// **RLY-008: relay default when neither available.**
-    #[test]
-    fn test_transport_neither_defaults_relay() {
-        let choice = select_transport(false, false, false);
-        assert_eq!(choice, TransportChoice::Relay);
-    }
-
-    /// **RLY-008: direct only (no relay) works.**
-    #[test]
-    fn test_transport_direct_only() {
-        let choice = select_transport(false, true, false);
-        assert_eq!(choice, TransportChoice::Direct);
     }
 }

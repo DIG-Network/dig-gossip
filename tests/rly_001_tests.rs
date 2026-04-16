@@ -18,7 +18,50 @@
 
 #[cfg(feature = "relay")]
 mod tests {
+    use dig_gossip::relay::relay_client::RelayClient;
     use dig_gossip::relay::relay_types::{RelayMessage, RelayPeerInfo};
+
+    fn test_client() -> RelayClient {
+        RelayClient::new("peer_a".to_string(), "net1".to_string(), 1)
+    }
+
+    /// **RLY-001: build_register creates correct Register message.**
+    #[test]
+    fn test_build_register() {
+        let client = test_client();
+        let msg = client.build_register();
+        if let RelayMessage::Register {
+            peer_id,
+            network_id,
+            protocol_version,
+        } = msg
+        {
+            assert_eq!(peer_id, "peer_a");
+            assert_eq!(network_id, "net1");
+            assert_eq!(protocol_version, 1);
+        } else {
+            panic!("expected Register");
+        }
+    }
+
+    /// **RLY-001: handle_register_ack success sets registered.**
+    #[test]
+    fn test_register_ack_success() {
+        let mut client = test_client();
+        assert!(!client.is_registered());
+
+        client.handle_register_ack(true, "ok", 5).unwrap();
+        assert!(client.is_registered());
+    }
+
+    /// **RLY-001: handle_register_ack failure returns error.**
+    #[test]
+    fn test_register_ack_failure() {
+        let mut client = test_client();
+        let result = client.handle_register_ack(false, "rejected", 0);
+        assert!(result.is_err());
+        assert!(!client.is_registered());
+    }
 
     /// **RLY-001: Register message round-trips through JSON.**
     ///

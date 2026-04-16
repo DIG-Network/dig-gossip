@@ -62,6 +62,9 @@ async fn service_with_keepalive(
 
 /// **Row:** `test_keepalive_probe_records_rtt` — periodic successful probes append RTT samples on
 /// [`PeerReputation`] (CON-004 + API-006 circular buffer).
+/// SPEC §2.13 — `PING_INTERVAL_SECS` (30s production default); test overrides to 1s.
+/// SPEC §1.6#7 — timestamp update on message: outbound peer timestamps updated in
+/// address manager on message receipt.
 #[tokio::test]
 async fn test_keepalive_probe_records_rtt() {
     let dir_b = common::test_temp_dir();
@@ -133,24 +136,17 @@ async fn test_keepalive_bidirectional() {
 /// **Row:** `test_timeout_disconnect_applies_connection_issue_penalty` — when probes fail (peer
 /// gone), we disconnect and add [`PenaltyReason::ConnectionIssue`] points (**10**) to the service
 /// penalty map (CON-004 §Disconnect on Timeout).
+/// SPEC §2.13 — `PEER_TIMEOUT_SECS` (90s production); test overrides to 8s.
 #[tokio::test]
 async fn test_timeout_disconnect_applies_connection_issue_penalty() {
     let dir_b = common::test_temp_dir();
-    let (svc_b, h_b) = service_with_keepalive(
-        &dir_b,
-        TEST_PING_SECS,
-        TEST_DISCONNECT_PEER_TIMEOUT_SECS,
-    )
-    .await;
+    let (svc_b, h_b) =
+        service_with_keepalive(&dir_b, TEST_PING_SECS, TEST_DISCONNECT_PEER_TIMEOUT_SECS).await;
     let bound = h_b.__listen_bound_addr_for_tests().expect("B listen");
 
     let dir_a = common::test_temp_dir();
-    let (_svc_a, h_a) = service_with_keepalive(
-        &dir_a,
-        TEST_PING_SECS,
-        TEST_DISCONNECT_PEER_TIMEOUT_SECS,
-    )
-    .await;
+    let (_svc_a, h_a) =
+        service_with_keepalive(&dir_a, TEST_PING_SECS, TEST_DISCONNECT_PEER_TIMEOUT_SECS).await;
 
     let peer_b = h_a.connect_to(bound).await.expect("connect");
     // Ensure at least one successful probe so we are past handshake-only state.

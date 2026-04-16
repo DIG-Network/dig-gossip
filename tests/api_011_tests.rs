@@ -38,6 +38,9 @@ fn peer(host: &str, port: u16) -> PeerInfo {
 
 /// **Row:** `test_extended_peer_info_all_fields` — constructs a full `ExtendedPeerInfo`
 /// struct literal with all 10 fields populated, then reads each field back.
+/// SPEC §2.6 — `ExtendedPeerInfo` (Rust port of `address_manager.py:43`): peer_info,
+/// timestamp, src, random_pos, is_tried, ref_count, last_success, last_try,
+/// num_attempts, last_count_attempt.
 ///
 /// **Chia reference:** `address_manager.py:43-120` — `ExtendedPeerInfo.__init__` accepts
 /// these exact fields. This test proves the Rust port has the same field set.
@@ -70,15 +73,15 @@ fn test_extended_peer_info_all_fields() {
         last_count_attempt: 1_700_000_040,
     };
     assert_eq!(row.peer_info.host, "10.0.0.1"); // peer's own address
-    assert_eq!(row.peer_info.port, 9444);        // standard Chia port
-    assert_eq!(row.timestamp, 1_700_000_000);     // last-seen Unix timestamp
-    assert_eq!(row.src.host, "10.0.0.2");         // who told us about this peer
-    assert_eq!(row.random_pos, Some(7));           // O(1) random-selection index
-    assert!(row.is_tried);                         // in tried table, not new
-    assert_eq!(row.ref_count, 2);                  // new-table bucket references
-    assert_eq!(row.last_success, 1_700_000_100);   // last successful connection
-    assert_eq!(row.last_try, 1_700_000_050);       // last attempt timestamp
-    assert_eq!(row.num_attempts, 3);               // total connection attempts
+    assert_eq!(row.peer_info.port, 9444); // standard Chia port
+    assert_eq!(row.timestamp, 1_700_000_000); // last-seen Unix timestamp
+    assert_eq!(row.src.host, "10.0.0.2"); // who told us about this peer
+    assert_eq!(row.random_pos, Some(7)); // O(1) random-selection index
+    assert!(row.is_tried); // in tried table, not new
+    assert_eq!(row.ref_count, 2); // new-table bucket references
+    assert_eq!(row.last_success, 1_700_000_100); // last successful connection
+    assert_eq!(row.last_try, 1_700_000_050); // last attempt timestamp
+    assert_eq!(row.num_attempts, 3); // total connection attempts
     assert_eq!(row.last_count_attempt, 1_700_000_040); // rate-limited attempt counter
 }
 
@@ -102,11 +105,11 @@ fn test_extended_peer_info_initial_state() {
         peer_info: peer("192.168.0.5", 9444),
         timestamp: 0,
         src: peer("192.168.0.1", 9444),
-        random_pos: None,  // not yet placed in random-order vector
-        is_tried: false,   // new table, not tried
-        ref_count: 0,      // no bucket slots assigned yet
-        last_success: 0,   // never connected successfully
-        last_try: 0,       // never attempted
+        random_pos: None, // not yet placed in random-order vector
+        is_tried: false,  // new table, not tried
+        ref_count: 0,     // no bucket slots assigned yet
+        last_success: 0,  // never connected successfully
+        last_try: 0,      // never attempted
         num_attempts: 0,
         last_count_attempt: 0,
     };
@@ -173,7 +176,7 @@ fn test_extended_peer_info_last_success_zero() {
         is_tried: false,
         ref_count: 1,
         last_success: 0, // sentinel: never successfully connected
-        last_try: 50,     // has been attempted (but failed)
+        last_try: 50,    // has been attempted (but failed)
         num_attempts: 2,
         last_count_attempt: 40,
     };
@@ -272,7 +275,7 @@ fn test_extended_peer_info_num_attempts() {
     row.num_attempts += 1;
     row.last_try = 999;
     assert_eq!(row.num_attempts, 1); // counter incremented
-    assert_eq!(row.last_try, 999);   // timestamp updated
+    assert_eq!(row.last_try, 999); // timestamp updated
 }
 
 /// **Proof:** `peer_info` and `src` use this crate's [`PeerInfo`] (host + port only),
@@ -297,7 +300,7 @@ fn test_extended_peer_info_uses_crate_peer_info_not_timestamped() {
     let row = ExtendedPeerInfo {
         peer_info: pi.clone(), // PeerInfo, not TimestampedPeerInfo
         timestamp: 0,
-        src: pi,               // PeerInfo, not TimestampedPeerInfo
+        src: pi, // PeerInfo, not TimestampedPeerInfo
         random_pos: None,
         is_tried: false,
         ref_count: 0,
@@ -313,6 +316,8 @@ fn test_extended_peer_info_uses_crate_peer_info_not_timestamped() {
 
 /// **Row:** `test_vetted_peer_all_fields` — constructs a `VettedPeer` with all 6 fields
 /// populated, then reads each field back.
+/// SPEC §2.8 — `VettedPeer` (Rust port of `introducer_peers.py:12-28`): host, port,
+/// vetted (signed i32), vetted_timestamp, last_attempt, time_added.
 ///
 /// **Chia reference:** `introducer_peers.py:12-28` — the `VettedPeer` dataclass has
 /// `host`, `port`, `vetted`, `vetted_timestamp`, `last_attempt`, `time_added`.
@@ -527,6 +532,8 @@ fn test_vetted_peer_success() {
 /// **Row:** `test_vetted_peer_failure` — `vetted == -2` represents two consecutive failed
 /// vetting attempts (negative streak, API-011 acceptance: "`VettedPeer.vetted` supports
 /// negative values (consecutive failures)").
+/// SPEC §2.8 — `VettedPeer.vetted`: 0 = not vetted, negative = consecutive failures,
+/// positive = consecutive successes.
 ///
 /// **Chia reference:** `introducer_peers.py:26` — on failure, `vetted` is decremented
 /// (`vetted = min(vetted, 0) - 1`). The introducer uses the magnitude of the negative
@@ -615,7 +622,7 @@ fn test_extended_peer_info_debug_and_eq() {
         last_count_attempt: 0,
     };
     let b = a.clone(); // exercises Clone
-    assert_eq!(a, b);  // exercises PartialEq
+    assert_eq!(a, b); // exercises PartialEq
     let s = format!("{a:?}"); // exercises Debug
     assert!(s.contains("ExtendedPeerInfo"), "{s}");
 }

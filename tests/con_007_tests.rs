@@ -19,8 +19,8 @@ mod common;
 use std::net::SocketAddr;
 
 use dig_gossip::{
-    BAN_DURATION_SECS, GossipError, GossipHandle, GossipService, NodeType, PeerReputation,
-    PenaltyReason, RequestPeers,
+    GossipError, GossipHandle, GossipService, NodeType, PeerReputation, PenaltyReason,
+    RequestPeers, BAN_DURATION_SECS,
 };
 
 // ---------------------------------------------------------------------------
@@ -123,10 +123,7 @@ fn test_last_penalty_reason_updated() {
     let mut r = PeerReputation::default();
     let _ = r.apply_penalty(PenaltyReason::Spam, 0);
     let _ = r.apply_penalty(PenaltyReason::MalformedMessage, 0);
-    assert_eq!(
-        r.last_penalty_reason,
-        Some(PenaltyReason::MalformedMessage)
-    );
+    assert_eq!(r.last_penalty_reason, Some(PenaltyReason::MalformedMessage));
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +170,10 @@ async fn test_client_state_unban_called() {
     for _ in 0..4 {
         h.penalize_peer(&pid, PenaltyReason::Spam).await.unwrap();
     }
-    assert!(h.__con007_chia_client_is_ip_banned_for_tests(addr.ip()).await);
+    assert!(
+        h.__con007_chia_client_is_ip_banned_for_tests(addr.ip())
+            .await
+    );
     // Any wall clock `>= DigBanEntry::until` evicts the row — use a far-future constant so the
     // test is deterministic regardless of when `penalize_peer` ran on the host clock.
     h.__con007_prune_expired_bans_for_tests(u64::MAX / 2).await;
