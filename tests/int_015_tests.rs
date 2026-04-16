@@ -15,13 +15,14 @@ fn lifecycle_config() -> dig_gossip::GossipConfig {
     let cert_path = dir.path().join("cert.pem");
     let key_path = dir.path().join("key.pem");
 
-    let mut config = dig_gossip::GossipConfig::default();
-    config.network_id = dig_gossip::Bytes32::from([1u8; 32]);
-    config.cert_path = cert_path.to_string_lossy().to_string();
-    config.key_path = key_path.to_string_lossy().to_string();
-    // Use port 0 for ephemeral allocation (avoids conflicts).
-    config.listen_addr = "127.0.0.1:0".parse().unwrap();
-    config
+    dig_gossip::GossipConfig {
+        network_id: dig_gossip::Bytes32::from([1u8; 32]),
+        cert_path: cert_path.to_string_lossy().to_string(),
+        key_path: key_path.to_string_lossy().to_string(),
+        // Use port 0 for ephemeral allocation (avoids conflicts).
+        listen_addr: "127.0.0.1:0".parse().unwrap(),
+        ..dig_gossip::GossipConfig::default()
+    }
 }
 
 /// **INT-015: full lifecycle — config → new → start → use handle → stop.**

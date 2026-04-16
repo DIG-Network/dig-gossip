@@ -9,7 +9,7 @@
 //! has worst RTT and which lazy peer has best RTT for potential swap.
 
 use dig_gossip::gossip::plumtree::PlumtreeState;
-use dig_gossip::{Bytes32, PeerReputation};
+use dig_gossip::Bytes32;
 use std::collections::HashMap;
 
 fn pid(n: u8) -> Bytes32 {

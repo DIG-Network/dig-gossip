@@ -9,17 +9,8 @@
 /// **INT-008: run_discovery_loop function exists and is callable.**
 #[test]
 fn test_run_discovery_loop_exists() {
-    // Prove the function is publicly accessible and has the expected signature.
-    let _f: fn(
-        std::sync::Arc<dig_gossip::AddressManager>,
-        std::sync::Arc<dig_gossip::GossipConfig>,
-        tokio_util::sync::CancellationToken,
-        Option<tokio::sync::mpsc::UnboundedSender<dig_gossip::DiscoveryAction>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-    // We cannot assign because async fn returns an opaque future, but we can reference the function.
-    ;
-    // The above type annotation would fail if the function didn't exist.
-    // Instead, just reference the function to prove it compiles:
+    // Reference the function to prove it is publicly accessible — if the symbol
+    // did not exist this line would fail to compile.
     let _ = dig_gossip::run_discovery_loop;
 }
 

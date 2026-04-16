@@ -3,9 +3,7 @@
 //! - **Spec:** `docs/requirements/domains/concurrency/specs/CNC-006.md`
 //! - **Master SPEC:** §9.1
 
-use dig_gossip::{
-    PeerReputation, PenaltyReason, BAN_DURATION_SECS, PEER_TIMEOUT_SECS, PENALTY_BAN_THRESHOLD,
-};
+use dig_gossip::{PeerReputation, PenaltyReason, BAN_DURATION_SECS, PEER_TIMEOUT_SECS};
 
 /// **CNC-006: expired bans are cleared by refresh_ban_status.**
 ///

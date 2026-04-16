@@ -147,11 +147,13 @@ async fn test_dns_seed_unresolvable_host_returns_empty_without_panic() {
 #[tokio::test]
 async fn test_dns_seed_resolve_and_merge_plumbs_gossip_config() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut cfg = GossipConfig::default();
-    cfg.peers_file_path = dir.path().join("dsc003_merge.dat");
+    let mut cfg = GossipConfig {
+        peers_file_path: dir.path().join("dsc003_merge.dat"),
+        dns_seed_timeout: Duration::from_millis(150),
+        dns_seed_batch_size: 1,
+        ..GossipConfig::default()
+    };
     cfg.network.dns_introducers = vec!["nx-dsc003-merge.invalid.".to_string()];
-    cfg.dns_seed_timeout = Duration::from_millis(150);
-    cfg.dns_seed_batch_size = 1;
 
     let am = AddressManager::create(&cfg.peers_file_path).expect("create am");
     let source = PeerInfo {

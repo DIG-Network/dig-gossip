@@ -914,7 +914,7 @@ impl GossipHandle {
             endpoint,
             &cert,
             self.inner.config.network_id,
-            self.inner.config.peer_options.clone(),
+            self.inner.config.peer_options,
             timeout,
         )
         .await
@@ -957,7 +957,7 @@ impl GossipHandle {
             endpoint,
             &cert,
             self.inner.config.network_id,
-            self.inner.config.peer_options.clone(),
+            self.inner.config.peer_options,
             timeout,
             &registration,
         )

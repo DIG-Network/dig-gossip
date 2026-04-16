@@ -114,13 +114,11 @@ impl AddressManagerStore {
                     row.len()
                 )));
             }
-            for cell in row {
-                if let Some(ix) = cell {
-                    if *ix >= state.entries.len() {
-                        return Err(GossipError::AddressManagerStore(
-                            "tried_table index out of range".into(),
-                        ));
-                    }
+            for ix in row.iter().flatten() {
+                if *ix >= state.entries.len() {
+                    return Err(GossipError::AddressManagerStore(
+                        "tried_table index out of range".into(),
+                    ));
                 }
             }
         }
@@ -139,13 +137,11 @@ impl AddressManagerStore {
                     row.len()
                 )));
             }
-            for cell in row {
-                if let Some(ix) = cell {
-                    if *ix >= state.entries.len() {
-                        return Err(GossipError::AddressManagerStore(
-                            "new_table index out of range".into(),
-                        ));
-                    }
+            for ix in row.iter().flatten() {
+                if *ix >= state.entries.len() {
+                    return Err(GossipError::AddressManagerStore(
+                        "new_table index out of range".into(),
+                    ));
                 }
             }
         }
