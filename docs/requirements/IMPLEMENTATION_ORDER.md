@@ -141,6 +141,21 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] PRV-009 — TorConfig struct (enabled, socks5_proxy, onion_address, prefer_tor)
 - [x] PRV-010 — Tor transport (SOCKS5 outbound, .onion inbound, hybrid, selection order)
 
+## Phase 12: Integration (wiring components into live message flow)
+
+- [ ] INT-001 — Broadcast via Plumtree (eager/lazy push, not flat fan-out)
+- [ ] INT-002 — Broadcast via priority lanes (PriorityOutbound per connection)
+- [ ] INT-003 — Broadcast with adaptive backpressure (tx dedup, bulk drop, normal delay)
+- [ ] INT-004 — ERLAY routing for NewTransaction (flood set only)
+- [ ] INT-005 — Relay broadcast in Plumtree step 7
+- [ ] INT-006 — /16 SubnetGroupFilter on connect_to()
+- [ ] INT-007 — AsDiversityFilter on connect_to()
+- [ ] INT-008 — Discovery loop spawned in start()
+- [ ] INT-009 — Feeler loop spawned in start()
+- [ ] INT-010 — Cleanup task spawned in start()
+- [ ] INT-011 — Dandelion stem phase on locally-originated transactions
+- [ ] INT-012 — Relay reconnect task spawned in start()
+
 ---
 
 ## Summary
@@ -159,4 +174,5 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 | 9 | Performance | 6 |
 | 10 | Concurrency | 6 |
 | 11 | Privacy | 10 |
-| **Total** | | **98** |
+| 12 | Integration | 12 |
+| **Total** | | **110** |

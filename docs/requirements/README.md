@@ -84,4 +84,5 @@ All requirements are derived from:
 | Performance | PRF | 6 |
 | Concurrency | CNC | 6 |
 | Privacy | PRV | 10 |
-| **Total** | | **96** |
+| Integration | INT | 12 |
+| **Total** | | **110** |

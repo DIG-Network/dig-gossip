@@ -124,3 +124,13 @@ domains:
       verification: domains/privacy/VERIFICATION.md
       tracking: domains/privacy/TRACKING.yaml
       requirement_specs: domains/privacy
+
+  - id: integration
+    title: "Integration"
+    summary: "Wiring individually-implemented components into the live GossipService/GossipHandle: Plumtree broadcast pipeline, priority lanes, backpressure, ERLAY routing, relay broadcast, /16+AS connection filtering, task spawning (discovery, feeler, cleanup, relay), Dandelion stem phase."
+    status: planned
+    paths:
+      normative: domains/integration/NORMATIVE.md
+      verification: domains/integration/VERIFICATION.md
+      tracking: domains/integration/TRACKING.yaml
+      requirement_specs: domains/integration

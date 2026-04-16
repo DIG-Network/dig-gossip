@@ -1,0 +1,89 @@
+domain_id: integration
+normative: ./NORMATIVE.md
+verification: ./VERIFICATION.md
+
+items:
+  - id: INT-001
+    section: "Broadcast Pipeline"
+    summary: "broadcast() routes through Plumtree eager/lazy push"
+    status: gap
+    spec_ref: "SPEC.md#81-plumtree-structured-gossip"
+    tests: []
+    notes: ""
+  - id: INT-002
+    section: "Broadcast Pipeline"
+    summary: "broadcast() uses PriorityOutbound per connection"
+    status: gap
+    spec_ref: "SPEC.md#84-message-priority-lanes"
+    tests: []
+    notes: ""
+  - id: INT-003
+    section: "Broadcast Pipeline"
+    summary: "broadcast() applies adaptive backpressure"
+    status: gap
+    spec_ref: "SPEC.md#85-adaptive-backpressure"
+    tests: []
+    notes: ""
+  - id: INT-004
+    section: "Broadcast Pipeline"
+    summary: "NewTransaction routed via ERLAY flood set"
+    status: gap
+    spec_ref: "SPEC.md#83-erlay-style-transaction-relay"
+    tests: []
+    notes: ""
+  - id: INT-005
+    section: "Broadcast Pipeline"
+    summary: "Relay broadcast in Plumtree step 7"
+    status: gap
+    spec_ref: "SPEC.md#7-relay-fallback"
+    tests: []
+    notes: ""
+  - id: INT-006
+    section: "Connection Filtering"
+    summary: "/16 SubnetGroupFilter on connect_to"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: INT-007
+    section: "Connection Filtering"
+    summary: "AsDiversityFilter on connect_to"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: INT-008
+    section: "Task Spawning"
+    summary: "start() spawns discovery loop"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: INT-009
+    section: "Task Spawning"
+    summary: "start() spawns feeler loop"
+    status: gap
+    spec_ref: "SPEC.md#64-discovery-loop-rust-port-improved"
+    tests: []
+    notes: ""
+  - id: INT-010
+    section: "Task Spawning"
+    summary: "start() spawns cleanup task"
+    status: gap
+    spec_ref: "SPEC.md#91-concurrency"
+    tests: []
+    notes: ""
+  - id: INT-011
+    section: "Privacy Integration"
+    summary: "Dandelion stem phase on locally-originated tx"
+    status: gap
+    spec_ref: "SPEC.md#191-dandelion"
+    tests: []
+    notes: ""
+  - id: INT-012
+    section: "Task Spawning"
+    summary: "start() spawns relay reconnect task"
+    status: gap
+    spec_ref: "SPEC.md#7-relay-fallback"
+    tests: []
+    notes: ""
