@@ -69,14 +69,14 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 5: Plumtree Structured Gossip
 
-- [ ] PLT-001 — PlumtreeState (eager_peers, lazy_peers, lazy_queue, message_cache)
-- [ ] PLT-002 — Eager push (full message to eager_peers, exclude origin)
-- [ ] PLT-003 — Lazy push (hash-only LazyAnnounce to lazy_peers)
-- [ ] PLT-004 — Duplicate detection: demote sender to lazy, send PRUNE
-- [ ] PLT-005 — Lazy timeout: promote sender to eager via GRAFT, pull message
-- [ ] PLT-006 — Tree self-healing on peer disconnect (lazy promotion)
-- [ ] PLT-007 — Message cache (LRU, capacity 1000, TTL 60s) for GRAFT responses
-- [ ] PLT-008 — Seen set (LRU deduplication, capacity 100K)
+- [x] PLT-001 — PlumtreeState (eager_peers, lazy_peers, lazy_queue, message_cache)
+- [x] PLT-002 — Eager push (full message to eager_peers, exclude origin)
+- [x] PLT-003 — Lazy push (hash-only LazyAnnounce to lazy_peers)
+- [x] PLT-004 — Duplicate detection: demote sender to lazy, send PRUNE
+- [x] PLT-005 — Lazy timeout: promote sender to eager via GRAFT, pull message
+- [x] PLT-006 — Tree self-healing on peer disconnect (lazy promotion)
+- [x] PLT-007 — Message cache (LRU, capacity 1000, TTL 60s) for GRAFT responses
+- [x] PLT-008 — Seen set (LRU deduplication, capacity 100K)
 - [ ] PLT-009 — PlumtreeMessage wire types (LazyAnnounce, Prune, Graft, RequestByHash with DigMessageType IDs 214-217)
 
 ## Phase 6: Compact Block Relay
