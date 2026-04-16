@@ -121,12 +121,12 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 10: Concurrency
 
-- [ ] CNC-001 — GossipService and GossipHandle Send + Sync + Clone (inner Arc)
-- [ ] CNC-002 — Task architecture (listener, discovery, serialization, cleanup, relay, per-connection)
-- [ ] CNC-003 — Shared state synchronization primitives (RwLock, mpsc, AtomicU64)
-- [ ] CNC-004 — Graceful shutdown (stop all tasks, disconnect peers, save state)
-- [ ] CNC-005 — Address manager timestamp update on message receipt from outbound peer
-- [ ] CNC-006 — Periodic cleanup task (stale connections, expired bans)
+- [x] CNC-001 — GossipService and GossipHandle Send + Sync + Clone (inner Arc)
+- [x] CNC-002 — Task architecture (listener, discovery, serialization, cleanup, relay, per-connection)
+- [x] CNC-003 — Shared state synchronization primitives (RwLock, mpsc, AtomicU64)
+- [x] CNC-004 — Graceful shutdown (stop all tasks, disconnect peers, save state)
+- [x] CNC-005 — Address manager timestamp update on message receipt from outbound peer
+- [x] CNC-006 — Periodic cleanup task (stale connections, expired bans)
 
 ## Phase 11: Privacy
 
