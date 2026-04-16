@@ -58,7 +58,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 4: Relay
 
-- [ ] RLY-001 — Relay client connect and register (WebSocket + Register message)
+- [x] RLY-001 — Relay client connect and register (WebSocket + Register message)
 - [ ] RLY-002 — Relay message forwarding (RelayGossipMessage to specific peer)
 - [ ] RLY-003 — Relay broadcast (Broadcast to all relay peers)
 - [ ] RLY-004 — Relay auto-reconnect with exponential backoff
