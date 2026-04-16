@@ -285,6 +285,16 @@ pub struct ServiceState {
     #[allow(dead_code)]
     pub seen_messages: Mutex<LruCache<Bytes32, ()>>,
 
+    /// Plumtree gossip state — eager/lazy peer classification, lazy queue.
+    /// INT-001: `broadcast()` routes through this instead of flat fan-out.
+    /// SPEC §8.1 — Plumtree structured gossip.
+    pub plumtree: Mutex<crate::gossip::plumtree::PlumtreeState>,
+
+    /// Message cache for Plumtree GRAFT responses.
+    /// INT-001: recently broadcast messages cached for lazy peers that GRAFT.
+    /// SPEC §8.1 — "Message cache: LRU capacity 1000, TTL 60s."
+    pub message_cache: Mutex<crate::gossip::message_cache::MessageCache>,
+
     /// Map of currently connected peers (stubs for tests, live for real connections).
     /// Keyed by [`PeerId`] (SHA256 of remote TLS public key for live peers, or
     /// deterministic hash of `SocketAddr` for stubs).
@@ -426,6 +436,8 @@ impl ServiceState {
             tls,
             address_manager,
             seen_messages: Mutex::new(LruCache::new(cap)),
+            plumtree: Mutex::new(crate::gossip::plumtree::PlumtreeState::new()),
+            message_cache: Mutex::new(crate::gossip::message_cache::MessageCache::new()),
             peers: Mutex::new(HashMap::new()),
             banned: Mutex::new(HashMap::new()),
             chia_ip_bans: Arc::new(tokio::sync::Mutex::new(ClientState::default())),
