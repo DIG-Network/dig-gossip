@@ -90,14 +90,14 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 7: ERLAY Transaction Relay
 
-- [ ] ERL-001 — Flood set selection (ERLAY_FLOOD_PEER_COUNT random peers)
-- [ ] ERL-002 — Low-fanout NewTransaction flooding to flood set only
-- [ ] ERL-003 — Minisketch encoding/decoding for transaction ID sets
-- [ ] ERL-004 — Periodic set reconciliation per non-flood peer (RECONCILIATION_INTERVAL_MS)
-- [ ] ERL-005 — Symmetric difference computation and missing tx exchange
-- [ ] ERL-006 — Flood set rotation every ERLAY_FLOOD_SET_ROTATION_SECS
-- [ ] ERL-007 — Inbound peers excluded from flood set
-- [ ] ERL-008 — ErlayConfig struct (flood_peer_count, reconciliation_interval_ms, sketch_capacity)
+- [x] ERL-001 — Flood set selection (ERLAY_FLOOD_PEER_COUNT random peers)
+- [x] ERL-002 — Low-fanout NewTransaction flooding to flood set only
+- [x] ERL-003 — Minisketch encoding/decoding for transaction ID sets
+- [x] ERL-004 — Periodic set reconciliation per non-flood peer (RECONCILIATION_INTERVAL_MS)
+- [x] ERL-005 — Symmetric difference computation and missing tx exchange
+- [x] ERL-006 — Flood set rotation every ERLAY_FLOOD_SET_ROTATION_SECS
+- [x] ERL-007 — Inbound peers excluded from flood set
+- [x] ERL-008 — ErlayConfig struct (flood_peer_count, reconciliation_interval_ms, sketch_capacity)
 
 ## Phase 8: Priority Lanes & Backpressure
 
