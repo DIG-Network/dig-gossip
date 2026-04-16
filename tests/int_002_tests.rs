@@ -19,7 +19,7 @@ fn test_priority_outbound_per_connection() {
 /// **INT-002: MessagePriority classifies Chia types correctly.**
 #[test]
 fn test_message_priority_classification_chia() {
-    use chia_protocol::ProtocolMessageTypes;
+    use dig_gossip::ProtocolMessageTypes;
 
     // Critical: NewPeak
     let p = MessagePriority::from_chia_type(ProtocolMessageTypes::NewPeak);
@@ -56,7 +56,7 @@ fn test_message_priority_classification_dig() {
 /// **INT-002: PriorityOutbound drain order follows PRI-003 (critical > normal > bulk).**
 #[test]
 fn test_priority_outbound_drain_order() {
-    use chia_protocol::{Bytes, Message, ProtocolMessageTypes};
+    use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
 
     let mut q = PriorityOutbound::new();
 
@@ -102,7 +102,7 @@ fn test_priority_outbound_drain_order() {
 /// **INT-002: lane_lengths returns correct per-lane counts.**
 #[test]
 fn test_priority_outbound_lane_lengths() {
-    use chia_protocol::{Bytes, Message, ProtocolMessageTypes};
+    use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
 
     let mut q = PriorityOutbound::new();
     let msg = || Message {

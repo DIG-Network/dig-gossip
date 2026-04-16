@@ -21,7 +21,7 @@ mod common;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use chia_traits::Streamable;
+use dig_gossip::Streamable;
 use dig_gossip::{
     create_native_tls_connector, load_ssl_cert, Bytes32, GossipHandle, GossipService, Handshake,
     Message, NodeType, PeerId, ProtocolMessageTypes, RespondPeers,

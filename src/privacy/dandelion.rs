@@ -16,7 +16,7 @@
 //! normally. Stem timeout (30s) ensures liveness if stem path breaks.
 //! SPEC §1.8#10: "transaction origin privacy."
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 
 use crate::types::peer::{metric_unix_timestamp_secs, PeerId};
 

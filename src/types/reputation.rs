@@ -1,7 +1,7 @@
 //! Peer reputation tracking and graduated penalty enforcement (**API-006** / SPEC §2.5).
 //!
 //! This module implements the reputation model that extends Chia's binary ban/trust
-//! approach (`chia_sdk_client::ClientState`) with:
+//! approach (`dig_protocol::ClientState`) with:
 //!
 //! - **Numeric penalty accumulation** — each misbehavior adds weighted points toward a
 //!   ban threshold, rather than immediately banning or silently ignoring.
@@ -320,7 +320,7 @@ impl PeerReputation {
 
     /// **CON-007** — [`Self::refresh_ban_status`] alias that returns whether a ban *just* cleared.
     ///
-    /// Higher-level code that mirrors this into [`chia_sdk_client::ClientState::unban`] should
+    /// Higher-level code that mirrors this into [`dig_protocol::ClientState::unban`] should
     /// call this (or `refresh_ban_status`) when evaluating whether a peer may reconnect.
     pub fn check_unban(&mut self, current_time: u64) -> bool {
         let was = self.is_banned;

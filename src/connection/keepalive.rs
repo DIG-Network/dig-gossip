@@ -38,7 +38,7 @@
 //! The published [`chia_protocol`](https://docs.rs/chia-protocol/0.26.0/chia_protocol/) **0.26** wire
 //! enum [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes) does **not** define separate
 //! application-level Ping/Pong message types — Chia’s networking docs describe **WebSocket** library
-//! heartbeats for transport liveness. Upstream [`chia_sdk_client::Peer`](chia_sdk_client::Peer)’s
+//! heartbeats for transport liveness. Upstream [`dig_protocol::Peer`](dig_protocol::Peer)’s
 //! inbound loop discards raw WS control frames (`Ping`/`Pong`) before they become [`Message`](chia_protocol::Message)s.
 //!
 //! **DIG policy:** we treat a successful **`RequestPeers` → `RespondPeers`** round-trip as the
@@ -81,9 +81,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chia_protocol::{RequestPeers, RespondPeers};
-use chia_sdk_client::Peer;
-use chia_traits::Streamable;
+use dig_protocol::{RequestPeers, RespondPeers};
+use dig_protocol::Peer;
+use dig_protocol::Streamable;
 
 // SPEC §2.13 — PING_INTERVAL_SECS (default 30) and PEER_TIMEOUT_SECS (default 90)
 // are DIG-specific constants not present in Chia crates.
@@ -274,7 +274,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
 /// 1. Apply [`PenaltyReason::ConnectionIssue`] to the slot's [`PeerReputation`] **before**
 ///    closing — if this call is the first to cross [`PENALTY_BAN_THRESHOLD`](crate::constants::PENALTY_BAN_THRESHOLD),
 ///    [`PeerReputation::apply_penalty`] returns `true` and we schedule a timed DIG ban +
-///    [`chia_sdk_client::ClientState::ban`] via [`ServiceState::execute_dig_timed_ban`].
+///    [`dig_protocol::ClientState::ban`] via [`ServiceState::execute_dig_timed_ban`].
 /// 2. Mirror the **exact** post-penalty `penalty_points` into `ServiceState::penalties` so
 ///    [`GossipHandle::penalize_peer`](crate::service::gossip_handle::GossipHandle::penalize_peer)
 ///    stays consistent with keepalive disconnects (single source of truth: no double add).

@@ -4,7 +4,7 @@
 //! - **Master SPEC:** §1.6#7 — "outbound peer timestamps updated on message receipt"
 //! - **Chia:** `node_discovery.py:139-154`
 
-use chia_protocol::TimestampedPeerInfo;
+use dig_gossip::TimestampedPeerInfo;
 use dig_gossip::{AddressManager, PeerInfo};
 
 /// **CNC-005: address manager tracks timestamps for peer freshness.**

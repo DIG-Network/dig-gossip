@@ -32,7 +32,7 @@
 //!
 //! - **`connected_peers` / `get_connections`:** Returning owned [`crate::types::peer::PeerConnection`]
 //!   values would duplicate [`tokio::sync::mpsc::Receiver`] halves; CON-001 keeps live
-//!   [`chia_sdk_client::Peer`] handles inside [`super::state::PeerSlot::Live`] while these RPCs
+//!   [`dig_protocol::Peer`] handles inside [`super::state::PeerSlot::Live`] while these RPCs
 //!   stay empty until a snapshot API lands. In the meantime,
 //!   [`__stub_filter_count_for_tests`](GossipHandle::__stub_filter_count_for_tests) gives tests a
 //!   way to verify filter semantics.
@@ -43,17 +43,17 @@
 //! (`full_node.py`, `server.py`). The key difference is that Chia's `Server` object is not
 //! `Clone` — callers must borrow it. Our `Arc` wrapper avoids lifetime gymnastics in async code.
 
-use chia_protocol::{
+use dig_protocol::{
     ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
     TimestampedPeerInfo,
 };
-use chia_sdk_client::Peer;
+use dig_protocol::Peer;
 
 use crate::discovery::introducer_client::{
     load_local_certificate_for_introducer, IntroducerClient, PeerRegistration,
 };
 use crate::discovery::introducer_register_wire::RegisterAck;
-use chia_traits::Streamable;
+use dig_protocol::Streamable;
 use std::any::TypeId;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -187,7 +187,7 @@ impl GossipHandle {
     ///
     /// # Wire behaviour (CON-001+ / CON-006)
     ///
-    /// **Live** peers receive [`Peer::send_protocol_message`](chia_sdk_client::Peer::send_protocol_message)
+    /// **Live** peers receive [`Peer::send_protocol_message`](dig_protocol::Peer::send_protocol_message)
     /// with a cloned [`Message`]; each successful send increments that slot’s CON-006 counters by the
     /// shared serialized length. **Stub** peers do not have a transport — the legacy
     /// [`ServiceState::messages_sent`] / [`ServiceState::bytes_sent`] atomics record the same
@@ -333,7 +333,7 @@ impl GossipHandle {
     /// Send a typed message to a single peer identified by [`PeerId`].
     ///
     /// For **live** peers (CON-001+), the message is forwarded through the underlying
-    /// [`chia_sdk_client::Peer::send`] WebSocket channel. For **stub** peers (pre-CON-001
+    /// [`dig_protocol::Peer::send`] WebSocket channel. For **stub** peers (pre-CON-001
     /// test fixtures), the payload is serialized (to validate encoding) but not transmitted;
     /// the counter is still incremented so stats remain consistent.
     ///
@@ -437,9 +437,9 @@ impl GossipHandle {
             let resp = empty_respond_peers()?;
             let bytes = resp
                 .to_bytes()
-                .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)))?;
+                .map_err(|e| GossipError::from(dig_protocol::ClientError::Streamable(e)))?;
             return T::from_bytes(&bytes)
-                .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)));
+                .map_err(|e| GossipError::from(dig_protocol::ClientError::Streamable(e)));
         }
 
         // Unimplemented request/response pairs for stub peers — live peers handled above.
@@ -468,7 +468,7 @@ impl GossipHandle {
     /// Outbound TLS peer: [`crate::connection::outbound::connect_outbound_peer`] + `RequestPeers` (CON-001).
     ///
     /// **Spec:** [`CON-001.md`](../../../docs/requirements/domains/connection/specs/CON-001.md) — uses
-    /// [`chia_sdk_client::create_native_tls_connector`] / rustls equivalent, Chia [`Handshake`], then
+    /// [`dig_protocol::create_native_tls_connector`] / rustls equivalent, Chia [`Handshake`], then
     /// merges [`RespondPeers::peer_list`] via [`crate::discovery::address_manager::AddressManager::add_to_new_table`].
     ///
     /// **Tests without a WSS peer:** use [`Self::__connect_stub_peer_with_direction`] (deterministic
@@ -787,7 +787,7 @@ impl GossipHandle {
 
     /// Force-disconnect a peer and record a **timed DIG ban** (**CON-007**).
     ///
-    /// This mirrors Chia [`chia_sdk_client::ClientState::ban`] on the peer's remote IP (when known),
+    /// This mirrors Chia [`dig_protocol::ClientState::ban`] on the peer's remote IP (when known),
     /// inserts a [`super::state::DigBanEntry`] so [`Self::connect_to`] / inbound accept reject
     /// the [`PeerId`] until [`super::state::ServiceState::prune_expired_dig_bans`] fires.
     pub async fn ban_peer(
@@ -876,7 +876,7 @@ impl GossipHandle {
         Ok(())
     }
 
-    /// **CON-007 test hook:** [`chia_sdk_client::ClientState::is_banned`] for `ip` on the service's
+    /// **CON-007 test hook:** [`dig_protocol::ClientState::is_banned`] for `ip` on the service's
     /// shadow [`super::state::ServiceState::chia_ip_bans`] table.
     #[doc(hidden)]
     pub async fn __con007_chia_client_is_ip_banned_for_tests(&self, ip: std::net::IpAddr) -> bool {
@@ -1161,7 +1161,7 @@ fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Messa
         id: None,
         data: body
             .to_bytes()
-            .map_err(|e| GossipError::from(chia_sdk_client::ClientError::Streamable(e)))?
+            .map_err(|e| GossipError::from(dig_protocol::ClientError::Streamable(e)))?
             .into(),
     })
 }

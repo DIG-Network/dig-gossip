@@ -19,7 +19,7 @@ mod common;
 
 use std::time::Duration;
 
-use chia_ssl::ChiaCertificate;
+use dig_gossip::ChiaCertificate;
 use dig_gossip::{
     peer_id_from_tls_spki_der, Message, NodeType, Peer, PeerId, PeerOptions, PeerReputation,
     ProtocolMessageTypes, RequestPeers,

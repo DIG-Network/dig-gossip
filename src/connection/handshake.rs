@@ -30,18 +30,18 @@
 //!   ([`crate::connection::listener::negotiate_inbound_over_ws`]) so “both directions validated” is
 //!   a literal shared code path (see `tests/con_003_tests.rs` integration + `tests/con_008_tests.rs`
 //!   for the sanitization-focused traceability suite).
-//! - We map semantic failures onto existing [`chia_sdk_client::ClientError`] variants where they
+//! - We map semantic failures onto existing [`dig_protocol::ClientError`] variants where they
 //!   fit ([`ClientError::WrongNetwork`]); remaining policy failures use [`ClientError::Io`] with a
 //!   stable prefix so integration tests can substring-match without inventing new upstream enum
-//!   variants (chia-sdk-client 0.28’s [`ClientError`](chia_sdk_client::ClientError) is closed).
+//!   variants (chia-sdk-client 0.28’s [`ClientError`](dig_protocol::ClientError) is closed).
 //! - **Protocol versions** are compared as dot-separated numeric tuples (Chia’s wire convention).
 //!   [`MIN_COMPATIBLE_PROTOCOL_VERSION`] is the inclusive floor; peers below it are rejected.
 //! - **Software version** length is measured in **UTF-8 bytes** after Cc/Cf stripping, per CON-003.
 
 #![allow(clippy::result_large_err)]
 
-use chia_protocol::Handshake;
-use chia_sdk_client::ClientError;
+use dig_protocol::Handshake;
+use dig_protocol::ClientError;
 use thiserror::Error;
 use unicode_general_category::{get_general_category, GeneralCategory};
 

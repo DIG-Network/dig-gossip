@@ -21,7 +21,7 @@
 //! Fallback to full block via RequestBlock when >5 missing.
 //! SPEC §1.8#2: "90%+ block propagation bandwidth reduction."
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 
 use crate::constants::{COMPACT_BLOCK_MAX_MISSING_TXS, SHORT_TX_ID_BYTES};
 

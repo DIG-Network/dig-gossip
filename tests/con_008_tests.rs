@@ -27,7 +27,7 @@
 
 mod common;
 
-use chia_protocol::Handshake;
+use dig_gossip::Handshake;
 use dig_gossip::connection::handshake::{sanitize_software_version, validate_remote_handshake};
 use dig_gossip::NodeType;
 use unicode_general_category::{get_general_category, GeneralCategory};

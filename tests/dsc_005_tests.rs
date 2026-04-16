@@ -29,7 +29,7 @@ mod common;
 
 use std::time::Duration;
 
-use chia_traits::Streamable;
+use dig_gossip::Streamable;
 use dig_gossip::{
     load_ssl_cert, ChiaCertificate, ChiaProtocolMessage, GossipError, IntroducerClient, NodeType,
     PeerOptions, PeerRegistration, ProtocolMessageTypes, RegisterAck, RegisterPeer,

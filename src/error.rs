@@ -16,7 +16,7 @@
 //!
 //! # `ClientError` and `Clone`
 //!
-//! Upstream [`chia_sdk_client::ClientError`] derives [`Debug`] and [`thiserror::Error`]
+//! Upstream [`dig_protocol::ClientError`] derives [`Debug`] and [`thiserror::Error`]
 //! but **not** [`Clone`]. API-004 requires `GossipError` to be cloneable so that handles
 //! (which are `Clone`) can cheaply retry or propagate errors. We therefore store client
 //! failures as `Arc<ClientError>` (see [`GossipError::ClientError`]):
@@ -60,7 +60,7 @@ pub enum GossipError {
     /// TLS connector creation, WebSocket I/O, rate-limiter rejection, etc.
     ///
     /// Wrapped in [`Arc`] so that `GossipError` can derive [`Clone`] even though
-    /// [`chia_sdk_client::ClientError`] does not (API-004 implementation notes).
+    /// [`dig_protocol::ClientError`] does not (API-004 implementation notes).
     ///
     /// **When:** Any `chia-sdk-client` call fails (outbound connect, `Peer::send()`,
     /// `Peer::request_raw()`).
@@ -70,7 +70,7 @@ pub enum GossipError {
     /// [`crate::service::gossip_handle::GossipHandle::connect_to`],
     /// [`crate::service::gossip_handle::GossipHandle::request`].
     #[error("client error: {0}")]
-    ClientError(Arc<chia_sdk_client::ClientError>),
+    ClientError(Arc<dig_protocol::ClientError>),
 
     /// File-system or network I/O failure not covered by [`ClientError`](Self::ClientError).
     ///
@@ -267,8 +267,8 @@ pub enum GossipError {
 /// not the value directly. The `#[from]` derive attribute cannot be used with `Arc`
 /// wrapping, so we implement it by hand (API-004 acceptance criterion: "ClientError can
 /// be converted to GossipError via `?` operator").
-impl From<chia_sdk_client::ClientError> for GossipError {
-    fn from(value: chia_sdk_client::ClientError) -> Self {
+impl From<dig_protocol::ClientError> for GossipError {
+    fn from(value: dig_protocol::ClientError) -> Self {
         Self::ClientError(Arc::new(value))
     }
 }

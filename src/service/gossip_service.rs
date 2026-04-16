@@ -21,15 +21,15 @@
 //!   without spawning tasks or performing network I/O.
 //! * **§3.2 — Lifecycle:** `start()` transitions to running; `stop()` drains and cleans up.
 //! * **§5.3 — Mutual TLS:** certificate material comes from `chia-ssl` via
-//!   [`chia_sdk_client::load_ssl_cert`]; both outbound and inbound paths use the same
-//!   [`ChiaCertificate`](chia_ssl::ChiaCertificate).
+//!   [`dig_protocol::load_ssl_cert`]; both outbound and inbound paths use the same
+//!   [`ChiaCertificate`](dig_protocol::ChiaCertificate).
 //!
 //! # Design decisions
 //!
 //! * **Two-phase init (SPEC §3.1):** `new()` is synchronous (`fn`, not `async fn`) because
 //!   TLS cert loading is file I/O only. Network I/O is deferred to `start()`.
 //! * **Chia TLS delegation:** We delegate the “load or generate PEM” policy to
-//!   [`chia_sdk_client::load_ssl_cert`] (see upstream `tls.rs`): missing files trigger
+//!   [`dig_protocol::load_ssl_cert`] (see upstream `tls.rs`): missing files trigger
 //!   generation and persistence. API-001 additionally ensures parent directories exist so
 //!   writes succeed in fresh temp-dir test harnesses.
 //! * **No restart:** Once `stop()` is called the service cannot be started again. This
@@ -44,9 +44,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use chia_protocol::Bytes32;
-use chia_sdk_client::load_ssl_cert;
-use chia_sdk_client::{ClientError, ClientState};
+use dig_protocol::Bytes32;
+use dig_protocol::load_ssl_cert;
+use dig_protocol::{ClientError, ClientState};
 
 use crate::error::GossipError;
 use crate::types::config::GossipConfig;
@@ -99,7 +99,7 @@ impl GossipService {
     /// 2. **Parent-dir creation** -- ensures the directories for `cert_path` / `key_path`
     ///    exist so that `chia-ssl` can write generated PEM files (critical for temp-dir
     ///    test harnesses).
-    /// 3. **TLS loading** -- delegates to [`chia_sdk_client::load_ssl_cert`], which loads
+    /// 3. **TLS loading** -- delegates to [`dig_protocol::load_ssl_cert`], which loads
     ///    existing PEM files or generates a fresh `ChiaCertificate` pair if they are
     ///    missing (SPEC §5.3).
     /// 4. **State allocation** -- creates the shared [`ServiceState`] with empty peer map,
@@ -422,18 +422,18 @@ fn ensure_parent_dirs(cert_path: &str, key_path: &str) -> Result<(), GossipError
     Ok(())
 }
 
-/// Load (or generate) a TLS certificate pair via [`chia_sdk_client::load_ssl_cert`]
+/// Load (or generate) a TLS certificate pair via [`dig_protocol::load_ssl_cert`]
 /// (SPEC section 5.3 — mandatory mutual TLS; **CON-009**).
 ///
-/// The returned [`ChiaCertificate`](chia_ssl::ChiaCertificate) is stored in
+/// The returned [`ChiaCertificate`](dig_protocol::ChiaCertificate) is stored in
 /// [`ServiceState::tls`] and used for both outbound `connect_peer()` calls and the
 /// inbound TLS acceptor in the CON-002 accept loop (see `vendor/native-tls/README.dig-gossip.md`
 /// for inbound OpenSSL `CERT_REQUIRED` behavior).
-fn load_tls_material(config: &GossipConfig) -> Result<chia_ssl::ChiaCertificate, GossipError> {
+fn load_tls_material(config: &GossipConfig) -> Result<dig_protocol::ChiaCertificate, GossipError> {
     load_ssl_cert(&config.cert_path, &config.key_path).map_err(map_sdk_tls_err)
 }
 
-/// Map [`chia_sdk_client::ClientError`] to [`GossipError`], special-casing the `Io`
+/// Map [`dig_protocol::ClientError`] to [`GossipError`], special-casing the `Io`
 /// variant so callers see [`GossipError::IoError`] (a `String`) rather than the
 /// `Arc`-wrapped `ClientError` path. This keeps file-system errors easy to pattern-match
 /// in tests.

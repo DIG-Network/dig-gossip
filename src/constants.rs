@@ -138,7 +138,7 @@ pub const NEW_TABLE_SIZE: usize = NEW_BUCKET_COUNT * BUCKET_SIZE;
 pub const DEFAULT_P2P_PORT: u16 = 9444;
 
 /// Default per-introducer DNS resolution timeout passed to
-/// [`chia_sdk_client::Network::lookup_all`](chia_sdk_client::Network::lookup_all) (DSC-003 / SPEC §6.2).
+/// [`dig_protocol::Network::lookup_all`](dig_protocol::Network::lookup_all) (DSC-003 / SPEC §6.2).
 pub const DEFAULT_DNS_SEED_TIMEOUT_SECS: u64 = 30;
 
 /// Default batch size for parallel DNS introducer lookups inside `lookup_all` (DSC-003).

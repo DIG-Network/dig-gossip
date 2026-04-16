@@ -139,27 +139,18 @@ fn test_cargo_toml_has_chia_protocol() {
 }
 
 #[test]
-fn test_cargo_toml_has_chia_sdk_client() {
+fn test_cargo_toml_has_dig_protocol() {
+    // dig-protocol is the single protocol dependency that re-exports all chia-* crates.
+    // chia-sdk-client and chia-ssl are now accessed through dig-protocol.
     let manifest = load_cargo_toml();
     let deps = dependencies_table(&manifest);
     let dep = deps
-        .get("chia-sdk-client")
-        .expect("chia-sdk-client must be declared");
-    assert_eq!(dep_version(dep), "0.28");
-    // STR-001 requires TLS selection via our feature flags, not a hard-coded
-    // `features = ["native-tls"]` on the dependency that would block rustls builds.
+        .get("dig-protocol")
+        .expect("dig-protocol must be declared");
     assert!(
         !dep_default_features(dep),
-        "chia-sdk-client must use default-features = false so native-tls/rustls are exclusive"
+        "dig-protocol must use default-features = false so TLS is selected via our features"
     );
-}
-
-#[test]
-fn test_cargo_toml_has_chia_ssl() {
-    let manifest = load_cargo_toml();
-    let deps = dependencies_table(&manifest);
-    let dep = deps.get("chia-ssl").expect("chia-ssl must be declared");
-    assert_eq!(dep_version(dep), "0.26");
 }
 
 #[test]
@@ -284,8 +275,8 @@ fn test_feature_native_tls() {
         .expect("native-tls feature must exist");
     let entries: Vec<&str> = flag.iter().filter_map(Value::as_str).collect();
     assert!(
-        entries.contains(&"chia-sdk-client/native-tls"),
-        "native-tls must forward to chia-sdk-client, got {entries:?}"
+        entries.contains(&"dig-protocol/native-tls"),
+        "native-tls must forward through dig-protocol, got {entries:?}"
     );
 }
 
@@ -299,8 +290,8 @@ fn test_feature_rustls() {
         .expect("rustls feature must exist");
     let entries: Vec<&str> = flag.iter().filter_map(Value::as_str).collect();
     assert!(
-        entries.contains(&"chia-sdk-client/rustls"),
-        "rustls must forward to chia-sdk-client, got {entries:?}"
+        entries.contains(&"dig-protocol/rustls"),
+        "rustls must forward through dig-protocol, got {entries:?}"
     );
 }
 

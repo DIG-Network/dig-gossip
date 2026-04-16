@@ -18,8 +18,8 @@ mod common;
 
 use std::sync::Arc;
 
-use chia_protocol::{Bytes, Message, ProtocolMessageTypes};
-use chia_sdk_client::{RateLimit, RateLimiter, V2_RATE_LIMITS};
+use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
+use dig_gossip::{RateLimit, RateLimiter, V2_RATE_LIMITS};
 
 use dig_gossip::{
     apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, gossip_inbound_rate_limits,

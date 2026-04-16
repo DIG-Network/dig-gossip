@@ -16,7 +16,7 @@
 
 use std::collections::VecDeque;
 
-use chia_protocol::{Message, ProtocolMessageTypes};
+use dig_protocol::{Message, ProtocolMessageTypes};
 
 use crate::constants::PRIORITY_STARVATION_RATIO;
 

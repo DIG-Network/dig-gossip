@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use chia_protocol::Bytes32;
+use dig_protocol::Bytes32;
 
 use crate::constants::{
     BACKPRESSURE_BULK_DROP_THRESHOLD, BACKPRESSURE_NORMAL_DELAY_THRESHOLD,
