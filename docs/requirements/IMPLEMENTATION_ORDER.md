@@ -59,11 +59,11 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 ## Phase 4: Relay
 
 - [x] RLY-001 — Relay client connect and register (WebSocket + Register message)
-- [ ] RLY-002 — Relay message forwarding (RelayGossipMessage to specific peer)
-- [ ] RLY-003 — Relay broadcast (Broadcast to all relay peers)
+- [x] RLY-002 — Relay message forwarding (RelayGossipMessage to specific peer)
+- [x] RLY-003 — Relay broadcast (Broadcast to all relay peers)
 - [ ] RLY-004 — Relay auto-reconnect with exponential backoff
-- [ ] RLY-005 — Relay peer list (GetPeers/Peers exchange)
-- [ ] RLY-006 — Relay keepalive (Ping/Pong)
+- [x] RLY-005 — Relay peer list (GetPeers/Peers exchange)
+- [x] RLY-006 — Relay keepalive (Ping/Pong)
 - [ ] RLY-007 — NAT traversal hole punching via relay coordination
 - [ ] RLY-008 — Transport selection (direct P2P first, relay fallback, prefer_relay override)
 
