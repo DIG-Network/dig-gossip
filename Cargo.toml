@@ -18,6 +18,9 @@
 # features; we use the conventional implicit optional-dep features
 # (`siphasher`, `minisketch-rs`) from the `[features]` table.
 
+[workspace]
+members = [".", "crates/dig-protocol"]
+
 [package]
 name = "dig-gossip"
 version = "0.1.0"
