@@ -17,5 +17,5 @@
 | DSC-008 | verified | Feeler connections on Poisson schedule      | `tests/dsc_008_tests.rs` — Poisson mean ~240s, always positive, FEELER_INTERVAL_SECS=240, cancellation, empty new table, promotes on success |
 | DSC-009 | verified | Parallel connection establishment           | `tests/dsc_009_tests.rs` — constant=8, empty manager, batch produces results, batch size limits, size=1 works, mark_good called |
 | DSC-010 | verified | AS-level diversity enforcement             | `tests/dsc_010_tests.rs` — BGP lookup, longest-prefix-match, unknown fail-open, filter blocks/allows, remove re-allows, no-BGP fallback, count tracking |
-| DSC-011 | gap    | /16 group filter for outbound connections    | Unit test: verify one-per-/16 rule; test IPv4 address grouping logic                  |
+| DSC-011 | verified | /16 group filter for outbound connections  | `tests/dsc_011_tests.rs` — IPv4/IPv6 grouping, same/different subnet, filter blocks/allows, remove re-allows, count tracking |
 | DSC-012 | gap    | IntroducerPeers/VettedPeer tracking          | Unit test: verify vetting state transitions (unvetted, failed, success)               |
