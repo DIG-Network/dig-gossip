@@ -86,6 +86,7 @@ pub mod constants;
 pub mod discovery;
 pub mod error;
 pub mod gossip;
+pub mod nat;
 pub mod service;
 pub mod types;
 pub mod util;
@@ -122,6 +123,18 @@ pub use types::stats::{GossipStats, RelayStats};
 pub use discovery::address_manager::AddressManager;
 pub use discovery::introducer_client::IntroducerClient;
 pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
+
+// -- Unified dig-nat transport + discovery (L7 peer-network) --
+// The transport/discovery/identity layer routed through `dig-nat` (the unified `connect(peer)`
+// ladder + multiplexed transport + relay), plus the `dig.getPeers` `PeerRecord` shapes. The gossip
+// ALGORITHMS ride unchanged on top — this only swaps where connections + addresses come from.
+pub use nat::{
+    chia_cert_to_nat_identity, merge_records_into_address_manager, nat_connect, peer_target_for,
+    AddressKind, NatConfig, NatError, NatLocalIdentity, NatPeerConnection, NatPeerId, PeerAddress,
+    PeerRecord, TraversalKind, Via,
+};
+#[cfg(feature = "relay")]
+pub use nat::{unified_discover, UnifiedDiscoveryConfig};
 
 // -- Chia protocol types (re-exported, not reimplemented) --
 pub use dig_protocol::ChiaCertificate;

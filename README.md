@@ -540,6 +540,34 @@ MAX_PEERS_RECEIVED_PER_REQUEST = 1000  // cap per RespondPeers
 
 ---
 
+## Unified peer transport & discovery (`dig-nat`)
+
+Peer links and discovery run over the shared DIG Node peer-network protocol (the
+[L7 peer-network spec](https://docs.dig.net/docs/protocol/peer-network)) via the
+[`dig-nat`](https://github.com/DIG-Network/dig-nat) crate, so a node interoperates byte-for-byte
+with `dig-node` and `dig-relay` and reaches peers behind NAT. The `nat` module is the adapter; the
+gossip **algorithms** (Plumtree / ERLAY / Dandelion++ / compact blocks / priority) are unchanged —
+they ride on top of whatever byte transport delivers a peer's messages.
+
+- **Transport** — `GossipHandle::connect_via_nat(peer_id, addr, methods, timeout)` establishes a
+  connection over the NAT-traversal ladder (direct → UPnP → NAT-PMP → PCP → relay-coordinated
+  hole-punch → relayed-last) and returns a `NatPeerConnection`: an mTLS, `peer_id`-verified,
+  `yamux`-multiplexed link. Open a logical stream per gossip channel (`open_channel`), a byte-range
+  stream for multi-source download (`open_range_stream`), or the availability pre-check
+  (`query_availability`).
+- **Identity** — `chia_cert_to_nat_identity()` bridges the node's `ChiaCertificate` to a `dig-nat`
+  identity; `peer_id = SHA-256(TLS SPKI DER)` is identical in both crates (guarded by
+  `tests/nat_identity_conformance_tests.rs`). `GossipHandle::local_peer_id()` returns this node's id.
+- **Discovery** — multi-source per the spec: the relay introducer (`relay_get_peers`, RLY-005
+  `get_peers`) **and** node peer-exchange (`RequestPeers` / `dig.getPeers`). Both reduce to the
+  unified `PeerRecord` (`{ peer_id, addresses:[{host,port,kind}], network_id, last_seen, via }`);
+  `merge_records_into_address_manager()` folds dialable records into the same `AddressManager`.
+
+`dig-nat` (and the `dig-constants` it needs) are git dependencies until published to crates.io; they
+must be released **before** `dig-gossip` is (a git dependency cannot be `cargo publish`ed).
+
+---
+
 ## Address Manager
 
 `AddressManager` (Rust port of Bitcoin/Chia `CAddrMan`) maintains:

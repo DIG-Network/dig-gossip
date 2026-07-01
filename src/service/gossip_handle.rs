@@ -678,6 +678,80 @@ impl GossipHandle {
         Ok(peer_id)
     }
 
+    // ------------------------------------------------------------------
+    // Unified dig-nat transport (L7 peer-network) — reach peers over the
+    // NAT-traversal ladder (direct → UPnP → NAT-PMP → PCP → hole-punch →
+    // relay-last) instead of only a bespoke direct WSS dial. The gossip
+    // ALGORITHMS ride unchanged on the resulting multiplexed transport.
+    // ------------------------------------------------------------------
+
+    /// This node's own `peer_id` = SHA-256(its TLS SPKI DER) — the identity peers verify it by.
+    ///
+    /// Derived from the service's loaded [`ChiaCertificate`], so it is stable for the life of the
+    /// node's certificate and equal to what a remote computes from the cert this node presents.
+    /// Gated on the running lifecycle like every handle method.
+    pub fn local_peer_id(&self) -> Result<PeerId, GossipError> {
+        self.require_running()?;
+        let spki = crate::connection::outbound::spki_der_from_leaf_cert_der(&first_cert_der(
+            &self.inner.tls.cert_pem,
+        )?)
+        .map_err(GossipError::from)?;
+        Ok(peer_id_from_tls_spki_der(&spki))
+    }
+
+    /// Bridge this node's TLS material to a [`dig-nat`](dig_nat) identity for the unified transport.
+    ///
+    /// The returned [`NatLocalIdentity`](crate::nat::NatLocalIdentity) carries the DER cert + key and
+    /// the derived `peer_id` (== [`Self::local_peer_id`]); it is what
+    /// [`Self::connect_via_nat`] presents as the mTLS client certificate. Gated on the running
+    /// lifecycle.
+    pub fn nat_identity(&self) -> Result<crate::nat::NatLocalIdentity, GossipError> {
+        self.require_running()?;
+        crate::nat::chia_cert_to_nat_identity(&self.inner.tls).ok_or_else(|| {
+            GossipError::InvalidConfig(
+                "node TLS certificate could not be bridged to a dig-nat identity".to_string(),
+            )
+        })
+    }
+
+    /// Establish a peer connection over the unified `dig-nat` NAT-traversal ladder.
+    ///
+    /// Unlike [`Self::connect_to`] (a single direct WSS dial), this reaches peers that are only
+    /// reachable via UPnP/NAT-PMP/PCP mappings, a relay-coordinated hole punch, or — last resort —
+    /// relayed transport, exactly as the L7 peer-network spec prescribes. mTLS + `peer_id`
+    /// verification are performed by `dig-nat` against `peer_id`, so the returned
+    /// [`NatPeerConnection`](crate::nat::NatPeerConnection)'s remote identity is already confirmed.
+    ///
+    /// `methods` restricts which traversal tiers are enabled (still tried in canonical rank order —
+    /// direct-first, relay-last); pass all of them for production, or e.g. just
+    /// [`TraversalKind::Direct`](dig_nat::TraversalKind) in a test. `per_method_timeout` bounds each
+    /// tier so the call never hangs (a `dig-nat` guarantee).
+    ///
+    /// This returns the multiplexed connection for the caller (the next integration phase, `dig-node`)
+    /// to open gossip channels / range streams on; it does not itself insert the peer into the gossip
+    /// peer map (that wiring — mapping mux streams to the message loop — lands with the node
+    /// integration, keeping this change additive and the existing `connect_to` path intact).
+    pub async fn connect_via_nat(
+        &self,
+        peer_id: PeerId,
+        direct_addr: Option<std::net::SocketAddr>,
+        methods: &[dig_nat::TraversalKind],
+        per_method_timeout: Duration,
+    ) -> Result<crate::nat::NatPeerConnection, GossipError> {
+        self.require_running()?;
+        let identity = self.nat_identity()?;
+        let network_id =
+            crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
+        let target = crate::nat::peer_target_for(peer_id, direct_addr, network_id);
+        let config = dig_nat::NatConfig::builder()
+            .enabled_methods(methods.to_vec())
+            .per_method_timeout(per_method_timeout)
+            .build();
+        crate::nat::nat_connect(&target, &identity, &config)
+            .await
+            .map_err(|e| GossipError::NatError(e.to_string()))
+    }
+
     async fn connect_stub_inner(
         &self,
         addr: std::net::SocketAddr,
@@ -1168,4 +1242,19 @@ fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Messa
 
 fn empty_respond_peers() -> Result<RespondPeers, GossipError> {
     Ok(RespondPeers::new(vec![]))
+}
+
+/// Extract the DER of the first `CERTIFICATE` PEM block from a [`ChiaCertificate::cert_pem`] string.
+///
+/// Used by [`GossipHandle::local_peer_id`] to lift the node's own SPKI (via
+/// [`spki_der_from_leaf_cert_der`](crate::connection::outbound::spki_der_from_leaf_cert_der)) so its
+/// `peer_id` is derived the SAME way a remote derives it from the presented cert.
+fn first_cert_der(cert_pem: &str) -> Result<Vec<u8>, GossipError> {
+    x509_parser::pem::Pem::iter_from_buffer(cert_pem.as_bytes())
+        .flatten()
+        .find(|p| p.label == "CERTIFICATE")
+        .map(|p| p.contents)
+        .ok_or_else(|| {
+            GossipError::InvalidConfig("node certificate PEM has no CERTIFICATE block".to_string())
+        })
 }

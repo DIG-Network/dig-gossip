@@ -1,0 +1,97 @@
+name: CI
+
+# Continuous integration for every push to `main` and every pull request.
+#
+# This is the day-to-day quality gate (the `publish.yml` workflow only fires on
+# `v*` tags). It enforces formatting, lints, docs, the test suite, AND a
+# **line-coverage floor of 80%** measured with `cargo llvm-cov`. A change that
+# drops line coverage below 80% fails the build.
+#
+# Coverage notes:
+# - Measured against the production-shaped **default** feature set
+#   (`native-tls,relay,erlay,compact-blocks,dandelion`). The `tor` and `rustls`
+#   features are opt-in and pull heavy / alternate-TLS dependencies, so they are
+#   not part of the coverage gate (their cfg-gated code is excluded from the
+#   default-feature report rather than counted as "uncovered").
+# - `vendor/` (the patched chia-protocol / chia-sdk-client / native-tls crates)
+#   is excluded via `--ignore-filename-regex` — we only gate on our own `src/`.
+# - Integration tests bind loopback TLS listeners; they run single-threaded
+#   (`--test-threads=1`) to match `publish.yml` and avoid port/handshake races.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Format, Clippy & Docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check documentation
+        run: cargo doc --no-deps --all-features
+
+  coverage:
+    name: Test Suite + Coverage (>=80%)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run tests with coverage and enforce >=80% line coverage
+        run: >-
+          cargo llvm-cov
+          --no-default-features
+          --features native-tls,relay,erlay,compact-blocks,dandelion
+          --ignore-filename-regex 'vendor/'
+          --fail-under-lines 80
+          --lcov --output-path lcov.info
+          -- --test-threads=1
+
+      - name: Coverage summary
+        if: always()
+        run: >-
+          cargo llvm-cov report
+          --ignore-filename-regex 'vendor/'
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov.info
+          path: lcov.info
+          if-no-files-found: ignore

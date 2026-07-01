@@ -32,6 +32,22 @@ readme = "README.md"
 # DIG extension opcodes (200-219), DigMessage, DigMessageType, introducer wire types.
 # Single import replaces: chia-protocol, chia-sdk-client, chia-ssl, chia-traits, chia_streamable_macro.
 dig-protocol = { version = "0.1.1", default-features = false }
+# Unified DIG Node peer transport (L7 peer-network spec): mTLS `connect(peer)` over the NAT-traversal
+# ladder (direct → UPnP → NAT-PMP → PCP → hole-punch → relay-last) yielding a yamux-multiplexed
+# `PeerConnection`, plus `peer_id = SHA256(TLS SPKI DER)` verification, the relay client, and the
+# streaming `dig.getAvailability` / `dig.fetchRange` control types. dig-gossip routes its peer links +
+# discovery through this so it interops byte-for-byte with dig-node + dig-relay. The gossip ALGORITHMS
+# (Plumtree/ERLAY/Dandelion++/compact-blocks) sit unchanged on top of this transport.
+#
+# Sourcing: dig-nat is not yet on crates.io, so we resolve it from the DIG-Network git repo (same as
+# the superproject). `version = "0.1"` is what `cargo publish` records. RELEASE ORDERING (ecosystem
+# release-first rule): dig-nat (and the dig-constants 0.2.x it needs) must be on crates.io, and this
+# `git` source swapped for the plain crates.io version, BEFORE dig-gossip is published — `cargo publish`
+# rejects a git dependency. The orchestrator sequences the tags.
+dig-nat = { version = "0.1", git = "https://github.com/DIG-Network/dig-nat" }
+# Canonical relay endpoint (`DIG_RELAY_URL`) — pulled from the SAME git source dig-nat uses so the two
+# resolve to ONE `dig-constants` and stay in lockstep until 0.2.x is on crates.io (see dig-nat's note).
+dig-constants = { version = "0.2", git = "https://github.com/DIG-Network/dig-constants" }
 # chia_streamable_macro needed directly because the proc-macro reads Cargo.toml for chia-protocol
 # and generates `chia_protocol::` paths at compile time.
 chia_streamable_macro = "0.26"
@@ -112,6 +128,10 @@ futures-util = "0.3"
 x509-parser = "0.16"
 # CON-008 tests: assert sanitized outputs contain no Unicode Cc/Cf (same tables Chia uses via `unicodedata`).
 unicode-general-category = "1.1"
+# Ephemeral self-signed leaf certs for the dig-nat identity/transport conformance tests (INT-016/INT-017)
+# — the same kind a node generates on first run — so peer_id derivation + the mux transport are tested
+# against a REAL certificate with NO real network.
+rcgen = "0.13"
 
 [features]
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).

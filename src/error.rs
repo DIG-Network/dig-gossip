@@ -261,6 +261,19 @@ pub enum GossipError {
     /// **Produced by:** ERLAY reconciliation loop (future implementation).
     #[error("sketch decode failed")]
     SketchDecodeFailed,
+
+    // -- Unified dig-nat transport (L7 peer-network) --------------------------
+    /// A peer connection over the `dig-nat` NAT-traversal ladder failed.
+    ///
+    /// **When:** [`GossipHandle::connect_via_nat`](crate::service::gossip_handle::GossipHandle::connect_via_nat)
+    /// could not establish an mTLS, `peer_id`-verified link — every enabled traversal tier (direct,
+    /// UPnP/NAT-PMP/PCP mapping, relay-coordinated hole-punch, relayed fallback) failed, or the
+    /// identity could not be built. Carries the `dig-nat` error string for diagnosis.
+    /// **Caller action:** retry later / try another candidate address; the peer may be offline or the
+    /// relay unreachable.
+    /// **Produced by:** the `dig-nat` transport adapter (`crate::nat`).
+    #[error("nat transport error: {0}")]
+    NatError(String),
 }
 
 /// Manual [`From`] implementation because the `ClientError` variant stores an [`Arc`],
