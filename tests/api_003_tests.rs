@@ -80,6 +80,7 @@ fn test_config_all_fields_exist() {
         backpressure: Some(BackpressureConfig::default()),
         keepalive_ping_interval_secs: Some(7),
         keepalive_peer_timeout_secs: Some(42),
+        peer_pool: Some(dig_gossip::PeerPoolConfig::default()),
     };
 
     assert_eq!(cfg.listen_addr, "192.0.2.1:9000".parse().unwrap());
@@ -226,6 +227,9 @@ fn test_config_default_optional_subsystems_none() {
     assert!(c.backpressure.is_none());
     assert!(c.keepalive_ping_interval_secs.is_none());
     assert!(c.keepalive_peer_timeout_secs.is_none());
+    // POOL-*: the connected-peer pool is opt-in — default `None` keeps a bare node's behaviour
+    // (inbound + manual connect only) unchanged; `Some(..)` turns on autonomous replenishment.
+    assert!(c.peer_pool.is_none());
 }
 
 /// **Row:** `test_config_peer_options_type` — field is `chia_sdk_client::PeerOptions`.

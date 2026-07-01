@@ -184,32 +184,68 @@ pub(crate) struct DigBanEntry {
     pub ip: IpAddr,
 }
 
-/// A slot in the peer map: either a lightweight **test-only stub** or a **real** TLS peer.
+/// A **POOL-*** connected-pool member reached over the unified [`dig-nat`](dig_nat) transport.
 ///
-/// The two-variant design lets the API surface (`peer_count`, `broadcast`, `get_connections`)
-/// operate identically regardless of whether the peer was created synthetically in a
-/// unit test or via a real CON-001/CON-002 TLS handshake.
+/// This is a peer the connected-peer pool dialed via `dig-nat`'s `connect()` (mTLS, verified
+/// `peer_id`, NAT-traversal ladder). It owns the multiplexed [`crate::nat::NatPeerConnection`] — the
+/// stream transport dig-node opens gossip channels + range streams on. Unlike a [`LiveSlot`] it has no
+/// `chia-sdk-client` [`Peer`] (the WebSocket peer path); the gossip message loop over this mux
+/// transport is wired by the dig-node integration phase. The slot exists so a `dig-nat`-dialed peer
+/// COUNTS as a connected pool member for `peer_count` / stats / dedup / churn from the moment it
+/// connects.
+pub(crate) struct NatSlot {
+    /// The verified, multiplexed connection (owns the yamux session for stream I/O).
+    ///
+    /// Retained so the dig-node integration phase can open gossip channels + range streams on it; the
+    /// gossip message loop over this mux is not wired in this crate yet, so the field is held-not-read
+    /// here (it keeps the connection — and thus the peer's pool membership — alive).
+    #[allow(dead_code)]
+    pub conn: crate::nat::NatPeerConnection,
+    /// Remote endpoint (peer, or relay for a relayed link).
+    pub remote: SocketAddr,
+    /// Direction — pool-dialed connections are always outbound.
+    pub is_outbound: bool,
+}
+
+impl fmt::Debug for NatSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NatSlot")
+            .field("remote", &self.remote)
+            .field("is_outbound", &self.is_outbound)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A slot in the peer map: a lightweight **test-only stub**, a **real** TLS peer, or a
+/// **`dig-nat`-dialed pool member** (POOL-*).
+///
+/// The variant design lets the API surface (`peer_count`, `broadcast`, `get_connections`) operate
+/// over every peer uniformly, regardless of how it was established (synthetic test stub, real
+/// CON-001/CON-002 TLS handshake, or a pool dial over the `dig-nat` NAT-traversal ladder).
 ///
 /// # Invariant
 ///
-/// A `Live` slot always has a valid [`Peer`] handle. A `Stub` slot never has one.
-/// Pattern-matching on the variant is the only way to access the handle, preventing
-/// accidental sends to stubs.
+/// A `Live` slot always has a valid [`Peer`] handle; a `Stub` never has one; a `Nat` slot owns a
+/// verified [`crate::nat::NatPeerConnection`] but no `chia-sdk-client` `Peer`. Pattern-matching on the
+/// variant is the only way to reach the handle, preventing accidental sends to the wrong transport.
 #[derive(Debug)]
 pub(crate) enum PeerSlot {
     /// Synthetic peer for unit testing (no network resource).
     Stub(StubPeer),
     /// Real TLS peer with a `chia-sdk-client` [`Peer`] handle.
     Live(LiveSlot),
+    /// A connected-pool member reached over the `dig-nat` transport (POOL-*).
+    Nat(NatSlot),
 }
 
 impl PeerSlot {
-    /// The remote endpoint's socket address, regardless of stub vs live.
+    /// The remote endpoint's socket address, regardless of variant.
     /// Used by self-dial guards and address-manager updates.
     pub(crate) fn remote(&self) -> SocketAddr {
         match self {
             PeerSlot::Stub(p) => p.remote,
             PeerSlot::Live(l) => l.meta.remote,
+            PeerSlot::Nat(n) => n.remote,
         }
     }
 
@@ -219,16 +255,18 @@ impl PeerSlot {
         match self {
             PeerSlot::Stub(p) => p.is_outbound,
             PeerSlot::Live(l) => l.meta.is_outbound,
+            PeerSlot::Nat(n) => n.is_outbound,
         }
     }
 
     /// The node type declared by the remote during the Chia `Handshake`.
     /// Used by [`GossipHandle::get_connections`](super::gossip_handle::GossipHandle) to
-    /// filter by role.
+    /// filter by role. `dig-nat` pool members report [`NodeType::FullNode`] (they are DIG nodes).
     pub(crate) fn node_type(&self) -> NodeType {
         match self {
             PeerSlot::Stub(p) => p.node_type,
             PeerSlot::Live(l) => l.meta.node_type,
+            PeerSlot::Nat(_) => NodeType::FullNode,
         }
     }
 }
@@ -392,6 +430,17 @@ pub struct ServiceState {
     /// [`JoinHandle`] for the spawned accept-loop task. Stored so `stop()` can
     /// `abort()` + `await` it for clean shutdown.
     pub(crate) listener_task: Mutex<Option<JoinHandle<()>>>,
+
+    /// **POOL-*** — connected-peer-pool bookkeeping (dial backoff, in-flight reservations, churn
+    /// broadcaster). The connected SET itself is the [`Self::peers`] map; this holds the maintenance
+    /// policy's extra state. Present regardless of whether the pool loop runs, so the handle's pool
+    /// API (stats / events / borrow) works even for a node that only adopts inbound peers.
+    /// See [`crate::service::peer_pool`].
+    pub(crate) pool: Arc<crate::service::peer_pool::PoolState>,
+
+    /// **POOL-*** — [`JoinHandle`] for the spawned pool maintenance loop (`None` when the pool is
+    /// disabled, i.e. `GossipConfig::peer_pool` is `None`). `stop()` aborts + joins it.
+    pub(crate) pool_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Derive a deterministic [`PeerId`] from a [`SocketAddr`].
@@ -467,7 +516,25 @@ impl ServiceState {
             listen_bound_addr: Mutex::new(None),
             listener_stop: Mutex::new(None),
             listener_task: Mutex::new(None),
+            pool: Arc::new(crate::service::peer_pool::PoolState::new()),
+            pool_task: Mutex::new(None),
         })
+    }
+
+    /// **POOL-*** — dedup keys of every currently-connected peer, for
+    /// [`plan_pass`](crate::service::peer_pool::plan_pass) (a pool peer keyed by its `peer_id`).
+    ///
+    /// Read from the [`Self::peers`] map so the pool never redials a peer it already holds. Returns an
+    /// empty vec if the peer map lock is poisoned (a degraded read is safer than a panic in the loop).
+    pub(crate) fn connected_pool_keys(&self) -> Vec<crate::service::peer_pool::CandidateKey> {
+        self.peers
+            .lock()
+            .map(|g| {
+                g.keys()
+                    .map(|pid| crate::service::peer_pool::CandidateKey::Id(*pid))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Returns `true` if the service is in the *running* lifecycle state.

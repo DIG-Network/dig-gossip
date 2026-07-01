@@ -159,6 +159,42 @@ pub const DEFAULT_TARGET_OUTBOUND_COUNT: usize = 8;
 /// the `seen_messages` set in [`crate::service::state::ServiceState`].
 pub const DEFAULT_MAX_SEEN_MESSAGES: usize = 100_000;
 
+// ---------------------------------------------------------------------------
+// Connected peer pool (POOL-* — the maintained set of ready CONNECTED peers)
+//
+// A DIG Node keeps a live pool of connected peers (not just KNOWN addresses in the
+// address manager) so peer-RPC + downloads always have ready peers to talk to. These
+// bound how many the maintenance loop keeps and how it backs off failing dials.
+// See [`crate::service::peer_pool`] + the L7 peer-network lifecycle (DISCOVER→CONNECT→MAINTAIN).
+// ---------------------------------------------------------------------------
+
+/// Default TARGET number of connected peers the pool maintains (the steady-state it
+/// replenishes toward when peers drop). Mirrors [`DEFAULT_TARGET_OUTBOUND_COUNT`].
+pub const DEFAULT_POOL_TARGET_PEERS: usize = 8;
+
+/// Default MINIMUM connected peers below which replenishment is urgent (a node with fewer
+/// than this is under-connected). Below `min`, the pool dials aggressively toward `target`.
+pub const DEFAULT_POOL_MIN_PEERS: usize = 4;
+
+/// Default MAXIMUM connected peers the pool will hold; new dials stop at this cap so the
+/// pool never exceeds it (inbound peers still bound by `GossipConfig::max_connections`).
+pub const DEFAULT_POOL_MAX_PEERS: usize = 16;
+
+/// Default seconds between pool maintenance passes (discover→replenish→health).
+pub const DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS: u64 = 15;
+
+/// Default base backoff (seconds) applied to a peer/address after a failed dial; doubles per
+/// consecutive failure up to [`DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS`] (capped exponential backoff).
+pub const DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS: u64 = 5;
+
+/// Default cap on the exponential dial backoff (seconds) — a repeatedly-failing peer is retried
+/// no more often than this.
+pub const DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS: u64 = 300;
+
+/// Default consecutive dial failures after which an address is dropped from the dial rotation
+/// for the current session (avoids hammering a permanently-dead peer).
+pub const DEFAULT_POOL_MAX_DIAL_FAILURES: u32 = 5;
+
 /// Cumulative penalty score at which a peer is banned (SPEC §1.8 #10, API-006).
 /// See [`crate::types::reputation::PeerReputation`].
 pub const PENALTY_BAN_THRESHOLD: u32 = 100;

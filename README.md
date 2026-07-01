@@ -540,6 +540,67 @@ MAX_PEERS_RECEIVED_PER_REQUEST = 1000  // cap per RespondPeers
 
 ---
 
+## Unified peer transport & discovery (`dig-nat`)
+
+Peer links and discovery run over the shared DIG Node peer-network protocol (the
+[L7 peer-network spec](https://docs.dig.net/docs/protocol/peer-network)) via the
+[`dig-nat`](https://github.com/DIG-Network/dig-nat) crate, so a node interoperates byte-for-byte
+with `dig-node` and `dig-relay` and reaches peers behind NAT. The `nat` module is the adapter; the
+gossip **algorithms** (Plumtree / ERLAY / Dandelion++ / compact blocks / priority) are unchanged —
+they ride on top of whatever byte transport delivers a peer's messages.
+
+- **Transport** — `GossipHandle::connect_via_nat(peer_id, addr, methods, timeout)` establishes a
+  connection over the NAT-traversal ladder (direct → UPnP → NAT-PMP → PCP → relay-coordinated
+  hole-punch → relayed-last) and returns a `NatPeerConnection`: an mTLS, `peer_id`-verified,
+  `yamux`-multiplexed link. Open a logical stream per gossip channel (`open_channel`), a byte-range
+  stream for multi-source download (`open_range_stream`), or the availability pre-check
+  (`query_availability`).
+- **Identity** — `chia_cert_to_nat_identity()` bridges the node's `ChiaCertificate` to a `dig-nat`
+  identity; `peer_id = SHA-256(TLS SPKI DER)` is identical in both crates (guarded by
+  `tests/nat_identity_conformance_tests.rs`). `GossipHandle::local_peer_id()` returns this node's id.
+- **Discovery** — multi-source per the spec: the relay introducer (`relay_get_peers`, RLY-005
+  `get_peers`) **and** node peer-exchange (`RequestPeers` / `dig.getPeers`). Both reduce to the
+  unified `PeerRecord` (`{ peer_id, addresses:[{host,port,kind}], network_id, last_seen, via }`);
+  `merge_records_into_address_manager()` folds dialable records into the same `AddressManager`.
+
+`dig-nat` (and the `dig-constants` it needs) are git dependencies until published to crates.io; they
+must be released **before** `dig-gossip` is (a git dependency cannot be `cargo publish`ed).
+
+---
+
+## Connected peer pool (POOL-\*)
+
+On top of the `AddressManager` (which tracks *known* addresses) the **connected peer pool** maintains a
+target number of *live, connected* peers — the ready set a node's peer-RPC and multi-source downloads
+talk to. It is how many nodes across machines auto-discover each other and stay connected: each node
+continuously **DISCOVER**s peers (relay introducer `get_peers` + node peer-exchange `dig.getPeers`),
+**CONNECT**s to them over `dig-nat` (mTLS, `peer_id = SHA-256(SPKI)`, NAT-traversal ladder with relay
+fallback), and **MAINTAIN**s the set — replenishing toward `target` when peers churn, capping at
+`max`, deduping by `peer_id`, and backing off (capped-exponential) on failed dials. The gossip
+algorithms are unchanged; the pool only owns the connection *policy*.
+
+Enable it with `GossipConfig::peer_pool = Some(PeerPoolConfig { min_peers, target_peers, max_peers, .. })`
+(`None` = a bare node: inbound + manual connect only, no autonomous replenishment). When set,
+`GossipService::start()` spawns a maintenance loop that runs every `maintenance_interval_secs`.
+
+`GossipHandle` exposes the pool for the `dig-node` integration:
+
+- `connected_pool_peers() -> Vec<(PeerId, SocketAddr, bool)>` — list the connected peers.
+- `is_pool_peer(&peer_id) -> bool` — is this peer connected + ready?
+- `pool_stats() -> PoolStats` — connected / in-flight / target / min / max / backed-off, with
+  `is_under_connected()` / `is_at_target()`.
+- `subscribe_pool_events() -> broadcast::Receiver<PoolEvent>` — churn stream (`PeerAdded` /
+  `PeerRemoved`) so a consumer re-plans when holders join/leave.
+- `adopt_nat_connection(conn) -> PeerId` — put a `dig-nat` connection into the pool (used by the loop
+  and by a manual dial); enforces dedup + the `max_connections` cap + ban-refusal + `PeerAdded` churn.
+- `run_pool_maintenance_once() -> usize` — drive one replenish pass on demand.
+
+The decision core (`plan_pass`, `free_slot_budget`, `DialBackoff`) is pure and unit-tested; the loop
+executes it through a `Dialer` (production dials via `dig-nat`; tests use loopback / in-memory peers),
+so the whole pool is tested without a real network (`tests/pool_tests.rs`).
+
+---
+
 ## Address Manager
 
 `AddressManager` (Rust port of Bitcoin/Chia `CAddrMan`) maintains:

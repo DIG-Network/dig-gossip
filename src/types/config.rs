@@ -246,6 +246,13 @@ pub struct GossipConfig {
     /// CON-004: maximum seconds since last successful probe before disconnecting the peer.
     /// `None` falls back to [`PEER_TIMEOUT_SECS`](crate::constants::PEER_TIMEOUT_SECS) (90 s).
     pub keepalive_peer_timeout_secs: Option<u64>,
+
+    /// Connected-peer-pool policy (POOL-*): the maintained set of ready, CONNECTED peers a node
+    /// keeps for peer-RPC + downloads. `None` disables the pool maintenance loop entirely — the
+    /// node still accepts inbound peers and honours manual `connect_to` / `connect_via_nat`, but
+    /// does not autonomously replenish toward a target. `Some(..)` turns on the DISCOVER → CONNECT
+    /// → MAINTAIN lifecycle over `dig-nat` + the introducer (see [`crate::service::peer_pool`]).
+    pub peer_pool: Option<PeerPoolConfig>,
 }
 
 impl Default for GossipConfig {
@@ -279,6 +286,86 @@ impl Default for GossipConfig {
             backpressure: None,
             keepalive_ping_interval_secs: None,
             keepalive_peer_timeout_secs: None,
+            peer_pool: None,
+        }
+    }
+}
+
+/// Connected-peer-pool policy (POOL-*) — how many ready, CONNECTED peers a node keeps and how it
+/// replenishes them.
+///
+/// The pool is the mechanism behind "many nodes across machines auto-discover and stay connected":
+/// on top of the [`AddressManager`](crate::discovery::address_manager::AddressManager) (which tracks
+/// KNOWN addresses) the pool maintains a target number of *live* connections, replenishing when peers
+/// churn and capping so it never exceeds `max_peers`. The [`crate::service::peer_pool`] maintenance
+/// loop consults this every [`Self::maintenance_interval_secs`].
+///
+/// # Invariants
+///
+/// `min_peers <= target_peers <= max_peers`. [`Self::normalized`] repairs an out-of-order triple so a
+/// misconfiguration can never make the loop dial forever or never dial (it clamps rather than panics).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeerPoolConfig {
+    /// Steady-state number of connected peers to maintain. The loop dials toward this whenever the
+    /// live count is below it. Default [`DEFAULT_POOL_TARGET_PEERS`](crate::constants::DEFAULT_POOL_TARGET_PEERS).
+    pub target_peers: usize,
+    /// Below this many connected peers the node is under-connected and replenishment is urgent.
+    /// Default [`DEFAULT_POOL_MIN_PEERS`](crate::constants::DEFAULT_POOL_MIN_PEERS).
+    pub min_peers: usize,
+    /// Hard cap on pool-initiated (outbound) connections; the loop never dials past this. Default
+    /// [`DEFAULT_POOL_MAX_PEERS`](crate::constants::DEFAULT_POOL_MAX_PEERS).
+    pub max_peers: usize,
+    /// Seconds between maintenance passes. Default
+    /// [`DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS`](crate::constants::DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS).
+    pub maintenance_interval_secs: u64,
+    /// Base seconds of backoff after a failed dial (doubles per consecutive failure, capped at
+    /// [`Self::max_dial_backoff_secs`]). Default
+    /// [`DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS`](crate::constants::DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS).
+    pub dial_backoff_base_secs: u64,
+    /// Cap on the exponential dial backoff (seconds). Default
+    /// [`DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS`](crate::constants::DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS).
+    pub max_dial_backoff_secs: u64,
+    /// Consecutive failures after which a candidate is dropped from the dial rotation for the
+    /// session. Default [`DEFAULT_POOL_MAX_DIAL_FAILURES`](crate::constants::DEFAULT_POOL_MAX_DIAL_FAILURES).
+    pub max_dial_failures: u32,
+}
+
+impl Default for PeerPoolConfig {
+    fn default() -> Self {
+        use crate::constants::{
+            DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS, DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS,
+            DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS, DEFAULT_POOL_MAX_DIAL_FAILURES,
+            DEFAULT_POOL_MAX_PEERS, DEFAULT_POOL_MIN_PEERS, DEFAULT_POOL_TARGET_PEERS,
+        };
+        Self {
+            target_peers: DEFAULT_POOL_TARGET_PEERS,
+            min_peers: DEFAULT_POOL_MIN_PEERS,
+            max_peers: DEFAULT_POOL_MAX_PEERS,
+            maintenance_interval_secs: DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS,
+            dial_backoff_base_secs: DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS,
+            max_dial_backoff_secs: DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS,
+            max_dial_failures: DEFAULT_POOL_MAX_DIAL_FAILURES,
+        }
+    }
+}
+
+impl PeerPoolConfig {
+    /// Return a copy with the `min <= target <= max` invariant enforced (clamping, never panicking).
+    ///
+    /// A caller can hand-build a config with, say, `min > max`; rather than let the maintenance loop
+    /// misbehave, we clamp: `target` is pulled into `[min, max]` and `min` is pulled down to `target`
+    /// when it exceeds it, so the ordering always holds. Also forces `max >= 1` so the pool can hold
+    /// at least one peer.
+    pub fn normalized(&self) -> PeerPoolConfig {
+        let max = self.max_peers.max(1);
+        let target = self.target_peers.clamp(1, max);
+        let min = self.min_peers.min(target);
+        PeerPoolConfig {
+            target_peers: target,
+            min_peers: min,
+            max_peers: max,
+            ..self.clone()
         }
     }
 }

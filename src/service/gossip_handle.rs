@@ -278,6 +278,11 @@ impl GossipHandle {
                             lazy.push(*pid);
                         }
                     }
+                    // POOL-*: a `dig-nat`-dialed pool member has a multiplexed transport but its
+                    // gossip message loop over that mux lands with the dig-node integration phase, so
+                    // `broadcast` (the WebSocket-`Peer` fan-out) does not push to it yet. It still
+                    // COUNTS as a connected peer everywhere else (peer_count / stats / pool).
+                    PeerSlot::Nat(_) => {}
                 }
             }
             (stub_n, eager, lazy)
@@ -382,7 +387,9 @@ impl GossipHandle {
             match peers.get(&peer_id) {
                 None => return Err(GossipError::PeerNotConnected(peer_id)),
                 Some(PeerSlot::Live(l)) => Some(l.peer.clone()),
-                Some(PeerSlot::Stub(_)) => None,
+                // Stub + POOL-* `dig-nat` members have no WebSocket `Peer`; the typed WS
+                // send/request path treats them like a stub (the dig-node phase adds the mux RPC).
+                Some(PeerSlot::Stub(_)) | Some(PeerSlot::Nat(_)) => None,
             }
         };
         if let Some(p) = maybe_live {
@@ -424,7 +431,9 @@ impl GossipHandle {
             match peers.get(&peer_id) {
                 None => return Err(GossipError::PeerNotConnected(peer_id)),
                 Some(PeerSlot::Live(l)) => Some(l.peer.clone()),
-                Some(PeerSlot::Stub(_)) => None,
+                // Stub + POOL-* `dig-nat` members have no WebSocket `Peer`; the typed WS
+                // send/request path treats them like a stub (the dig-node phase adds the mux RPC).
+                Some(PeerSlot::Stub(_)) | Some(PeerSlot::Nat(_)) => None,
             }
         };
         if let Some(p) = maybe_live {
@@ -678,6 +687,394 @@ impl GossipHandle {
         Ok(peer_id)
     }
 
+    // ------------------------------------------------------------------
+    // Unified dig-nat transport (L7 peer-network) — reach peers over the
+    // NAT-traversal ladder (direct → UPnP → NAT-PMP → PCP → hole-punch →
+    // relay-last) instead of only a bespoke direct WSS dial. The gossip
+    // ALGORITHMS ride unchanged on the resulting multiplexed transport.
+    // ------------------------------------------------------------------
+
+    /// This node's own `peer_id` = SHA-256(its TLS SPKI DER) — the identity peers verify it by.
+    ///
+    /// Derived from the service's loaded [`ChiaCertificate`], so it is stable for the life of the
+    /// node's certificate and equal to what a remote computes from the cert this node presents.
+    /// Gated on the running lifecycle like every handle method.
+    pub fn local_peer_id(&self) -> Result<PeerId, GossipError> {
+        self.require_running()?;
+        let spki = crate::connection::outbound::spki_der_from_leaf_cert_der(&first_cert_der(
+            &self.inner.tls.cert_pem,
+        )?)
+        .map_err(GossipError::from)?;
+        Ok(peer_id_from_tls_spki_der(&spki))
+    }
+
+    /// Bridge this node's TLS material to a [`dig-nat`](dig_nat) identity for the unified transport.
+    ///
+    /// The returned [`NatLocalIdentity`](crate::nat::NatLocalIdentity) carries the DER cert + key and
+    /// the derived `peer_id` (== [`Self::local_peer_id`]); it is what
+    /// [`Self::connect_via_nat`] presents as the mTLS client certificate. Gated on the running
+    /// lifecycle.
+    pub fn nat_identity(&self) -> Result<crate::nat::NatLocalIdentity, GossipError> {
+        self.require_running()?;
+        crate::nat::chia_cert_to_nat_identity(&self.inner.tls).ok_or_else(|| {
+            GossipError::InvalidConfig(
+                "node TLS certificate could not be bridged to a dig-nat identity".to_string(),
+            )
+        })
+    }
+
+    /// Establish a peer connection over the unified `dig-nat` NAT-traversal ladder.
+    ///
+    /// Unlike [`Self::connect_to`] (a single direct WSS dial), this reaches peers that are only
+    /// reachable via UPnP/NAT-PMP/PCP mappings, a relay-coordinated hole punch, or — last resort —
+    /// relayed transport, exactly as the L7 peer-network spec prescribes. mTLS + `peer_id`
+    /// verification are performed by `dig-nat` against `peer_id`, so the returned
+    /// [`NatPeerConnection`](crate::nat::NatPeerConnection)'s remote identity is already confirmed.
+    ///
+    /// `methods` restricts which traversal tiers are enabled (still tried in canonical rank order —
+    /// direct-first, relay-last); pass all of them for production, or e.g. just
+    /// [`TraversalKind::Direct`](dig_nat::TraversalKind) in a test. `per_method_timeout` bounds each
+    /// tier so the call never hangs (a `dig-nat` guarantee).
+    ///
+    /// This returns the multiplexed connection for the caller (the next integration phase, `dig-node`)
+    /// to open gossip channels / range streams on; it does not itself insert the peer into the gossip
+    /// peer map (that wiring — mapping mux streams to the message loop — lands with the node
+    /// integration, keeping this change additive and the existing `connect_to` path intact).
+    pub async fn connect_via_nat(
+        &self,
+        peer_id: PeerId,
+        direct_addr: Option<std::net::SocketAddr>,
+        methods: &[dig_nat::TraversalKind],
+        per_method_timeout: Duration,
+    ) -> Result<crate::nat::NatPeerConnection, GossipError> {
+        self.require_running()?;
+        let identity = self.nat_identity()?;
+        let network_id =
+            crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
+        let target = crate::nat::peer_target_for(peer_id, direct_addr, network_id);
+        let config = dig_nat::NatConfig::builder()
+            .enabled_methods(methods.to_vec())
+            .per_method_timeout(per_method_timeout)
+            .build();
+        crate::nat::nat_connect(&target, &identity, &config)
+            .await
+            .map_err(|e| GossipError::NatError(e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
+    // Connected peer POOL (POOL-*) — the maintained set of ready, CONNECTED
+    // peers dig-node's peer-RPC + downloads consume. See `crate::service::peer_pool`.
+    // ------------------------------------------------------------------
+
+    /// Adopt a `dig-nat`-dialed [`NatPeerConnection`](crate::nat::NatPeerConnection) into the connected
+    /// peer pool, so it counts as a connected peer (`peer_count` / `stats` / dedup / churn) and its
+    /// multiplexed transport is retained for dig-node to open gossip channels + range streams on.
+    ///
+    /// Returns `Ok(peer_id)` on adoption. Refuses (and drops the connection) if the peer is banned, is
+    /// already in the pool ([`GossipError::DuplicateConnection`]), or the pool is full
+    /// ([`GossipError::MaxConnectionsReached`] against [`GossipConfig::max_connections`]). Emits a
+    /// [`PoolEvent::PeerAdded`](crate::service::peer_pool::PoolEvent) on success.
+    ///
+    /// This is the single place a `dig-nat` connection becomes a pool member; the pool maintenance loop
+    /// and a manual dial both go through it, so the dedup + cap + churn rules hold uniformly.
+    pub async fn adopt_nat_connection(
+        &self,
+        conn: crate::nat::NatPeerConnection,
+    ) -> Result<PeerId, GossipError> {
+        self.require_running()?;
+        let peer_id = conn.peer_id();
+        let remote = conn.remote_addr();
+
+        if self
+            .inner
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await
+        {
+            return Err(GossipError::PeerBanned(peer_id));
+        }
+
+        {
+            let mut peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            if peers.contains_key(&peer_id) {
+                return Err(GossipError::DuplicateConnection(peer_id));
+            }
+            if peers.len() >= self.inner.config.max_connections {
+                return Err(GossipError::MaxConnectionsReached(
+                    self.inner.config.max_connections,
+                ));
+            }
+            peers.insert(
+                peer_id,
+                PeerSlot::Nat(super::state::NatSlot {
+                    conn,
+                    remote,
+                    is_outbound: true,
+                }),
+            );
+        }
+
+        // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
+        if let Ok(mut pt) = self.inner.plumtree.lock() {
+            pt.add_peer(peer_id);
+        }
+        self.inner
+            .total_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner
+            .pool
+            .publish(crate::service::peer_pool::PoolEvent::PeerAdded {
+                peer_id,
+                addr: remote,
+            });
+        Ok(peer_id)
+    }
+
+    /// Snapshot the connected pool: `(peer_id, remote_addr, is_outbound)` for every connected peer
+    /// (live TLS, adopted `dig-nat`, or stub). This is the "list connected peers" surface dig-node uses
+    /// to choose a peer for an RPC or to plan a multi-source download.
+    pub fn connected_pool_peers(&self) -> Vec<(PeerId, std::net::SocketAddr, bool)> {
+        let Ok(peers) = self.inner.peers.lock() else {
+            return Vec::new();
+        };
+        peers
+            .iter()
+            .map(|(pid, slot)| (*pid, slot.remote(), slot.is_outbound()))
+            .collect()
+    }
+
+    /// Whether `peer_id` is currently a connected pool member (ready to communicate with).
+    pub fn is_pool_peer(&self, peer_id: &PeerId) -> bool {
+        self.inner
+            .peers
+            .lock()
+            .map(|g| g.contains_key(peer_id))
+            .unwrap_or(false)
+    }
+
+    /// Health snapshot of the pool — connected / in-flight / target / min / max / backed-off — for
+    /// dig-node dashboards + "am I under-connected?" checks
+    /// ([`PoolStats::is_under_connected`](crate::service::peer_pool::PoolStats::is_under_connected)).
+    pub fn pool_stats(&self) -> crate::service::peer_pool::PoolStats {
+        let connected = self.inner.peers.lock().map(|g| g.len()).unwrap_or(0);
+        let in_flight = self.inner.pool.in_flight_count();
+        let cfg = self
+            .inner
+            .config
+            .peer_pool
+            .clone()
+            .unwrap_or_default()
+            .normalized();
+        let backed_off = self
+            .inner
+            .pool
+            .backoff_snapshot()
+            .values()
+            .filter(|b| {
+                b.is_dead(cfg.max_dial_failures) || !b.is_ready(metric_unix_timestamp_secs())
+            })
+            .count();
+        crate::service::peer_pool::PoolStats {
+            connected,
+            in_flight,
+            target: cfg.target_peers,
+            min: cfg.min_peers,
+            max: cfg.max_peers,
+            backed_off,
+        }
+    }
+
+    /// Subscribe to pool churn ([`PoolEvent`](crate::service::peer_pool::PoolEvent)) — peers added /
+    /// removed. Returns a fresh [`broadcast::Receiver`]; each subscriber sees every event published
+    /// after it subscribes. dig-node uses this to react to holders joining/leaving mid-download.
+    ///
+    /// # Errors
+    /// [`GossipError::ServiceNotStarted`] if the pool event channel is not wired (service not started).
+    pub fn subscribe_pool_events(
+        &self,
+    ) -> Result<broadcast::Receiver<crate::service::peer_pool::PoolEvent>, GossipError> {
+        self.require_running()?;
+        let g = self
+            .inner
+            .pool
+            .events_tx
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?;
+        let tx = g.as_ref().ok_or(GossipError::ServiceNotStarted)?;
+        Ok(tx.subscribe())
+    }
+
+    /// Gather dialable pool candidates from the [`AddressManager`](crate::discovery::address_manager::AddressManager)
+    /// (the known-address set), most-preferred first, up to `want` distinct addresses.
+    ///
+    /// This is the CONNECT phase's candidate source: it pulls addresses the discovery phase (relay
+    /// introducer + node peer-exchange) folded into the address manager and turns them into
+    /// [`PoolCandidate`](crate::service::peer_pool::PoolCandidate)s the pool planner ranks + dials.
+    /// Self-dials and already-connected remotes are skipped here as a fast pre-filter (the planner
+    /// dedups by identity too). `select_peer` biases toward tried-then-new, so preferred peers surface
+    /// first.
+    fn gather_pool_candidates(&self, want: usize) -> Vec<crate::service::peer_pool::PoolCandidate> {
+        use crate::service::peer_pool::PoolCandidate;
+        let mut out = Vec::with_capacity(want);
+        let mut seen: std::collections::HashSet<std::net::SocketAddr> =
+            std::collections::HashSet::new();
+        let connected_remotes: std::collections::HashSet<std::net::SocketAddr> = self
+            .inner
+            .peers
+            .lock()
+            .map(|g| g.values().map(|s| s.remote()).collect())
+            .unwrap_or_default();
+
+        // Draw a bounded number of candidates; `select_peer` is randomized, so cap the attempts to
+        // avoid spinning when the address book is small.
+        let max_attempts = want.saturating_mul(8).max(16);
+        for i in 0..max_attempts {
+            if out.len() >= want {
+                break;
+            }
+            // Alternate tried/new so a fresh node (only new addresses) still yields candidates.
+            let ext = match self.inner.address_manager.select_peer(i % 2 == 1) {
+                Some(e) => e,
+                None => break,
+            };
+            let host = ext.peer_info.host.clone();
+            let port = ext.peer_info.port;
+            let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
+                continue;
+            };
+            if seen.contains(&addr) || connected_remotes.contains(&addr) {
+                continue;
+            }
+            if self.inner.dial_targets_local_listen(addr) {
+                continue;
+            }
+            seen.insert(addr);
+            out.push(PoolCandidate::from_addr(addr));
+        }
+        out
+    }
+
+    /// Run ONE pool maintenance pass now (DISCOVER-fold is done by the loop / caller; this does the
+    /// REPLENISH + record-outcome step): plan dials toward target from the address book and execute
+    /// them via `dig-nat`, adopting each successful connection into the pool. Returns peers added.
+    ///
+    /// Exposed so dig-node (and tests) can drive a pass on demand; the periodic loop calls it every
+    /// [`PeerPoolConfig::maintenance_interval_secs`](crate::types::config::PeerPoolConfig). A no-op
+    /// (returns 0) when the pool is not configured. Bounded — each dial is bounded by `dig-nat`'s
+    /// per-method timeout.
+    pub async fn run_pool_maintenance_once(&self) -> usize {
+        let Some(cfg) = self.inner.config.peer_pool.clone() else {
+            return 0;
+        };
+        let cfg = cfg.normalized();
+        // Health first: evict slots keepalive already removed is implicit (they're gone from the map);
+        // prune expired bans so a cooled-off peer becomes dialable again.
+        self.inner
+            .prune_expired_dig_bans(metric_unix_timestamp_secs())
+            .await;
+
+        let connected = self.peer_count().await;
+        let connected_keys = self.inner.connected_pool_keys();
+        let now = metric_unix_timestamp_secs();
+        let budget = crate::service::peer_pool::free_slot_budget(
+            connected,
+            self.inner.pool.in_flight_count(),
+            &cfg,
+        );
+        // Gather a few more candidates than the budget so backed-off/duplicate ones can be skipped.
+        let candidates = self.gather_pool_candidates(budget.saturating_mul(2).max(budget));
+
+        let dialer = HandleDialer {
+            handle: self.clone(),
+        };
+        crate::service::peer_pool::run_maintenance_pass(
+            &self.inner.pool,
+            &cfg,
+            connected,
+            &connected_keys,
+            &candidates,
+            now,
+            &dialer,
+        )
+        .await
+    }
+
+    /// **POOL-*** — spawn the periodic pool maintenance loop (DISCOVER → REPLENISH → HEALTH every
+    /// `maintenance_interval_secs`), returning its [`tokio::task::JoinHandle`]. Called by
+    /// [`GossipService::start`](super::gossip_service::GossipService::start) when the pool is
+    /// configured. The loop exits when the lifecycle leaves `RUNNING` (i.e. `stop()`), so the task is
+    /// self-terminating in addition to being aborted at teardown.
+    pub(crate) fn spawn_pool_maintenance(&self) -> tokio::task::JoinHandle<()> {
+        let handle = self.clone();
+        let interval_secs = handle
+            .inner
+            .config
+            .peer_pool
+            .as_ref()
+            .map(|c| c.maintenance_interval_secs.max(1))
+            .unwrap_or(crate::constants::DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                if !handle.inner.is_running() {
+                    break;
+                }
+                // DISCOVER: fold the relay introducer's peer list into the address book (soft — a
+                // relay outage never blocks the pass). Node peer-exchange (§4b) already folds via the
+                // connect path; this adds the §4a introducer source continuously.
+                #[cfg(feature = "relay")]
+                handle.pool_discover_from_relay().await;
+                // REPLENISH + HEALTH.
+                let _added = handle.run_pool_maintenance_once().await;
+            }
+        })
+    }
+
+    /// DISCOVER (§4a): query the relay introducer for peers and fold the dialable ones into the
+    /// address book. Soft-fails (logs, no error) so a relay outage never stalls the pool.
+    #[cfg(feature = "relay")]
+    async fn pool_discover_from_relay(&self) {
+        let Some(relay) = self.inner.config.relay.as_ref() else {
+            return;
+        };
+        if !relay.enabled || relay.endpoint.trim().is_empty() {
+            return;
+        }
+        let self_hex = match self.local_peer_id() {
+            Ok(id) => id.to_string(),
+            Err(_) => return,
+        };
+        let network_id =
+            crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
+        let cfg = crate::nat::UnifiedDiscoveryConfig {
+            relay_endpoint: relay.endpoint.clone(),
+            self_peer_id_hex: self_hex,
+            network_id,
+            timeout: Duration::from_secs(relay.connection_timeout_secs.max(1)),
+        };
+        let records = crate::nat::unified_discover(&cfg).await;
+        if !records.is_empty() {
+            let bound = self
+                .inner
+                .listen_bound_addr
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .unwrap_or(self.inner.config.listen_addr);
+            crate::nat::merge_records_into_address_manager(
+                &self.inner.address_manager,
+                &records,
+                &bound.ip().to_string(),
+                bound.port(),
+            );
+        }
+    }
+
     async fn connect_stub_inner(
         &self,
         addr: std::net::SocketAddr,
@@ -764,8 +1161,19 @@ impl GossipHandle {
             .map_err(|_| GossipError::ChannelClosed)?
             .remove(peer_id);
         let remote_ip = removed.as_ref().map(|s| s.remote().ip());
+        let was_present = removed.is_some();
         if let Some(PeerSlot::Live(l)) = removed {
             let _ = l.peer.close().await;
+        }
+        // POOL-*: publish churn so dig-node's pool consumers (and the maintenance loop) learn the peer
+        // left and the pool can replenish toward target.
+        if was_present {
+            self.inner
+                .pool
+                .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {
+                    peer_id: *peer_id,
+                    reason: crate::service::peer_pool::PoolRemovalReason::Disconnected,
+                });
         }
         // INT-001: Remove peer from Plumtree state (PLT-006 tree self-healing).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
@@ -843,7 +1251,9 @@ impl GossipHandle {
                     }
                     crossed
                 }
-                Some(PeerSlot::Stub(_)) => {
+                // Stub + POOL-* `dig-nat` members carry no per-slot reputation struct, so penalties
+                // accumulate on the service-wide `penalties` map exactly like an unknown peer id.
+                Some(PeerSlot::Stub(_)) | Some(PeerSlot::Nat(_)) => {
                     drop(peers);
                     let mut p = self
                         .inner
@@ -1099,7 +1509,7 @@ impl GossipHandle {
                 l.remote_protocol_version.clone(),
                 l.remote_software_version_sanitized.clone(),
             )),
-            PeerSlot::Stub(_) => None,
+            PeerSlot::Stub(_) | PeerSlot::Nat(_) => None,
         }
     }
 
@@ -1109,7 +1519,7 @@ impl GossipHandle {
         let peers = self.inner.peers.lock().ok()?;
         match peers.get(&peer_id)? {
             PeerSlot::Live(l) => l.reputation.lock().ok().map(|g| g.clone()),
-            PeerSlot::Stub(_) => None,
+            PeerSlot::Stub(_) | PeerSlot::Nat(_) => None,
         }
     }
 
@@ -1155,6 +1565,50 @@ impl GossipHandle {
     }
 }
 
+/// Production [`Dialer`](crate::service::peer_pool::Dialer): dial a candidate over `dig-nat`'s
+/// NAT-traversal ladder and adopt the verified connection into the pool.
+///
+/// The pool maintenance loop drives this; on success the peer is already a pool member (adopted via
+/// [`GossipHandle::adopt_nat_connection`]) and its `peer_id` is returned so the loop records the
+/// success + churn. A dead/unreachable candidate returns an `Err` string (used only for backoff/logs)
+/// — never panics or hangs (bounded by `dig-nat`'s per-method timeout).
+struct HandleDialer {
+    handle: GossipHandle,
+}
+
+impl crate::service::peer_pool::Dialer for HandleDialer {
+    async fn dial(
+        &self,
+        candidate: &crate::service::peer_pool::PoolCandidate,
+    ) -> Result<PeerId, String> {
+        // A candidate must carry an address for the pool's direct/mapping dial; a relay-only candidate
+        // (peer_id, no address) is reached over the relay tier — reserved for the dig-node phase that
+        // holds the relay coordinator context, so the pool loop skips it here.
+        let addr = candidate
+            .addr
+            .ok_or_else(|| "relay-only candidate; no direct address to dial".to_string())?;
+        // Address-only candidate: we do not yet know its peer_id, so use a placeholder target. The
+        // mTLS handshake still authenticates whoever answers; a future refinement can pin the id
+        // learned from discovery. When the id IS known (relay introducer path) we pin it.
+        let target_peer_id = candidate.peer_id.unwrap_or_else(|| PeerId::from([0u8; 32]));
+        let per_method = Duration::from_secs(5);
+        let conn = self
+            .handle
+            .connect_via_nat(
+                target_peer_id,
+                Some(addr),
+                &[dig_nat::TraversalKind::Direct],
+                per_method,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        self.handle
+            .adopt_nat_connection(conn)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Message, GossipError> {
     Ok(Message {
         msg_type: T::msg_type(),
@@ -1168,4 +1622,19 @@ fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Messa
 
 fn empty_respond_peers() -> Result<RespondPeers, GossipError> {
     Ok(RespondPeers::new(vec![]))
+}
+
+/// Extract the DER of the first `CERTIFICATE` PEM block from a [`ChiaCertificate::cert_pem`] string.
+///
+/// Used by [`GossipHandle::local_peer_id`] to lift the node's own SPKI (via
+/// [`spki_der_from_leaf_cert_der`](crate::connection::outbound::spki_der_from_leaf_cert_der)) so its
+/// `peer_id` is derived the SAME way a remote derives it from the presented cert.
+fn first_cert_der(cert_pem: &str) -> Result<Vec<u8>, GossipError> {
+    x509_parser::pem::Pem::iter_from_buffer(cert_pem.as_bytes())
+        .flatten()
+        .find(|p| p.label == "CERTIFICATE")
+        .map(|p| p.contents)
+        .ok_or_else(|| {
+            GossipError::InvalidConfig("node certificate PEM has no CERTIFICATE block".to_string())
+        })
 }

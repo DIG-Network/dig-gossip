@@ -248,9 +248,31 @@ impl GossipService {
                     .lock()
                     .expect("listener_task mutex poisoned") = Some(jh);
 
-                Ok(GossipHandle {
+                // POOL-*: wire the churn event channel + spawn the maintenance loop when the pool is
+                // configured. The channel is created regardless (so the handle's pool API works for a
+                // node that only adopts inbound peers); the LOOP only runs when `peer_pool` is `Some`.
+                let (pool_tx, _pool_rx) = broadcast::channel(256);
+                *self
+                    .inner
+                    .pool
+                    .events_tx
+                    .lock()
+                    .expect("pool events_tx mutex poisoned") = Some(pool_tx);
+
+                let handle = GossipHandle {
                     inner: self.inner.clone(),
-                })
+                };
+
+                if self.inner.config.peer_pool.is_some() {
+                    let pool_jh = handle.spawn_pool_maintenance();
+                    *self
+                        .inner
+                        .pool_task
+                        .lock()
+                        .expect("pool_task mutex poisoned") = Some(pool_jh);
+                }
+
+                Ok(handle)
             }
             // Already running -- API-001 acceptance criterion: "Calling `start()` twice
             // returns `GossipError`."
@@ -321,6 +343,17 @@ impl GossipService {
         if let Some(jh) = listener_join {
             jh.abort();
             let _ = jh.await;
+        }
+
+        // Step 2c (POOL-*): stop the maintenance loop and drop the churn channel. The loop also
+        // self-exits once lifecycle left RUNNING (checked above), but we abort+join for a clean stop.
+        let pool_join = self.inner.pool_task.lock().ok().and_then(|mut g| g.take());
+        if let Some(jh) = pool_join {
+            jh.abort();
+            let _ = jh.await;
+        }
+        if let Ok(mut g) = self.inner.pool.events_tx.lock() {
+            *g = None;
         }
 
         // Step 3: Clear the bound address so the OS can reclaim the port.

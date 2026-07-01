@@ -410,7 +410,8 @@ async fn relay_new_peer_to_live_peers(
         g.values()
             .filter_map(|slot| match slot {
                 PeerSlot::Live(l) => Some(l.peer.clone()),
-                PeerSlot::Stub(_) => None,
+                // Stub + POOL-* `dig-nat` members have no WebSocket `Peer` to gossip the new row to.
+                PeerSlot::Stub(_) | PeerSlot::Nat(_) => None,
             })
             .collect()
     };
