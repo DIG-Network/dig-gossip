@@ -1253,6 +1253,16 @@ Both bounds live in `relay_get_peers` itself (`src/nat/discovery.rs`) — the ea
 untrusted relay's response is decoded — so every caller (`unified_discover`,
 `GossipHandle::pool_discover_from_relay`) inherits the bound automatically.
 
+**Cumulative bound across repeated passes.** The pool-maintenance loop calls the relay-discovery
+path every maintenance interval, so per-response caps alone bound one call but not the running
+total. `GossipHandle::pool_discover_from_relay` MUST merge via
+`merge_records_into_address_manager_capped`, which additionally routes the batch through
+`cap_received_peers` against the SAME shared `total_peers_received` counter node peer-exchange and
+introducer discovery use (§6.6/§7.0.1 cap parity) — so the relay source cannot cumulatively exceed
+the combined global budget any more than repeated `RequestPeers` rounds could. The plain
+`merge_records_into_address_manager` (uncapped) remains available for callers that already apply
+their own bound or operate on a trusted/local source.
+
 ### 7.1 NAT Traversal Upgrade
 
 Relay connections in `l2_driver_state_channel` are static. `dig-gossip` adds a NAT traversal upgrade path that can promote relay connections to direct P2P:
