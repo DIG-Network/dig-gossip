@@ -42,6 +42,7 @@ async fn test_discovery_loop_cancel() {
         cfg_arc,
         token,
         Some(tx),
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     ));
 
     // Cancel immediately

@@ -517,12 +517,18 @@ pub enum DiscoveryAction {
 /// - `config` — gossip configuration with DNS and introducer settings.
 /// - `cancel` — cancellation token. When triggered, the loop exits cleanly.
 /// - `action_log` — optional channel to report each action (for testing/metrics). Pass `None` in production.
+/// - `total_peers_received` — **audit #179 (MEDIUM)** shared counter (the SAME atomic passed to
+///   [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle::connect_to)'s
+///   peer-exchange path, typically `&ServiceState::total_peers_received`) so the introducer
+///   discovery source is bound by the identical [`MAX_PEERS_RECEIVED_PER_REQUEST`] /
+///   [`MAX_TOTAL_PEERS_RECEIVED`] caps as node peer-exchange, rather than bypassing them.
 ///
 /// # SPEC references
 ///
 /// - SPEC §6.4 — Discovery loop algorithm
 /// - SPEC §6.2 — DNS seeding (delegated to [`dns_seed_resolve_and_merge`])
 /// - SPEC §6.5 — Introducer client (delegated to [`crate::discovery::introducer_client::IntroducerClient`])
+/// - SPEC §6.6 / §1.6#10-11 — shared peer-received caps (audit #179 MEDIUM finding 3)
 /// - Chia `node_discovery.py:256-293` — DNS-first, introducer exponential backoff
 ///
 /// # Cancellation safety
@@ -535,6 +541,7 @@ pub async fn run_discovery_loop(
     config: Arc<GossipConfig>,
     cancel: CancellationToken,
     action_log: Option<tokio::sync::mpsc::UnboundedSender<DiscoveryAction>>,
+    total_peers_received: Arc<AtomicU64>,
 ) {
     // Synthetic "self" PeerInfo for address manager source parameter.
     // DNS-seeded entries use localhost as the source (consistent with Chia convention).
@@ -591,7 +598,8 @@ pub async fn run_discovery_loop(
                 // SPEC §6.4: "If DNS returns no results, query the introducer."
                 // Chia: node_discovery.py:275-292
 
-                let introducer_result = try_introducer_query(&config, &address_manager).await;
+                let introducer_result =
+                    try_introducer_query(&config, &address_manager, &total_peers_received).await;
 
                 match introducer_result {
                     Ok(count) if count > 0 => {
@@ -677,10 +685,19 @@ fn report(
 /// or an error on failure (timeout, TLS, transport).
 ///
 /// **SPEC §6.5** — delegates to [`IntroducerClient::query_peers`] (DSC-004).
+///
+/// **Audit #179 (MEDIUM finding 3):** the response is routed through [`cap_received_peers`]
+/// against `total_peers_received` — the SAME shared counter node peer-exchange
+/// (`GossipHandle::connect_to`) uses — before being folded into the address manager. An
+/// introducer is a single, network-configurable endpoint and thus a weaker-trust source than a
+/// connected peer; without this cap a malicious/compromised introducer could return an
+/// arbitrarily large peer list and bypass the per-request (1000) / global (3000) eclipse-defense
+/// caps that bound every other discovery source.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn try_introducer_query(
     config: &GossipConfig,
     address_manager: &AddressManager,
+    total_peers_received: &AtomicU64,
 ) -> Result<usize, crate::error::GossipError> {
     use crate::discovery::introducer_client::IntroducerClient;
 
@@ -712,13 +729,16 @@ async fn try_introducer_query(
     )
     .await?;
 
-    let count = peers.len();
-    if !peers.is_empty() {
+    // Audit #179 (MEDIUM): apply the same per-request + global cap node peer-exchange uses,
+    // instead of folding the raw (attacker-influenceable) introducer response in unbounded.
+    let capped = cap_received_peers(&peers, total_peers_received);
+    let count = capped.len();
+    if !capped.is_empty() {
         let source = PeerInfo {
             host: "introducer".to_string(),
             port: 0,
         };
-        address_manager.add_to_new_table(&peers, &source, 0);
+        address_manager.add_to_new_table(capped, &source, 0);
     }
 
     Ok(count)
@@ -729,6 +749,7 @@ async fn try_introducer_query(
 async fn try_introducer_query(
     _config: &GossipConfig,
     _address_manager: &AddressManager,
+    _total_peers_received: &AtomicU64,
 ) -> Result<usize, crate::error::GossipError> {
     tracing::debug!("DSC-006: TLS not available, skipping introducer query");
     Ok(0)

@@ -73,7 +73,14 @@ async fn test_cancellation_stops_loop() {
 
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        run_discovery_loop(am, config, cancel_clone, Some(tx)).await;
+        run_discovery_loop(
+            am,
+            config,
+            cancel_clone,
+            Some(tx),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .await;
     });
 
     // Cancel almost immediately — the loop should exit after its first check.
@@ -141,7 +148,14 @@ async fn test_cycle_sleep_when_peers_available() {
     let cancel_clone = cancel.clone();
     let am_clone = am.clone();
     let handle = tokio::spawn(async move {
-        run_discovery_loop(am_clone, config, cancel_clone, Some(tx)).await;
+        run_discovery_loop(
+            am_clone,
+            config,
+            cancel_clone,
+            Some(tx),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .await;
     });
 
     // Wait for at least one CycleSleep action.
@@ -182,7 +196,14 @@ async fn test_backoff_exponential() {
 
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        run_discovery_loop(am, config, cancel_clone, Some(tx)).await;
+        run_discovery_loop(
+            am,
+            config,
+            cancel_clone,
+            Some(tx),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .await;
     });
 
     // Collect backoff actions. The sequence should be 1, 2, 4, 8...
@@ -254,7 +275,14 @@ async fn test_backoff_max_300s() {
 
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        run_discovery_loop(am, config, cancel_clone, Some(tx)).await;
+        run_discovery_loop(
+            am,
+            config,
+            cancel_clone,
+            Some(tx),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .await;
     });
 
     let mut backoff_values = Vec::new();
@@ -319,7 +347,14 @@ async fn test_no_panic_on_failures() {
 
     let cancel_clone = cancel.clone();
     let handle = tokio::spawn(async move {
-        run_discovery_loop(am, config, cancel_clone, None).await;
+        run_discovery_loop(
+            am,
+            config,
+            cancel_clone,
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .await;
     });
 
     // Let it run a few iterations — should not panic.

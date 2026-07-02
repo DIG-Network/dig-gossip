@@ -1205,6 +1205,14 @@ From `l2_driver_state_channel/src/services/network/introducer_client.rs`. Adds r
 **Query flow:** Connect → Handshake → `get_peers` → receive `peers` → close.
 **Register flow:** Connect → Handshake → `register_peer { ip, port, node_type }` → receive `register_ack` → close.
 
+**Cap parity with peer-exchange (audit #179 MEDIUM finding 3 — normative):** an introducer is a
+single, network-configurable endpoint, strictly weaker-trust than a connected peer. The discovery
+loop (`run_discovery_loop`) MUST route every introducer response through the SAME
+`cap_received_peers` gate (§6.6, §1.6#10/#11) — the SAME shared `total_peers_received` counter
+node peer-exchange (`GossipHandle::connect_to`) uses — before folding it into the address
+manager. A malicious/compromised introducer MUST NOT be able to add more peers, in total, than a
+connected peer could via `RequestPeers`/`RespondPeers`.
+
 ### 6.6 Peer Exchange via Gossip
 
 Uses `chia-protocol::RequestPeers` / `chia-protocol::RespondPeers` directly:

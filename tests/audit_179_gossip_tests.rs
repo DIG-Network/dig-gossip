@@ -180,3 +180,132 @@ mod high_2_inbound_handshake_semaphore {
         drop(client_h);
     }
 }
+
+// =========================================================================
+// MEDIUM #3 — introducer discovery merge bypasses cap_received_peers
+// (src/discovery/node_discovery.rs:721)
+// =========================================================================
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
+mod medium_3_introducer_cap {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use dig_gossip::{
+        load_ssl_cert, run_discovery_loop, AddressManager, DiscoveryAction, GossipConfig,
+        IntroducerConfig, TimestampedPeerInfo, MAX_PEERS_RECEIVED_PER_REQUEST,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    /// **Regression for audit #179 MEDIUM finding 3.**
+    ///
+    /// Before the fix, `try_introducer_query` folded the ENTIRE raw introducer response into the
+    /// address manager via `add_to_new_table` with no cap — bypassing the `cap_received_peers`
+    /// gate node peer-exchange applies. This test runs the real `run_discovery_loop` against a
+    /// mock introducer (the same TLS/wire harness `dsc_004_tests.rs` uses) that returns an
+    /// OVERSIZED peer list (2000, well above `MAX_PEERS_RECEIVED_PER_REQUEST` = 1000), with the
+    /// SHARED `total_peers_received` counter pre-seeded to simulate a prior peer-exchange round
+    /// having already consumed most of the global budget.
+    ///
+    /// It asserts:
+    /// 1. The number of peers actually merged (`IntroducerQueried { count }`) is capped, not 2000.
+    /// 2. The shared counter after the run does not exceed the global cap.
+    #[tokio::test]
+    async fn introducer_discovery_merge_is_capped_via_shared_counter() {
+        let client_dir = super::common::test_temp_dir();
+        let (cc, ck) = super::common::generate_test_certs(client_dir.path());
+        let server_dir = super::common::test_temp_dir();
+        let (sc, sk) = super::common::generate_test_certs(server_dir.path());
+        let server_cert = load_ssl_cert(&sc, &sk).expect("server cert");
+        let net = super::common::test_network_id().to_string();
+
+        // A malicious/misconfigured introducer returns far more than the per-request cap.
+        let oversized_list: Vec<TimestampedPeerInfo> = (0..2000)
+            .map(|i| {
+                let a = (i / 256) % 256;
+                let b = i % 256;
+                TimestampedPeerInfo::new(format!("203.0.{a}.{b}"), 9444, 1_700_000_000)
+            })
+            .collect();
+
+        let (addr, _server_jh) = super::common::wss_full_node::spawn_one_shot_introducer(
+            server_cert,
+            net.clone(),
+            net.clone(),
+            oversized_list,
+            false,
+        )
+        .await;
+
+        let cfg = GossipConfig {
+            cert_path: cc,
+            key_path: ck,
+            network_id: super::common::test_network_id(),
+            // Empty DNS introducer list (unlike `GossipConfig::default()`'s real mainnet DNS
+            // introducers) so DNS seeding always returns nothing and the loop reliably falls
+            // through to the introducer path this test exercises.
+            network: super::common::test_network(),
+            dns_seed_timeout: Duration::from_millis(50),
+            dns_seed_batch_size: 1,
+            introducer: Some(IntroducerConfig {
+                endpoint: format!("wss://127.0.0.1:{}/ws", addr.port()),
+                connection_timeout_secs: 10,
+                request_timeout_secs: 10,
+                network_id: net,
+            }),
+            ..GossipConfig::default()
+        };
+
+        let am = Arc::new(AddressManager::new());
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Simulate a prior peer-exchange round having already consumed most of the shared global
+        // budget (2900 of 3000) — only 100 should remain for the introducer to fill.
+        let shared_counter = Arc::new(AtomicU64::new(2900));
+
+        let cancel_clone = cancel.clone();
+        let counter_clone = shared_counter.clone();
+        let handle = tokio::spawn(async move {
+            run_discovery_loop(am, Arc::new(cfg), cancel_clone, Some(tx), counter_clone).await;
+        });
+
+        // Let the loop run its first cycle (DNS fails fast, then introducer is queried).
+        // Keep polling on a per-message timeout until the deadline — do NOT bail out on an
+        // individual `recv` timeout, only on the overall deadline or a closed channel.
+        let mut queried_count = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+                Ok(Some(DiscoveryAction::IntroducerQueried { count })) => {
+                    queried_count = Some(count);
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => break,  // channel closed — loop task exited
+                Err(_) => continue, // per-message timeout — keep polling until the deadline
+            }
+        }
+        cancel.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+
+        let queried_count =
+            queried_count.expect("introducer query must complete and report a count");
+        assert!(
+            queried_count <= MAX_PEERS_RECEIVED_PER_REQUEST,
+            "introducer batch must be capped at the per-request limit ({}), got {}",
+            MAX_PEERS_RECEIVED_PER_REQUEST,
+            queried_count
+        );
+        assert_eq!(
+            queried_count, 100,
+            "with 2900/3000 of the shared global budget already consumed, only the remaining \
+             100 must be accepted from the introducer — proving it shares total_peers_received \
+             with node peer-exchange rather than bypassing the cap"
+        );
+        assert_eq!(
+            shared_counter.load(Ordering::Relaxed),
+            3000,
+            "shared counter must reach exactly the global cap, not be bypassed by the introducer path"
+        );
+    }
+}
