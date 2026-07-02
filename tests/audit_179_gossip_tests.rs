@@ -309,3 +309,144 @@ mod medium_3_introducer_cap {
         );
     }
 }
+
+// =========================================================================
+// MEDIUM #4 — relay-introducer trusts an unbounded frame stream + peer list
+// (src/nat/discovery.rs:95)
+// =========================================================================
+#[cfg(feature = "relay")]
+mod medium_4_relay_introducer_bounds {
+    use std::time::Duration;
+
+    use dig_gossip::nat::discovery::{relay_get_peers, MAX_RELAY_DISCOVERY_FRAMES};
+    use dig_gossip::MAX_PEERS_RECEIVED_PER_REQUEST;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
+
+    /// **Regression for audit #179 MEDIUM finding 4 (part A — frame count).**
+    ///
+    /// Before the fix, `relay_get_peers`'s read loop had no bound on the number of non-terminal
+    /// frames it would read while waiting for a `peers`/`error` response — only the outer
+    /// `timeout` bounded it. A hostile/compromised relay (or an on-path MITM of the relay
+    /// WebSocket, which is explicitly documented as untrusted) could stream filler frames
+    /// indefinitely, burning CPU/bandwidth for the whole timeout window on every discovery pass.
+    ///
+    /// This test spins up a mock relay that sends `MAX_RELAY_DISCOVERY_FRAMES + 10` unparsable
+    /// filler frames (never a `peers`/`error` response) and asserts `relay_get_peers` gives up
+    /// with an error WELL BEFORE the (long) outer timeout — proving the frame-count bound fires
+    /// rather than relying solely on the timeout.
+    #[tokio::test]
+    async fn relay_get_peers_bounds_the_number_of_frames_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _register = ws.next().await.unwrap().unwrap();
+            let _get_peers = ws.next().await.unwrap().unwrap();
+            // Stream filler frames well past the expected budget — never send peers/error. Keep
+            // going indefinitely (bounded only by a long sleep between sends) so a client WITHOUT
+            // a frame-count bound would keep reading real frames until the outer timeout, not an
+            // EOF/close — isolating the frame-count bound from a "server hung up" false pass.
+            let mut i = 0usize;
+            loop {
+                let filler = serde_json::json!({ "type": "ping", "seq": i });
+                if ws
+                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                        filler.to_string(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break; // client gave up and closed — expected once the bound fires
+                }
+                i += 1;
+                if i > MAX_RELAY_DISCOVERY_FRAMES + 500 {
+                    // Safety valve in case the bound never fires (test would fail on the
+                    // elapsed-time assertion instead of hanging forever).
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            // Keep the socket open a little longer so the client's bound (not a close) is what fires.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        let endpoint = format!("ws://{addr}");
+        // Outer timeout is generous (10s) — the assertion is that we do NOT wait anywhere near
+        // that long, because the frame-count bound fires first.
+        let start = tokio::time::Instant::now();
+        let result = relay_get_peers(
+            &endpoint,
+            "self".repeat(16),
+            "DIG_MAINNET",
+            Duration::from_secs(10),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        let _ = server.await;
+
+        assert!(
+            result.is_err(),
+            "an unbounded filler-frame stream must surface as an error, not succeed"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the frame-count bound must fire well before the 10s outer timeout, took {elapsed:?}"
+        );
+    }
+
+    /// **Regression for audit #179 MEDIUM finding 4 (part B — peers-list length).**
+    ///
+    /// Before the fix, an oversized `RelayMessage::Peers` response was converted to `PeerRecord`s
+    /// in full with no cap, independent of the per-request cap node peer-exchange applies to
+    /// `RespondPeers`. This test has a mock relay return `MAX_PEERS_RECEIVED_PER_REQUEST + 500`
+    /// peer entries and asserts the returned record count is capped, not the full oversized list.
+    #[tokio::test]
+    async fn relay_get_peers_caps_an_oversized_peers_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let oversized_count = MAX_PEERS_RECEIVED_PER_REQUEST + 500;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _register = ws.next().await.unwrap().unwrap();
+            let _get_peers = ws.next().await.unwrap().unwrap();
+            let peers: Vec<_> = (0..oversized_count)
+                .map(|i| {
+                    serde_json::json!({
+                        "peer_id": format!("{i:064x}"),
+                        "network_id": "DIG_MAINNET",
+                        "protocol_version": 1,
+                        "connected_at": 1,
+                        "last_seen": i as u64,
+                    })
+                })
+                .collect();
+            let reply = serde_json::json!({ "type": "peers", "peers": peers });
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                reply.to_string(),
+            ))
+            .await
+            .unwrap();
+        });
+
+        let endpoint = format!("ws://{addr}");
+        let records = relay_get_peers(
+            &endpoint,
+            "self".repeat(16),
+            "DIG_MAINNET",
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("relay_get_peers succeeds even with an oversized response");
+        server.await.unwrap();
+
+        assert!(
+            records.len() <= MAX_PEERS_RECEIVED_PER_REQUEST,
+            "an oversized relay peers response ({oversized_count}) must be capped at the \
+             per-request limit ({MAX_PEERS_RECEIVED_PER_REQUEST}), got {}",
+            records.len()
+        );
+    }
+}

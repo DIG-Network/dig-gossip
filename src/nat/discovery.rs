@@ -44,6 +44,15 @@ use crate::types::peer::PeerInfo;
 #[cfg(feature = "relay")]
 const RELAY_PROTOCOL_VERSION: u32 = 1;
 
+/// **Audit #179 (MEDIUM finding 4) — normative.** Maximum number of non-`Peers`/non-`Error` frames
+/// [`relay_get_peers`]'s read loop will `continue` past while waiting for the `peers` response.
+/// The relay is explicitly untrusted; without this bound a relay (or an on-path MITM of the relay
+/// WebSocket) could stream frames indefinitely, burning CPU/bandwidth for the whole `timeout`
+/// window on every discovery pass. Legitimate traffic here is a handful of control frames
+/// (`register_ack`, `ping`, stray notifications) — this budget is generous relative to that.
+#[cfg(feature = "relay")]
+pub const MAX_RELAY_DISCOVERY_FRAMES: usize = 64;
+
 /// Query the relay introducer for known peers via RLY-005 `get_peers` → `peers` (§4a).
 ///
 /// Opens a WebSocket to `endpoint`, registers (RLY-001, so the relay will talk to us), sends
@@ -54,6 +63,13 @@ const RELAY_PROTOCOL_VERSION: u32 = 1;
 ///
 /// This is the discovery counterpart to `dig-nat`'s reservation loop (which only keeps a node
 /// reachable) — it actively PULLS the peer list, which the reservation loop does not do.
+///
+/// **Audit #179 (MEDIUM finding 4):** the relay is untrusted (see module docs). Two independent
+/// bounds protect against a hostile/compromised relay: (1) the frame-read loop gives up with
+/// [`GossipError::RelayError`] after [`MAX_RELAY_DISCOVERY_FRAMES`] non-terminal frames rather
+/// than looping indefinitely on filler; (2) the accepted `peers` list is capped at
+/// [`crate::constants::MAX_PEERS_RECEIVED_PER_REQUEST`] — the SAME per-request cap node
+/// peer-exchange applies to `RespondPeers` — before being converted to [`PeerRecord`]s.
 #[cfg(feature = "relay")]
 pub async fn relay_get_peers(
     endpoint: &str,
@@ -92,12 +108,23 @@ pub async fn relay_get_peers(
         .await?;
 
         // Read until we get a `peers` response (ignore register_ack / pings / notifications).
+        //
+        // Audit #179 (MEDIUM finding 4): the relay is untrusted — bound how many non-terminal
+        // frames we will read before giving up, so a hostile/compromised relay cannot force this
+        // loop to spin on filler frames for the entire `timeout` window.
+        let mut frames_seen = 0usize;
         loop {
+            if frames_seen >= MAX_RELAY_DISCOVERY_FRAMES {
+                return Err(GossipError::RelayError(format!(
+                    "relay sent {frames_seen} frames without a peers/error response (max {MAX_RELAY_DISCOVERY_FRAMES})"
+                )));
+            }
             let Some(frame) = read.next().await else {
                 return Err(GossipError::RelayError(
                     "relay closed before returning peers".into(),
                 ));
             };
+            frames_seen += 1;
             let frame = frame.map_err(|e| GossipError::RelayError(format!("read: {e}")))?;
             let bytes = match frame {
                 tokio_tungstenite::tungstenite::Message::Text(t) => t.into_bytes(),
@@ -114,7 +141,17 @@ pub async fn relay_get_peers(
             };
             match msg {
                 RelayMessage::Peers { peers } => {
-                    return Ok(peers.iter().map(PeerRecord::from_relay_peer_info).collect());
+                    // Audit #179 (MEDIUM finding 4): cap the accepted peers list at the same
+                    // per-request bound node peer-exchange uses (`RespondPeers`), so a single
+                    // oversized `Peers` frame from an untrusted relay cannot poison the address
+                    // book with an unbounded number of records.
+                    let capped_len = peers
+                        .len()
+                        .min(crate::constants::MAX_PEERS_RECEIVED_PER_REQUEST);
+                    return Ok(peers[..capped_len]
+                        .iter()
+                        .map(PeerRecord::from_relay_peer_info)
+                        .collect());
                 }
                 RelayMessage::Error { code, message } => {
                     return Err(GossipError::RelayError(format!(

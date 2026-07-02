@@ -1232,6 +1232,27 @@ DIG-specific; not in Chia. See `l2_driver_state_channel/src/services/relay/`.
 
 Relay messages use JSON over WebSocket (not Chia's binary protocol), matching the existing relay server implementation.
 
+### 7.0.1 Relay-Introducer Discovery Bounds (audit #179 MEDIUM finding 4 — normative)
+
+The relay is explicitly **untrusted** — it is a single, network-configurable rendezvous, and its
+WebSocket stream may be tampered with by an on-path attacker. `relay_get_peers` (§4a discovery, RLY-005
+`get_peers`) MUST bound both axes of that untrusted input:
+
+1. **Frame count.** The read loop that skips non-`peers`/non-`error` frames (`register_ack`, pings,
+   stray notifications) while waiting for the response MUST give up with an error after
+   `MAX_RELAY_DISCOVERY_FRAMES` (64) such frames, rather than relying solely on the outer
+   per-call `timeout`. Without this, a hostile/compromised relay can stream filler frames for the
+   entire timeout window on every discovery pass (CPU/bandwidth amplification).
+2. **Peers-list length.** The accepted `RelayMessage::Peers { peers }` list MUST be truncated to
+   `MAX_PEERS_RECEIVED_PER_REQUEST` (the SAME per-request cap node peer-exchange applies to
+   `RespondPeers`, §6.6/§1.6#10) before being converted to `PeerRecord`s. A single oversized
+   `peers` frame from an untrusted relay MUST NOT be able to add more records in one response than
+   a connected peer could via `RequestPeers`.
+
+Both bounds live in `relay_get_peers` itself (`src/nat/discovery.rs`) — the earliest point the
+untrusted relay's response is decoded — so every caller (`unified_discover`,
+`GossipHandle::pool_discover_from_relay`) inherits the bound automatically.
+
 ### 7.1 NAT Traversal Upgrade
 
 Relay connections in `l2_driver_state_channel` are static. `dig-gossip` adds a NAT traversal upgrade path that can promote relay connections to direct P2P:
