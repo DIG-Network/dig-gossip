@@ -69,6 +69,7 @@ use dig_protocol::{Message, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use dig_protocol::Bytes32;
@@ -441,6 +442,16 @@ pub struct ServiceState {
     /// **POOL-*** — [`JoinHandle`] for the spawned pool maintenance loop (`None` when the pool is
     /// disabled, i.e. `GossipConfig::peer_pool` is `None`). `stop()` aborts + joins it.
     pub(crate) pool_task: Mutex<Option<JoinHandle<()>>>,
+
+    /// **Audit #179 (HIGH)** — bounds concurrent in-flight inbound handshakes (accepted TCP
+    /// socket through TLS + Chia `Handshake`, before the peer is registered in [`Self::peers`]).
+    /// Sized from [`GossipConfig::max_inflight_handshakes`] at construction. The accept loop
+    /// ([`crate::connection::listener::accept_loop`]) acquires a permit before spawning each
+    /// handshake task and holds it for the task's lifetime; when every permit is taken, newly
+    /// accepted sockets are dropped immediately rather than spawning an unbounded handshake task.
+    /// This closes the gap where `max_connections` (checked against the REGISTERED peer count)
+    /// does not account for connections still mid-handshake.
+    pub(crate) inflight_handshakes: Arc<Semaphore>,
 }
 
 /// Derive a deterministic [`PeerId`] from a [`SocketAddr`].
@@ -492,6 +503,9 @@ impl ServiceState {
         // for dedup anyway.
         let cap = NonZeroUsize::new(config.max_seen_messages.max(1)).expect("max 1+");
         let address_manager = AddressManager::create(&config.peers_file_path)?;
+        // Audit #179 (HIGH): clamp to at least 1 so a misconfigured 0 cannot wedge the accept
+        // loop into permanently rejecting every inbound connection via a zero-permit semaphore.
+        let inflight_handshakes = Arc::new(Semaphore::new(config.max_inflight_handshakes.max(1)));
         Ok(Self {
             config,
             tls,
@@ -518,6 +532,7 @@ impl ServiceState {
             listener_task: Mutex::new(None),
             pool: Arc::new(crate::service::peer_pool::PoolState::new()),
             pool_task: Mutex::new(None),
+            inflight_handshakes,
         })
     }
 

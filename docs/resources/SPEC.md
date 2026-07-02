@@ -1078,6 +1078,32 @@ Inbound connection (per accepted socket):
    └─ 9. Relay peer info (node_discovery.py:126-127)
 ```
 
+### 5.2.1 Inbound Admission Control (audit #179 HIGH — normative)
+
+The accept loop enforces **two independent** admission gates before spawning a per-connection
+handshake task; either alone is insufficient:
+
+1. **`GossipConfig::max_connections`** — checked against `ServiceState::peers.len()`, i.e. the
+   count of already-REGISTERED peers (post-handshake). A connection is only inserted into `peers`
+   after TLS + the full Chia `Handshake` exchange completes (step 6 above), which can take up to
+   the inbound handshake timeout (30s).
+2. **`GossipConfig::max_inflight_handshakes`** — checked against a `tokio::sync::Semaphore` sized
+   to this value at `ServiceState` construction (clamped to a minimum of 1). The accept loop MUST
+   call `try_acquire_owned()` on this semaphore immediately after the `max_connections` check and
+   BEFORE `tokio::spawn`ing the handshake task; on `Err` (budget exhausted) it MUST drop the
+   accepted socket without spawning a task. The acquired permit MUST be held for the full lifetime
+   of the spawned handshake task (moved into the task, dropped on completion or panic).
+
+**Why both are required:** gate 1 alone is blind to every connection currently mid-handshake
+(TLS negotiation, or stalled before ever sending a `Handshake` message) — an attacker exploiting
+only gate 1 can hold an unbounded number of concurrent sockets/tasks/FDs open indefinitely (up to
+the per-connection handshake timeout), which is a slowloris-style resource-exhaustion vector. Gate
+2 bounds that population directly, independent of whether any of those connections ever registers.
+
+**Default:** `max_inflight_handshakes` defaults to `max_connections * 4` — enough concurrent
+headroom for legitimate reconnect/churn bursts while remaining a small, finite multiple rather
+than unbounded.
+
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
 **ALL peer-to-peer connections MUST use mutual TLS (mTLS).** Both the client and server present certificates and verify each other. This is a hard security requirement — unencrypted connections and server-only TLS are never permitted for P2P.

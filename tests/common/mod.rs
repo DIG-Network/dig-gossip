@@ -174,6 +174,7 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         dns_seed_batch_size: 2,
         target_outbound_count: 2,
         max_connections: 10,
+        max_inflight_handshakes: 40,
         bootstrap_peers: Vec::new(),
         introducer: None,
         relay: None,

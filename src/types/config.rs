@@ -179,6 +179,17 @@ pub struct GossipConfig {
     /// when this limit is hit. Default 50 matches Chia full-node practice.
     pub max_connections: usize,
 
+    /// **Audit #179 (HIGH).** Hard cap on CONCURRENT in-flight inbound handshakes (accepted TCP
+    /// socket through TLS + Chia `Handshake` exchange, before the peer is registered in
+    /// `ServiceState::peers`). `max_connections` only counts already-registered peers, so a flood
+    /// of connections stalled anywhere before registration (slowloris-style) is invisible to it
+    /// and would otherwise consume unbounded FDs/tasks. The accept loop acquires a permit from a
+    /// semaphore sized to this value before spawning a handshake task and releases it when the
+    /// handshake completes (success or failure). Default is `max_connections * 4` (see
+    /// [`GossipConfig::default`]) — enough headroom to admit a full `max_connections` worth of
+    /// simultaneous handshakes plus churn, while remaining a small, finite multiple.
+    pub max_inflight_handshakes: usize,
+
     /// Explicit bootstrap peer addresses tried before DNS / introducer (useful for testnets
     /// and local clusters). Empty by default.
     pub bootstrap_peers: Vec<SocketAddr>,
@@ -272,6 +283,9 @@ impl Default for GossipConfig {
             dns_seed_batch_size: DEFAULT_DNS_SEED_BATCH_SIZE,
             target_outbound_count: DEFAULT_TARGET_OUTBOUND_COUNT,
             max_connections: 50,
+            // Audit #179 (HIGH): 4x max_connections — enough concurrent-handshake headroom for
+            // legitimate churn without being unbounded.
+            max_inflight_handshakes: 50 * 4,
             bootstrap_peers: Vec::new(),
             introducer: None,
             relay: None,

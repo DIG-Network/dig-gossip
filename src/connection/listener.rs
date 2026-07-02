@@ -696,6 +696,17 @@ async fn negotiate_inbound_over_ws(
 /// SPEC §5.2 — inbound connection flow starts at `TcpListener::accept()`.
 /// SPEC §2.10 — `GossipConfig::max_connections` caps total peer slots; new TCP connections
 /// are dropped if this limit is reached.
+///
+/// **Audit #179 (HIGH) — concurrent in-flight handshake cap.** The `max_connections` check above
+/// only counts already-REGISTERED peers (`state.peers`), and a connection is not inserted there
+/// until AFTER TLS + the full Chia handshake completes (up to [`INBOUND_HANDSHAKE_TIMEOUT`]). A
+/// flood of connections that stall anywhere before registration (slowloris-style) is invisible to
+/// that gate and would otherwise spawn an unbounded number of handshake tasks, each holding a
+/// socket FD + TLS session. Before spawning [`handle_inbound_native`], this loop acquires an
+/// owned permit from [`ServiceState::inflight_handshakes`] (sized from
+/// `GossipConfig::max_inflight_handshakes`); if none is available the socket is dropped
+/// immediately without spawning a task. The permit is held for the lifetime of the spawned task
+/// and released (success or failure) when it completes.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 pub(crate) async fn accept_loop(
     state: Arc<ServiceState>,
@@ -739,9 +750,25 @@ pub(crate) async fn accept_loop(
                     drop(tcp);
                     continue;
                 }
+                // Audit #179 (HIGH): admission gate #2 — bound CONCURRENT in-flight handshakes
+                // independent of the registered-peer count above. `try_acquire_owned` never
+                // blocks the accept loop itself; a saturated budget just drops the new socket
+                // (same policy as hitting `max_connections`) rather than queuing forever.
+                let permit = match state.inflight_handshakes.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        tracing::debug!(
+                            target: "dig_gossip::listener",
+                            "inflight handshake budget exhausted; dropping new connection from {remote_addr}"
+                        );
+                        drop(tcp);
+                        continue;
+                    }
+                };
                 let st = state.clone();
                 let acc = tls_acceptor.clone();
                 tokio::spawn(async move {
+                    let _permit = permit; // held until the handshake task finishes, then dropped
                     handle_inbound_native(st, tcp, remote_addr, acc).await;
                 });
             }

@@ -60,6 +60,7 @@ fn test_config_all_fields_exist() {
         dns_seed_batch_size: 3,
         target_outbound_count: 3,
         max_connections: 40,
+        max_inflight_handshakes: 160,
         bootstrap_peers: vec![bootstrap],
         introducer: Some(IntroducerConfig::default()),
         relay: Some(RelayConfig::default()),
@@ -88,6 +89,7 @@ fn test_config_all_fields_exist() {
     assert_eq!(cfg.network_id, common::test_network_id());
     assert_eq!(cfg.target_outbound_count, 3);
     assert_eq!(cfg.max_connections, 40);
+    assert_eq!(cfg.max_inflight_handshakes, 160);
     assert_eq!(cfg.bootstrap_peers, vec![bootstrap]);
     assert!(cfg.introducer.is_some());
     assert!(cfg.relay.is_some());
