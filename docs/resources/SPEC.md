@@ -1152,6 +1152,15 @@ impl AddressManager {
 }
 ```
 
+**Test-hook memory bound (audit #179 HIGH — normative):** `AddressManager` retains, for test
+observability only, the MOST RECENT `add_to_new_table` batch (`(peer_list, source)`) — never more
+than one. This state exists solely so integration tests can assert what the last peer-exchange
+merge contained; production code never reads it. Implementations MUST NOT accumulate a history of
+batches (e.g. an ever-growing `Vec`): every inbound peer-exchange merge (outbound connect
+`RequestPeers` response, introducer discovery, relay-introducer merge) calls
+`add_to_new_table`, so unbounded retention is an attacker-reachable, unbounded memory-growth
+vector over the lifetime of a long-running node.
+
 ### 6.4 Discovery Loop (Rust port, improved)
 
 Ported from [`node_discovery.py:244-349`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/node_discovery.py#L244) with the following improvements over Chia:

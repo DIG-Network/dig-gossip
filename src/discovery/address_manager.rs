@@ -29,8 +29,15 @@
 //!
 //! ## CON-001
 //!
-//! [`Self::add_to_new_table`] still appends to [`Inner::new_table_log`] so
+//! [`Self::add_to_new_table`] still records the most recent merge in [`Inner::new_table_log`] so
 //! [`Self::__last_new_table_batch_for_tests`] remains stable for `tests/con_001_tests.rs`.
+//!
+//! **Audit #179 (HIGH):** `new_table_log` is a test hook, not production state — it MUST retain
+//! only the single most recent `(peer_list, src)` batch (`Option`, not an ever-growing `Vec`).
+//! Every inbound peer-exchange merge (outbound connect, introducer discovery, relay merge) calls
+//! [`Self::add_to_new_table`], so an unbounded log would grow for the lifetime of the process and
+//! is a memory-exhaustion vector reachable from untrusted peers. SPEC §6.3 normatively bounds this
+//! to O(1) regardless of call count.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -76,8 +83,12 @@ struct Inner {
     used_new_matrix_positions: HashSet<(usize, usize)>,
     used_tried_matrix_positions: HashSet<(usize, usize)>,
     allow_private_subnets: bool,
-    /// CON-001 / CON-002 — last merge batches for integration tests.
-    new_table_log: Vec<(Vec<TimestampedPeerInfo>, PeerInfo)>,
+    /// CON-001 / CON-002 — last merge batch for integration tests.
+    ///
+    /// **Audit #179 (HIGH):** bounded to the single most recent batch (`Option`, not `Vec`) — this
+    /// is a test hook only; production code never reads it. Retaining every historical batch was
+    /// unbounded growth on every peer-exchange merge (see module docs above).
+    new_table_log: Option<(Vec<TimestampedPeerInfo>, PeerInfo)>,
     /// Target path for DSC-002 save/load (recorded at construction).
     peers_file_path: PathBuf,
 }
@@ -99,7 +110,7 @@ impl Inner {
             used_new_matrix_positions: HashSet::new(),
             used_tried_matrix_positions: HashSet::new(),
             allow_private_subnets: false,
-            new_table_log: Vec::new(),
+            new_table_log: None,
             peers_file_path,
         }
     }
@@ -899,7 +910,10 @@ impl AddressManager {
         penalty: u64,
     ) {
         let mut g = self.inner.lock().expect("address_manager mutex poisoned");
-        g.new_table_log.push((peer_list.to_vec(), src.clone()));
+        // Audit #179 (HIGH): overwrite rather than push — only the most recent batch is ever
+        // read (`__last_new_table_batch_for_tests`), so retaining history here would be an
+        // unbounded, attacker-reachable memory leak (see module docs).
+        g.new_table_log = Some((peer_list.to_vec(), src.clone()));
         let mut rng = rand::thread_rng();
         for addr in peer_list {
             let _ = g.add_to_new_table_(addr, src, penalty, &mut rng);
@@ -983,8 +997,18 @@ impl AddressManager {
             .lock()
             .expect("address_manager mutex poisoned")
             .new_table_log
-            .last()
-            .cloned()
+            .clone()
+    }
+
+    /// Audit #179 (HIGH) regression hook: number of batches currently retained by the
+    /// `new_table_log` test hook (0 or 1 — it must never grow with call count).
+    #[doc(hidden)]
+    pub fn __new_table_log_len_for_tests(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("address_manager mutex poisoned")
+            .new_table_log
+            .is_some() as usize
     }
 
     /// Deterministic buckets for tests: fixed `key` and fixed RNG seed for stochastic add path.
