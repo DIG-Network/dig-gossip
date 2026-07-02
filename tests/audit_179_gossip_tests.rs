@@ -449,6 +449,70 @@ mod medium_4_relay_introducer_bounds {
             records.len()
         );
     }
+
+    /// **Regression for audit #179 MEDIUM finding 4 (part C — shared global counter).**
+    ///
+    /// Beyond capping a SINGLE relay response, the merge into the address manager must share
+    /// the SAME `total_peers_received` counter node peer-exchange and introducer discovery use,
+    /// so repeated relay-discovery passes (the pool-maintenance loop calls this every interval)
+    /// cannot cumulatively exceed the global budget either. This test pre-seeds the shared
+    /// counter near the cap (as if peer-exchange already consumed most of it) and asserts a
+    /// relay-sourced merge only adds the remaining budget.
+    #[test]
+    fn relay_merge_shares_the_global_counter_with_peer_exchange() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use dig_gossip::nat::{
+            merge_records_into_address_manager_capped, AddressKind, PeerAddress, PeerRecord, Via,
+        };
+        use dig_gossip::AddressManager;
+
+        let am = AddressManager::new();
+        let shared_counter = AtomicU64::new(2950); // 50 remaining of the 3000 global budget.
+
+        let records: Vec<PeerRecord> = (0..200)
+            .map(|i| {
+                let a = (i / 256) % 256;
+                let b = i % 256;
+                PeerRecord {
+                    peer_id: format!("{i:064x}"),
+                    addresses: vec![PeerAddress {
+                        host: format!("198.51.{a}.{b}"),
+                        port: 9444,
+                        kind: AddressKind::Direct,
+                    }],
+                    network_id: "DIG_MAINNET".into(),
+                    last_seen: 1_700_000_000,
+                    via: Via::Direct,
+                }
+            })
+            .collect();
+
+        let added = merge_records_into_address_manager_capped(
+            &am,
+            &records,
+            "relay.example",
+            0,
+            &shared_counter,
+        );
+
+        // The address manager's own bucket placement (Chia-style, capacity/collision-bound) means
+        // not every accepted candidate necessarily lands as a NEW distinct entry, so `added` (the
+        // am.size() delta) can be <= the accepted count — the key proof is the CAP, not an exact
+        // placement count.
+        assert!(
+            added <= 50,
+            "with only 50 remaining in the shared global budget, a 200-record relay batch must \
+             add at most 50 new entries — proving the relay merge shares total_peers_received \
+             rather than bypassing it (got {added})"
+        );
+        assert_eq!(
+            shared_counter.load(Ordering::Relaxed),
+            3000,
+            "shared counter must reach exactly the global cap (accepted count is capped even \
+             though placement into the address manager may accept fewer as NEW entries)"
+        );
+    }
 }
 
 // =========================================================================

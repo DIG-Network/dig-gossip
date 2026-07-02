@@ -1108,11 +1108,16 @@ impl GossipHandle {
                 .ok()
                 .and_then(|g| *g)
                 .unwrap_or(self.inner.config.listen_addr);
-            crate::nat::merge_records_into_address_manager(
+            // Audit #179 (MEDIUM finding 4): route the relay's response through the SAME shared
+            // total_peers_received counter node peer-exchange and introducer discovery use, so
+            // the untrusted relay source cannot add more peers, cumulatively across repeated
+            // pool-maintenance passes, than the combined per-request/global budget allows.
+            crate::nat::merge_records_into_address_manager_capped(
                 &self.inner.address_manager,
                 &records,
                 &bound.ip().to_string(),
                 bound.port(),
+                &self.inner.total_peers_received,
             );
         }
     }

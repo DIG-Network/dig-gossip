@@ -213,6 +213,46 @@ pub fn merge_records_into_address_manager(
     am.size().saturating_sub(before)
 }
 
+/// [`merge_records_into_address_manager`], additionally capping the dialable batch through
+/// [`crate::discovery::node_discovery::cap_received_peers`] against a SHARED
+/// `total_peers_received` counter (**audit #179 MEDIUM finding 4** — normative, SPEC §7.0.1).
+///
+/// Use this at the relay-introducer call site (an explicitly untrusted, single,
+/// network-configurable source): sharing the SAME atomic counter node peer-exchange
+/// (`GossipHandle::connect_to`) and introducer discovery (`run_discovery_loop`) use means no
+/// single discovery source — however untrusted — can add more peers, in total, across the
+/// process lifetime than the combined per-request (1000) / global (3000) budget allows.
+/// [`relay_get_peers`] already caps an individual oversized `Peers` response; this additionally
+/// binds the CUMULATIVE contribution across repeated relay-discovery passes (the pool
+/// maintenance loop calls this every interval).
+pub fn merge_records_into_address_manager_capped(
+    am: &AddressManager,
+    records: &[PeerRecord],
+    src_host: &str,
+    src_port: u16,
+    total_peers_received: &std::sync::atomic::AtomicU64,
+) -> usize {
+    let dialable: Vec<_> = records
+        .iter()
+        .filter_map(PeerRecord::to_timestamped_peer_info)
+        .collect();
+    if dialable.is_empty() {
+        return 0;
+    }
+    let capped =
+        crate::discovery::node_discovery::cap_received_peers(&dialable, total_peers_received);
+    if capped.is_empty() {
+        return 0;
+    }
+    let src = PeerInfo {
+        host: src_host.to_string(),
+        port: src_port,
+    };
+    let before = am.size();
+    am.add_to_new_table(capped, &src, 0);
+    am.size().saturating_sub(before)
+}
+
 /// Configuration for a [`unified_discover`] pass: which sources to consult + timeouts.
 #[cfg(feature = "relay")]
 #[derive(Debug, Clone)]

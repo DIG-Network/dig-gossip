@@ -39,7 +39,9 @@ pub mod discovery;
 pub mod peer_record;
 pub mod transport;
 
-pub use discovery::merge_records_into_address_manager;
+pub use discovery::{
+    merge_records_into_address_manager, merge_records_into_address_manager_capped,
+};
 #[cfg(feature = "relay")]
 pub use discovery::{relay_get_peers, unified_discover, UnifiedDiscoveryConfig};
 pub use peer_record::{AddressKind, PeerAddress, PeerRecord, Via};
