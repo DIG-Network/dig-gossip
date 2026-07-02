@@ -450,3 +450,100 @@ mod medium_4_relay_introducer_bounds {
         );
     }
 }
+
+// =========================================================================
+// LOW #5 — broadcast() deep-clones per eager peer + holds two locks together
+// (src/service/gossip_handle.rs:302)
+// =========================================================================
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
+mod low_5_broadcast_lock_scope {
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use dig_gossip::{
+        Bytes32, GossipHandle, GossipService, Message, NewPeak, ProtocolMessageTypes, Streamable,
+    };
+
+    async fn running_server() -> (tempfile::TempDir, GossipService, GossipHandle, SocketAddr) {
+        let dir = super::common::test_temp_dir();
+        let _ = super::common::generate_test_certs(dir.path());
+        let cfg = super::common::test_gossip_config(dir.path());
+        let svc = GossipService::new(cfg).expect("GossipService::new");
+        let h = svc.start().await.expect("start");
+        let bound = h
+            .__listen_bound_addr_for_tests()
+            .expect("listen addr after start");
+        (dir, svc, h, bound)
+    }
+
+    async fn outbound_client_handle() -> (tempfile::TempDir, GossipHandle) {
+        let dir = super::common::test_temp_dir();
+        let _ = super::common::generate_test_certs(dir.path());
+        let cfg = super::common::test_gossip_config(dir.path());
+        let svc = GossipService::new(cfg).expect("client new");
+        let h = svc.start().await.expect("client start");
+        (dir, h)
+    }
+
+    /// **Regression for audit #179 LOW finding 5 (lock-scope half).**
+    ///
+    /// The audit flagged `broadcast()`'s eager-peer classification block for acquiring the
+    /// `peers` + `plumtree` locks TOGETHER, then sending while (potentially) still holding them.
+    /// `std::sync::MutexGuard` is `!Send`, so if EITHER guard were held across the
+    /// `peer.send_protocol_message(...).await` point, the `broadcast()` future itself would
+    /// become `!Send` — and `tokio::spawn` (which requires `F: Future + Send`) would fail to
+    /// COMPILE. This test spawns `broadcast()` onto its own task via `tokio::spawn`: it is a
+    /// compile-time proof, not a timing heuristic — if a future change re-introduces a
+    /// `MutexGuard` held across the send await, this test file stops compiling with an
+    /// `F: Send` trait-bound error (verified during development: reintroducing
+    /// `self.inner.peers.lock()` held across the send loop reproduces exactly that compile
+    /// error). A concurrent `peer_count()` call is raced alongside for a behavioral sanity check
+    /// on top of the structural guarantee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_future_is_send_and_peer_count_is_not_blocked_during_broadcast() {
+        let (_server_dir, _server_svc, server_h, bound) = running_server().await;
+        let (_client_dir, client_h) = outbound_client_handle().await;
+        client_h.connect_to(bound).await.expect("connect_to");
+
+        // Wait for the server to observe the inbound registration.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while server_h.peer_count().await == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            server_h.peer_count().await,
+            1,
+            "server must see the live peer"
+        );
+
+        let msg = {
+            let z = Bytes32::default();
+            let body = NewPeak::new(z, 1, 1, 0, z);
+            Message {
+                msg_type: ProtocolMessageTypes::NewPeak,
+                id: None,
+                data: body.to_bytes().unwrap().into(),
+            }
+        };
+
+        // `tokio::spawn` requires `F: Future + Send` — this line alone is the structural proof
+        // that no `!Send` MutexGuard is held across broadcast's internal send await.
+        let count_handle = server_h.clone();
+        let broadcast_task = tokio::spawn(async move { server_h.broadcast(msg, None).await });
+        let count_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let start = tokio::time::Instant::now();
+            let _ = count_handle.peer_count().await;
+            start.elapsed()
+        });
+
+        let broadcast_res = broadcast_task.await.expect("broadcast task join");
+        let count_elapsed = count_task.await.expect("count task join");
+
+        broadcast_res.expect("broadcast succeeds");
+        assert!(
+            count_elapsed < Duration::from_millis(500),
+            "peer_count() must not be blocked by broadcast's classification lock, took {count_elapsed:?}"
+        );
+    }
+}

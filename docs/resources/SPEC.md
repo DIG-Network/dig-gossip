@@ -1346,6 +1346,19 @@ broadcast(message: Message, origin: Option<PeerId>):
   8. Return count sent
 ```
 
+**Lock scope (audit #179 LOW finding 5 — normative, optimization-class):** the classification
+step (building the eager/lazy peer lists in step 5/6 above, which requires locking both the peer
+map and `PlumtreeState`) MUST release both locks before step 5's per-peer send loop begins.
+Neither lock may be held across a `send_raw`/`send_protocol_message(...).await` point — a
+`std::sync::MutexGuard` held across an await is `!Send`, so `GossipHandle::broadcast`'s future
+would itself become non-`Send`, breaking `tokio::spawn`-ability. `dig-gossip`'s implementation
+satisfies this today. Each eager send clones the outbound `Message` body (a `Vec<u8>`-backed
+type from the vendored `chia-protocol` crate, not reference-counted) — this is an accepted O(N)
+per-broadcast cost proportional to the eager fan-out (bounded by `GossipConfig::gossip_fanout`,
+default 8), not a growth-over-time or attacker-amplifiable vector; eliminating it would require
+changing the vendored wire `Message` type to a refcounted buffer, which is out of scope for this
+crate (see `vendor/` policy — thin wrapper, never fork upstream types).
+
 **On receiving a message via eager push:**
 
 ```
