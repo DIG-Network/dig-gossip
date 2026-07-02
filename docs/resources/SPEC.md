@@ -318,6 +318,47 @@ pub struct TorConfig {
 3. For peers only reachable at `.onion` addresses → always use Tor.
 4. Inbound `.onion` connections are accepted alongside direct inbound.
 
+### 1.10 IPv6-First, IPv4-Fallback Peer Communication
+
+**NORMATIVE (ecosystem-wide hard rule):** all peer/node communication in `dig-gossip` prefers
+IPv6, using IPv4 only as a fallback when IPv6 is unavailable. IPv4 remains a fully supported
+fallback — it is never removed or treated as second-class in terms of correctness, only in
+ordering preference.
+
+**Inbound listener (CON-002, §5.2):**
+- [`GossipConfig::listen_addr`](#) defaults to `[::]:9444` — the IPv6 unspecified address on
+  [`DEFAULT_P2P_PORT`](#).
+- [`GossipService::start`] binds this address with `IPV6_V6ONLY` explicitly cleared BEFORE
+  `bind()` (via `socket2`, since neither `tokio::net::TcpListener::bind` nor
+  `tokio::net::TcpSocket` expose this option). One dual-stack socket therefore accepts both
+  native IPv6 connections and IPv4-mapped (`::ffff:a.b.c.d`) connections — an IPv6 node still
+  serves IPv4-only peers without a second listening socket.
+- An explicit IPv4 `listen_addr` (e.g. `127.0.0.1:0` in tests) is bound as a plain IPv4 socket;
+  `IPV6_V6ONLY` is only meaningful for — and only touched for — an IPv6 bind address.
+
+**Peer selection / outbound dial candidate ordering:**
+- [`AddressManager::select_peer`] itself is a Bitcoin/Chia-style single-address weighted-random
+  draw over the whole address book and is family-blind by design (this is unchanged — the
+  address book's own grouping, `PeerInfo::get_group` / `subnet_group`, is already family-aware
+  for `/16` vs `/32` eclipse-resistance grouping and is NOT part of this rule).
+- The CANDIDATE LIST assembled from repeated draws — `GossipHandle`'s `gather_pool_candidates`,
+  the source of dial candidates for `run_pool_maintenance_once` / the connected-peer-pool
+  planner (POOL-\*) — is passed through
+  [`dig_gossip::util::ip_address::order_ipv6_first`] before being returned: every gathered IPv6
+  candidate sorts before every gathered IPv4 candidate (a stable partition — relative order
+  within each family, e.g. tried-vs-new bias, is preserved). This means the pool planner
+  (`plan_pass`) and its dialer always attempt IPv6 candidates first for a given maintenance pass,
+  falling back to IPv4 candidates only after the IPv6 candidates in that pass are exhausted or
+  fail.
+- Family detection is via `std::net::SocketAddr::is_ipv6()` / `is_ipv4()` on an already-parsed
+  address — never a `contains(':')` string heuristic, which misclassifies a bracketed IPv6 host
+  string (`"[::1]:9444"`) or embedded IPv4-mapped textual forms.
+- `crate::connection::outbound::connect_outbound_peer` dials exactly one already-resolved
+  `SocketAddr` per call and has no candidate list of its own; the IPv6-first ordering is enforced
+  entirely at the candidate-list-assembly layer above it (this crate does not implement a
+  concurrent multi-address happy-eyeballs race within a single dial — IPv6 candidates are
+  attempted first across the SEQUENCE of dials, not raced in parallel against IPv4 for one peer).
+
 ---
 
 ## 2. Data Model
@@ -576,7 +617,8 @@ pub struct RelayPeerInfo {
 ```rust
 /// Configuration for the gossip service.
 pub struct GossipConfig {
-    /// Listen address for inbound P2P connections. Default: 0.0.0.0:9444.
+    /// Listen address for inbound P2P connections. Default: `[::]:9444` — IPv6 unspecified,
+    /// bound dual-stack with `IPV6_V6ONLY` disabled so IPv4 peers are still accepted (§1.10).
     pub listen_addr: SocketAddr,
     /// Our peer ID.
     pub peer_id: PeerId,
@@ -1016,7 +1058,13 @@ Relay fallback (when direct P2P fails):
 `chia-sdk-client`'s `Peer` only supports outbound connections. For inbound, we accept TCP/TLS connections and use `Peer::from_websocket()`:
 
 ```
-Inbound connection:
+Listener bind (GossipService::start, once at startup):
+   │
+   ├─ 0a. If listen_addr is IPv6: build socket via socket2, clear IPV6_V6ONLY, THEN bind()
+   │      → one dual-stack [::] socket accepts both native IPv6 and IPv4-mapped connections (§1.10)
+   └─ 0b. If listen_addr is IPv4: plain bind() (IPV6_V6ONLY does not apply)
+
+Inbound connection (per accepted socket):
    │
    ├─ 1. TcpListener::accept()
    ├─ 2. TLS handshake (using chia-ssl certificate)

@@ -4,6 +4,10 @@
 # Build artifacts
 /target/
 
+# Local coverage reports (cargo llvm-cov) — CI generates and uploads these; never commit locally
+# generated copies.
+/lcov.info
+
 # IDE
 .idea/
 .vscode/

@@ -32,7 +32,7 @@ use dig_gossip::{GossipConfig, GossipService, GossipError};
 
 // 1. Configure — all fields have sane defaults
 let config = GossipConfig {
-    listen_addr: "0.0.0.0:9444".parse()?,
+    listen_addr: "[::]:9444".parse()?, // IPv6 unspecified, bound dual-stack (IPv4 fallback)
     ..GossipConfig::default()
 };
 
@@ -195,14 +195,15 @@ impl GossipHandle {
 All fields have defaults. Minimal working config:
 
 ```rust
-let config = GossipConfig::default(); // binds 0.0.0.0:9444, generates ephemeral cert
+let config = GossipConfig::default(); // binds [::]:9444 dual-stack, generates ephemeral cert
 ```
 
 Full config reference:
 
 ```rust
 pub struct GossipConfig {
-    /// TCP listen address. Default: 0.0.0.0:9444.
+    /// TCP listen address. Default: `[::]:9444` — IPv6 unspecified, bound dual-stack
+    /// (`IPV6_V6ONLY` disabled) so IPv4 clients still connect via IPv4-mapped addresses.
     pub listen_addr: SocketAddr,
 
     /// This node's PeerId (Bytes32 = SHA256 of TLS cert public key).

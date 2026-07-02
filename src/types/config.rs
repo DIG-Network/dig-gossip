@@ -131,7 +131,9 @@ impl PeerIdRotationConfig {
 /// # Defaults
 ///
 /// Defaults mirror Chia/DIG conventions. Key values:
-/// - `listen_addr`: `0.0.0.0:9444` (`DEFAULT_P2P_PORT`)
+/// - `listen_addr`: `[::]:9444` (`DEFAULT_P2P_PORT`) -- the IPv6 unspecified address, bound
+///   dual-stack (`IPV6_V6ONLY` disabled -- CON-002) so both IPv6 and IPv4-mapped inbound peers
+///   are accepted off one socket, per the ecosystem-wide IPv6-first hard rule.
 /// - `target_outbound_count`: 8 (Chia `node_discovery.py:49`)
 /// - `max_connections`: 50 (inbound + outbound combined)
 /// - `gossip_fanout`: 8 (Plumtree eager-push peer count)
@@ -139,7 +141,9 @@ impl PeerIdRotationConfig {
 #[derive(Debug, Clone)]
 pub struct GossipConfig {
     /// Socket on which the inbound TCP/TLS listener binds (CON-002).
-    /// Default `0.0.0.0:9444`. Set to `127.0.0.1:0` in integration tests for port 0 allocation.
+    /// Default `[::]:9444` -- IPv6 unspecified, bound dual-stack (`IPV6_V6ONLY` disabled) so IPv4
+    /// clients still connect via IPv4-mapped addresses (IPv6-first / IPv4-fallback hard rule).
+    /// Set to `127.0.0.1:0` in integration tests for loopback + port 0 allocation.
     pub listen_addr: SocketAddr,
 
     /// This node’s identity. Derived from `SHA256(TLS SPKI DER)` via
@@ -258,7 +262,9 @@ pub struct GossipConfig {
 impl Default for GossipConfig {
     fn default() -> Self {
         Self {
-            listen_addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_P2P_PORT)),
+            // IPv6 unspecified (`[::]`), bound dual-stack in `GossipService::start` (CON-002) --
+            // ecosystem-wide IPv6-first / IPv4-fallback peer-communication hard rule.
+            listen_addr: SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, DEFAULT_P2P_PORT)),
             peer_id: PeerId::default(),
             network_id: Bytes32::default(),
             network: Network::default_mainnet(),

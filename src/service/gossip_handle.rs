@@ -916,9 +916,15 @@ impl GossipHandle {
     /// Self-dials and already-connected remotes are skipped here as a fast pre-filter (the planner
     /// dedups by identity too). `select_peer` biases toward tried-then-new, so preferred peers surface
     /// first.
+    ///
+    /// **IPv6-first (ecosystem hard rule, [`SPEC.md`](../../docs/resources/SPEC.md) §1.10):** the raw
+    /// draw from `select_peer` is family-blind (weighted-random over the whole address book), so the
+    /// result is passed through [`order_ipv6_first`](crate::util::ip_address::order_ipv6_first) before
+    /// being returned — every IPv6 candidate is dialed before any IPv4 candidate, with IPv4 kept as the
+    /// fallback (never dropped) and the tried/new preference order preserved within each family.
     fn gather_pool_candidates(&self, want: usize) -> Vec<crate::service::peer_pool::PoolCandidate> {
         use crate::service::peer_pool::PoolCandidate;
-        let mut out = Vec::with_capacity(want);
+        let mut out: Vec<std::net::SocketAddr> = Vec::with_capacity(want);
         let mut seen: std::collections::HashSet<std::net::SocketAddr> =
             std::collections::HashSet::new();
         let connected_remotes: std::collections::HashSet<std::net::SocketAddr> = self
@@ -942,9 +948,15 @@ impl GossipHandle {
             };
             let host = ext.peer_info.host.clone();
             let port = ext.peer_info.port;
-            let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
+            // Parse the host as an `IpAddr` first, THEN combine with the port -- do not
+            // `format!("{host}:{port}")` and parse that as a `SocketAddr` string: an unbracketed
+            // IPv6 literal (`"2001:db8::1:9444"`) is not a valid `SocketAddr` string (IPv6 requires
+            // `[host]:port` bracketing) and silently fails to parse, which previously dropped every
+            // IPv6 candidate here regardless of the IPv6-first ordering below.
+            let Ok(ip) = host.parse::<std::net::IpAddr>() else {
                 continue;
             };
+            let addr = std::net::SocketAddr::new(ip, port);
             if seen.contains(&addr) || connected_remotes.contains(&addr) {
                 continue;
             }
@@ -952,9 +964,39 @@ impl GossipHandle {
                 continue;
             }
             seen.insert(addr);
-            out.push(PoolCandidate::from_addr(addr));
+            out.push(addr);
         }
-        out
+        crate::util::ip_address::order_ipv6_first(out)
+            .into_iter()
+            .map(PoolCandidate::from_addr)
+            .collect()
+    }
+
+    /// POOL-* / IPv6-first test hook: run [`Self::gather_pool_candidates`] directly so tests can
+    /// assert on dial-candidate ORDER (IPv6-first, IPv4-fallback) without a real network.
+    #[doc(hidden)]
+    pub fn __pool_gathered_candidates_for_tests(
+        &self,
+        want: usize,
+    ) -> Vec<crate::service::peer_pool::PoolCandidate> {
+        self.gather_pool_candidates(want)
+    }
+
+    /// IPv6-first test hook: seed the address manager's **new** table directly (bypasses the
+    /// `connect_to` + `RequestPeers` round trip) so tests can populate a mixed IPv4/IPv6 address
+    /// book and observe [`Self::__pool_gathered_candidates_for_tests`] ordering deterministically.
+    #[doc(hidden)]
+    pub fn __seed_address_book_for_tests(&self, peers: &[(String, u16)]) {
+        let src = PeerInfo {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        };
+        let now = metric_unix_timestamp_secs();
+        let batch: Vec<TimestampedPeerInfo> = peers
+            .iter()
+            .map(|(host, port)| TimestampedPeerInfo::new(host.clone(), *port, now))
+            .collect();
+        self.inner.address_manager.add_to_new_table(&batch, &src, 0);
     }
 
     /// Run ONE pool maintenance pass now (DISCOVER-fold is done by the loop / caller; this does the

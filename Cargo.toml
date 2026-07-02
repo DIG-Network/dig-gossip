@@ -64,6 +64,11 @@ chia-sha2 = "0.26"
 sha2 = "0.10"
 # Parse peer X.509 after outbound TLS (CON-001) — extract SPKI DER for [`peer_id_from_tls_spki_der`].
 x509-parser = "0.16"
+# CON-002 dual-stack bind: clear `IPV6_V6ONLY` on the `[::]` listening socket before `listen()` so
+# IPv4-mapped connections are accepted alongside native IPv6 on the SAME socket (IPv6-first /
+# IPv4-fallback hard rule). `tokio::net::TcpSocket` has no `set_only_v6`, so we build the raw
+# socket via `socket2`, configure it, then hand it to Tokio via `TcpListener::from_std`.
+socket2 = "0.5"
 
 # Async runtime / WebSocket framing used by upstream client patterns.
 tokio = { version = "1", features = ["full"] }

@@ -115,17 +115,24 @@ fn test_config_all_fields_exist() {
 // Each test below asserts one field of `GossipConfig::default()` matches the SPEC constant.
 // Together they lock the default configuration to prevent silent drift.
 
-/// **Row:** `test_config_default_listen_addr` -- `Default::default().listen_addr == 0.0.0.0:9444`.
+/// **Row:** `test_config_default_listen_addr` -- `Default::default().listen_addr == [::]:9444`.
 ///
-/// Port 9444 (`DEFAULT_P2P_PORT`) is the standard DIG gossip port. Binding `0.0.0.0` means
-/// all interfaces, which is the correct production default for a public-facing node.
+/// Port 9444 (`DEFAULT_P2P_PORT`) is the standard DIG gossip port. Binding the IPv6 unspecified
+/// address `[::]` (with `IPV6_V6ONLY` disabled at bind time -- CON-002) serves both IPv6 and
+/// IPv4-mapped inbound connections off a single dual-stack socket, per the ecosystem-wide
+/// "IPv6-first, IPv4-fallback for peer communication" hard rule. This supersedes the old
+/// IPv4-only `0.0.0.0` default.
 #[test]
 fn test_config_default_listen_addr() {
     let c = GossipConfig::default();
     assert_eq!(
         c.listen_addr,
-        SocketAddr::from(([0, 0, 0, 0], DEFAULT_P2P_PORT)),
-        "must match SPEC DEFAULT_P2P_PORT ({DEFAULT_P2P_PORT}) on all interfaces"
+        SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, DEFAULT_P2P_PORT)),
+        "must match SPEC DEFAULT_P2P_PORT ({DEFAULT_P2P_PORT}) on the IPv6 unspecified address (dual-stack)"
+    );
+    assert!(
+        c.listen_addr.is_ipv6(),
+        "default listen_addr must be IPv6 ([::]) per the IPv6-first hard rule"
     );
 }
 

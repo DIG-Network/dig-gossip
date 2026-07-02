@@ -134,7 +134,10 @@ pub const NEW_TABLE_SIZE: usize = NEW_BUCKET_COUNT * BUCKET_SIZE;
 // ---------------------------------------------------------------------------
 
 /// Default P2P listen port for DIG full nodes. SPEC §3.1.
-/// Chia mainnet uses 8444; DIG uses 9444 to avoid collisions on dual-stack machines.
+/// Chia mainnet uses 8444; DIG uses 9444 to avoid colliding with a Chia full node running on the
+/// same host. The default [`crate::types::config::GossipConfig::listen_addr`] binds this port on
+/// the IPv6 unspecified address `[::]` with `IPV6_V6ONLY` disabled -- one dual-stack socket
+/// serves both native IPv6 and IPv4-mapped connections (SPEC §1.10 IPv6-first / IPv4-fallback).
 pub const DEFAULT_P2P_PORT: u16 = 9444;
 
 /// Default per-introducer DNS resolution timeout passed to

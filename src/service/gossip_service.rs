@@ -41,6 +41,7 @@
 //!   but DIG splits responsibilities more granularly between `GossipService` (owner) and
 //!   `GossipHandle` (operator).
 
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -57,6 +58,51 @@ use tokio::sync::Notify;
 
 use super::gossip_handle::GossipHandle;
 use super::state::{PeerSlot, ServiceState, LC_CONSTRUCTED, LC_RUNNING, LC_STOPPED};
+
+/// Bind the CON-002 inbound listener socket, clearing `IPV6_V6ONLY` first when `addr` is IPv6 so
+/// the socket serves BOTH native IPv6 and IPv4-mapped connections (ecosystem-wide IPv6-first /
+/// IPv4-fallback hard rule -- SPEC §1.10 / §5.2).
+///
+/// # Why `socket2` instead of `TcpListener::bind` directly
+///
+/// `tokio::net::TcpListener::bind` goes straight from address to a bound+listening socket with no
+/// hook to clear socket options first, and `tokio::net::TcpSocket` (the lower-level builder) does
+/// not expose `set_only_v6`. We therefore build the raw socket via [`socket2::Socket`] --
+/// `new()` -> `set_reuseaddr` (matches the OS-default Tokio otherwise applies) -> conditionally
+/// `set_only_v6(false)` for IPv6 addresses -> `bind()` -> `listen()` -- then hand the raw
+/// `std::net::TcpListener` to Tokio via [`TcpListener::from_std`], which registers it on the
+/// reactor without touching any socket options itself.
+///
+/// # IPv4 addresses
+///
+/// When `addr` is IPv4, `set_only_v6` is never called (the option does not apply to an IPv4
+/// socket) -- this path is a plain bind, unchanged from before this fix.
+///
+/// # Platform note
+///
+/// `IPV6_V6ONLY` defaults to `true` on Windows and most BSDs (and is not settable after bind on
+/// some platforms), so it MUST be cleared before `bind()` -- setting it post-bind or post-listen
+/// is unreliable across platforms.
+fn bind_dual_stack_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    let domain = if addr.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    // Matches the SO_REUSEADDR Tokio's own `TcpListener::bind` sets, so repeated fast
+    // bind/rebind cycles (e.g. tests, service restarts) behave the same as before this change.
+    socket.set_reuse_address(true)?;
+    if addr.is_ipv6() {
+        // Dual-stack: accept IPv4-mapped (`::ffff:a.b.c.d`) connections on this IPv6 socket too.
+        socket.set_only_v6(false)?;
+    }
+    socket.bind(&addr.into())?;
+    // Backlog matches the default Tokio uses internally (`1024`).
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    TcpListener::from_std(socket.into())
+}
 
 /// Owns configuration, TLS identity, and the [`ServiceState`] that backs every subsystem.
 ///
@@ -181,7 +227,12 @@ impl GossipService {
             Ok(_) => {
                 // Step 2: Bind TCP listener. Port 0 triggers OS-assigned ephemeral port,
                 // used heavily in tests to avoid port conflicts (API-001 test plan).
-                let listener = match TcpListener::bind(self.inner.config.listen_addr).await {
+                //
+                // `bind_dual_stack_listener` (not a plain `TcpListener::bind`) so an IPv6
+                // `listen_addr` (the default `[::]:9444` -- API-003) clears `IPV6_V6ONLY` before
+                // binding, letting the one socket accept both native IPv6 and IPv4-mapped inbound
+                // connections (ecosystem-wide IPv6-first / IPv4-fallback hard rule, SPEC §1.10).
+                let listener = match bind_dual_stack_listener(self.inner.config.listen_addr) {
                     Ok(l) => l,
                     Err(e) => {
                         self.inner
