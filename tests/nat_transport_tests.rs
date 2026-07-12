@@ -78,7 +78,7 @@ fn peer_target_carries_peer_id_addr_and_network() {
     let target = peer_target_for(peer_id, Some(addr), "DIG_MAINNET");
 
     assert_eq!(target.peer_id.as_bytes(), &[7u8; 32]);
-    assert_eq!(target.direct_addr, Some(addr));
+    assert_eq!(target.direct_addr(), Some(addr));
     assert_eq!(target.network_id, "DIG_MAINNET");
 }
 
@@ -86,7 +86,7 @@ fn peer_target_carries_peer_id_addr_and_network() {
 fn peer_target_without_addr_is_relay_only() {
     let peer_id = PeerId::from([9u8; 32]);
     let target = peer_target_for(peer_id, None, "DIG_MAINNET");
-    assert_eq!(target.direct_addr, None);
+    assert_eq!(target.direct_addr(), None);
     assert_eq!(target.peer_id.as_bytes(), &[9u8; 32]);
 }
 
