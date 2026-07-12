@@ -7,6 +7,12 @@ name: CI
 # **line-coverage floor of 80%** measured with `cargo llvm-cov`. A change that
 # drops line coverage below 80% fails the build.
 #
+# Flaky-test management (#489): the test suite runs under `cargo nextest` with
+# `--retries 2` so a test that fails then passes on retry is reported as FLAKY
+# (surfaced in the run output / JUnit) rather than silently green or blocking
+# the merge on transient flakiness. Coverage instrumentation still runs via
+# `cargo llvm-cov nextest` so the 80% floor is measured the same way.
+#
 # Coverage notes:
 # - Measured against the production-shaped **default** feature set
 #   (`native-tls,relay,erlay,compact-blocks,dandelion`). The `tor` and `rustls`
@@ -72,15 +78,19 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Run tests with coverage and enforce >=80% line coverage
         run: >-
-          cargo llvm-cov
+          cargo llvm-cov nextest
           --no-default-features
           --features native-tls,relay,erlay,compact-blocks,dandelion
           --ignore-filename-regex 'vendor/'
           --fail-under-lines 80
           --lcov --output-path lcov.info
-          -- --test-threads=1
+          --test-threads=1
+          --retries 2
 
       - name: Coverage summary
         if: always()
