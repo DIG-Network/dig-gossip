@@ -1,0 +1,41 @@
+# Changelog
+
+All notable changes to this project are documented here.
+This project adheres to [Semantic Versioning](https://semver.org) and
+[Conventional Commits](https://www.conventionalcommits.org).
+
+## [0.1.1] - 2026-07-12
+
+### Bug Fixes
+- **deps:** Re-resolve DIG git deps to rewritten (co-author/signed) revs
+
+### CI
+- Enforce version increment in PRs (package.json / Cargo.toml)- Enforce Conventional Commits with commitlint on PRs- Enforce Conventional Commits with commitlint on PRs- Release automation (git-cliff changelog + tag on merge); publish is manual workflow_dispatch (#230)- Re-arm crates.io auto-publish on version tag (token in org secrets; auto-publish-everything #230)- Add flaky-test management (#489) (#2)
+
+### Chores
+- **changelog:** Add git-cliff config for Conventional-Commit changelog
+
+## [0.1.0] - 2026-04-16
+
+### Features
+- **STR-001:** Baseline Cargo.toml, features, and verification tests- **STR-002:** Module hierarchy per SPEC 10.1 / STR-002 checklist- **STR-003:** Crate-root re-exports per SPEC 10.2- **STR-004:** Feature flags, tor deps, and verification tests- **STR-005:** Test harness, GossipConfig and PeerConnection fields- **API-001:** GossipService new/start/stop and shared state- **api-002:** GossipHandle RPC surface (stub implementation)- **api-003:** Complete GossipConfig field set and dedicated tests- **api-004:** GossipError Clone, Arc ClientError, ERLAY sketch variants- **api-005:** PeerConnection verification, TLS peer_id hash, api_005 tests- **api-006:** PeerReputation, PenaltyReason, and integration tests- **api-007:** PeerInfo host/port with get_group and get_key- **api-008:** GossipStats and RelayStats with live snapshot wiring- **api-009:** DigMessageType 200-217, serde u8, TryFrom; workflow rules- **api-010:** IntroducerConfig and RelayConfig with serde defaults- **api-011:** Add ExtendedPeerInfo and VettedPeer with tests- **con-001:** Outbound WSS connect, RequestPeers, address manager hook- **connection:** Implement CON-002 inbound listener and verification- **connection:** Implement CON-003 handshake validation- **CON-005:** Per-connection inbound rate limiting and tests- **CON-006:** Per-connection wire metrics and GossipStats aggregation- **connection:** Implement CON-007 peer banning with ClientState mirror- **discovery:** Implement DSC-001 AddressManager (Chia address_manager.py port)- **discovery:** DSC-002 address manager peers-file persistence- **discovery:** DSC-003 DNS seeding via Network::lookup_all- **discovery:** DSC-004 introducer peer query (wire + client)- **discovery:** DSC-005 introducer registration (RegisterPeer/Ack)- **discovery:** DSC-006 discovery loop with DNS-first and introducer exponential backoff- **discovery:** DSC-007 peer exchange with per-request and global caps- **discovery:** DSC-008 feeler connections on Poisson schedule (240s avg)- **discovery:** DSC-009 parallel connection establishment (batch of 8)- **discovery:** DSC-010 AS-level diversity (one outbound per AS number)- **discovery:** DSC-011 /16 subnet group filter (fast first-pass)- **discovery:** DSC-012 IntroducerPeers vetting state machine- **relay:** RLY-001 relay protocol types (RelayMessage enum + RelayPeerInfo)- **relay:** RLY-002/003/005/006 relay client (send, broadcast, peers, ping)- **relay:** RLY-004/007/008 auto-reconnect, NAT traversal, transport selection- **gossip:** PLT-001/002/003/004/005/006/007/008 Plumtree core + seen set + message cache- **gossip:** PLT-009 Plumtree wire types (LazyAnnounce, Prune, Graft, RequestByHash)- **gossip:** CBK-001 through CBK-006 compact block relay (BIP 152 style)- **gossip:** ERL-001 through ERL-008 ERLAY transaction relay- **gossip:** PRI-001 through PRI-008 priority lanes + adaptive backpressure- **performance:** PRF-001 through PRF-006 latency scoring + benchmarks- **concurrency:** CNC-001 through CNC-006 thread safety + task architecture- **privacy:** PRV-001 through PRV-010 Dandelion++ + PeerId rotation + Tor- **requirements:** INT-001 through INT-012 integration requirements- **integration:** INT-001 broadcast via Plumtree (eager/lazy routing)- **gossip:** Implement broadcaster.rs + latency.rs (no more stubs)- **integration:** INT-002 through INT-012 wiring + 66 tests- **requirements:** INT-013/014/015 public API quality requirements- **api:** INT-013/014/015 clean public API + crate docs + lifecycle test- **docs:** Comprehensive README + PRV-006 config fields + INT tracking update- Add dig-protocol crate (DIG wire types extending chia-protocol)
+
+### Bug Fixes
+- **CON-004:** Keepalive with vendored chia-sdk-client full-duplex fix- **clippy:** Resolve all -D warnings errors for CI
+
+### Refactor
+- **tests:** Split combined test files into per-requirement files- Migrate dig-gossip to import from dig-protocol
+
+### Styling
+- Cargo fmt
+
+### Chores
+- Add root package.json for local GitNexus (npm/npx)- Add CI publish workflow + cursor MCP config- Depend on dig-protocol 0.1.1 from crates.io
+
+### CON-008
+- Dedicated tests and docs for handshake version sanitization
+
+### CON-009
+- Vendored native-tls mTLS inbound + con_009_tests
+
+
