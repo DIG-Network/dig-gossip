@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -51,7 +51,11 @@ dig-protocol = { version = "0.1.1", default-features = false }
 dig-nat = { version = "0.2", git = "https://github.com/DIG-Network/dig-nat" }
 # Canonical relay endpoint (`DIG_RELAY_URL`) — pulled from the SAME git source dig-nat uses so the two
 # resolve to ONE `dig-constants` and stay in lockstep until 0.2.x is on crates.io (see dig-nat's note).
-dig-constants = { version = "0.2", git = "https://github.com/DIG-Network/dig-constants" }
+# VERSION REQ: `>=0.2, <0.4` spans 0.2.x AND 0.3.x. dig-constants `main` advanced to 0.3.0 (additive —
+# adds `DIG_NODE_PORT`); a bare `^0.2` req could not be satisfied by the 0.3.0 default branch, failing
+# every fresh resolve. `<0.4` guards a future breaking 0.4. Matches dig-nat's widened req so the two
+# resolve to ONE dig-constants (0.3.0).
+dig-constants = { version = ">=0.2, <0.4", git = "https://github.com/DIG-Network/dig-constants" }
 # chia_streamable_macro needed directly because the proc-macro reads Cargo.toml for chia-protocol
 # and generates `chia_protocol::` paths at compile time.
 chia_streamable_macro = "0.26"

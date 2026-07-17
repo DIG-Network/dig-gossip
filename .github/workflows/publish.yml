@@ -1,5 +1,17 @@
 name: Publish to crates.io
 
+# Tag-driven release. Pushing a version tag `vX.Y.Z` (cut by release.yml on merge) runs this
+# workflow, which cuts a GitHub Release for the tag.
+#
+# crates.io publish is GUARDED OFF for now (#681). dig-gossip still resolves its DIG dependencies
+# (dig-protocol, dig-nat, dig-constants) from git, and `cargo publish` requires every non-dev
+# dependency to be a released crates.io version. Until the whole dependency tree is on crates.io
+# (#681), a tag-triggered `cargo package`/`cargo publish` verify re-resolves those bare-git deps to
+# their drifted `main` tips and fails to compile — cutting a spurious RED release run on every merge
+# even though the git+lock consumer path (dig-node builds dig-gossip via git + Cargo.lock) is fine.
+# So the crates.io steps run ONLY on a manual `workflow_dispatch`; a tag push just cuts the GitHub
+# Release. Flip this to per-tag once #681 has published the dependency tree to crates.io by version.
+
 on:
   push:
     tags:
@@ -11,40 +23,52 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # NOTE (#489): this workflow does NOT re-run the test suite. The PR release
-  # gates (ci.yml) already ran the full nextest suite + the >=80% coverage
-  # floor against the exact tree being tagged (branch protection requires
-  # `main` to be up to date before merge). Re-running tests at deploy time is
-  # redundant work that only adds a flake-exposure surface that can block a
-  # release for reasons unrelated to the release itself (this pattern blocked
-  # a release once already — see #488). Deploy = build + package + publish.
+  # crates.io publish. GUARDED to `workflow_dispatch` only (#681): a tag push does NOT publish (the
+  # git dependency tree is not yet on crates.io — see the header note). The job stays present so the
+  # `create-release` job below can `needs:` it and still cut a GitHub Release on every tag.
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
+      - name: Skip crates.io publish on tag push (#681)
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          echo "Skipping crates.io publish: dig-gossip's DIG dependencies are not yet on crates.io (#681)."
+          echo "The git + Cargo.lock consumer path (dig-node) is unaffected; the GitHub Release still cuts."
+
       - name: Checkout code
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
+        if: github.event_name == 'workflow_dispatch'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
 
       - name: Cache dependencies
+        if: github.event_name == 'workflow_dispatch'
         uses: Swatinem/rust-cache@v2
 
+      # `--locked` (not `--allow-dirty`): verify against the committed Cargo.lock so deps resolve to
+      # their pinned revisions instead of re-resolving bare-git deps to a drifted `main` tip.
       - name: Verify package can be built
-        run: cargo build --release
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo build --release --locked
 
       - name: Verify package can be packaged
-        run: cargo package --allow-dirty
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo package --locked
 
       - name: Check if CARGO_REGISTRY_TOKEN is available
+        if: github.event_name == 'workflow_dispatch'
         run: |
           if [ -z "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
             echo "CARGO_REGISTRY_TOKEN secret is not set in repository settings"
@@ -52,7 +76,8 @@ jobs:
           fi
 
       - name: Publish to crates.io
-        run: cargo publish --allow-dirty --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo publish --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -70,12 +95,10 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          release_name: "dig-gossip v${{ steps.extract_version.outputs.VERSION }}"
+          tag_name: ${{ github.ref_name }}
+          name: "dig-gossip v${{ steps.extract_version.outputs.VERSION }}"
           body: |
             ## dig-gossip v${{ steps.extract_version.outputs.VERSION }}
 
