@@ -7,6 +7,17 @@
 //!   WebSocket and decodes the `peers` list of [`RelayPeerInfo`](crate::relay::relay_types::RelayPeerInfo)
 //!   into [`PeerRecord`]s. A node registered with the relay is itself returned to others'
 //!   `get_peers`, so registration IS the introducer advertisement.
+//!
+//!   **Superseded as the LIVE discovery path (#870).** The pool no longer calls [`relay_get_peers`] /
+//!   [`unified_discover`]: an ephemeral open→register→get_peers→close every maintenance interval kept
+//!   two nodes' registration windows from ever overlapping, so neither appeared in the other's
+//!   `get_peers` (the proven root cause of `connected_peers` staying `0`). `dig-nat` OWNS the relay
+//!   transport now — its ONE long-lived reservation socket also discovers peers, exposed via
+//!   [`RelayStatus::known_peers`](dig_nat::relay::RelayStatus::known_peers) — and dig-gossip consumes
+//!   that set through [`GossipHandle::fold_relay_known_peers`](crate::service::gossip_handle::GossipHandle::fold_relay_known_peers).
+//!   These functions remain only for their pure RLY-005 wire-decode tests; removing them (and the dead
+//!   Phase-4 `relay/relay_client.rs` + `relay_service.rs` state machines) is tracked for the
+//!   arch-audit lane.
 //! - **§4b — node peer-exchange (`dig.getPeers` / `RequestPeers`).** The gossip layer already asks
 //!   connected peers for their address lists ([`crate::service::gossip_handle::GossipHandle::connect_to`]
 //!   sends `RequestPeers` on connect; [`crate::service::gossip_handle::GossipHandle::discover_from_introducer`]

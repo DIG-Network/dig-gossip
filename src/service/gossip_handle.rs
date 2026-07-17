@@ -1018,11 +1018,22 @@ impl GossipHandle {
             .prune_expired_dig_bans(metric_unix_timestamp_secs())
             .await;
 
-        let connected = self.peer_count().await;
+        // Count relay-reachable peers (#870) toward "connected": a peer this node can already talk to
+        // through dig-nat's relay reservation is connected, so it shrinks the free-slot dial budget
+        // like a direct peer — without it the pool would keep dialing for slots it has already filled
+        // via the relay. Two accounting rules apply (review findings on #870):
+        //  1. Count the UNION, not the sum — a peer reachable BOTH directly and via the relay counts
+        //     once, so `relay_reachable_excluding_connected` drops peers already in the direct pool.
+        //  2. A direct-dial FLOOR (see `free_slot_budget_with_direct_floor`) keeps direct dialing alive
+        //     regardless of how many peers a relay advertises, so a compromised relay can't suppress it.
+        let direct_connected = self.peer_count().await;
+        let relay_reachable = self.inner.relay_reachable_excluding_connected();
+        let connected = direct_connected + relay_reachable;
         let connected_keys = self.inner.connected_pool_keys();
         let now = metric_unix_timestamp_secs();
-        let budget = crate::service::peer_pool::free_slot_budget(
-            connected,
+        let budget = crate::service::peer_pool::free_slot_budget_with_direct_floor(
+            direct_connected,
+            relay_reachable,
             self.inner.pool.in_flight_count(),
             &cfg,
         );
@@ -1036,6 +1047,7 @@ impl GossipHandle {
             &self.inner.pool,
             &cfg,
             connected,
+            direct_connected,
             &connected_keys,
             &candidates,
             now,
@@ -1077,48 +1089,105 @@ impl GossipHandle {
         })
     }
 
-    /// DISCOVER (§4a): query the relay introducer for peers and fold the dialable ones into the
-    /// address book. Soft-fails (logs, no error) so a relay outage never stalls the pool.
+    /// DISCOVER (§4a, #870): fold the peers `dig-nat`'s **live persistent reservation** has discovered
+    /// into the address book, and let the relay-only ones count as connected-via-relay.
+    ///
+    /// `dig-nat` OWNS the relay transport: its `run_relay_connection` loop holds ONE long-lived
+    /// WebSocket that both keeps this node reachable AND — since dig-nat 0.2.0 — discovers peers over
+    /// the SAME socket (RLY-005 `GetPeers` + pushed `PeerConnected`/`PeerDisconnected`), exposing them
+    /// via [`RelayStatus::known_peers`](dig_nat::relay::RelayStatus::known_peers). We READ that set
+    /// here instead of opening an ephemeral relay socket per pass. The old ephemeral
+    /// open-register-getpeers-close path (removed) reconnected every maintenance interval, so two
+    /// nodes' sub-second registration windows never overlapped and neither ever appeared in the
+    /// other's `get_peers` — the proven root cause of `connected_peers` staying `0`. Holding ONE
+    /// reservation live (in dig-nat) makes the relay advertise each node to the other's discovery.
+    ///
+    /// Soft — does nothing until the node attaches its reservation status via
+    /// [`Self::attach_relay_status`], and an empty/relay-down set is a no-op (never stalls the pass).
     #[cfg(feature = "relay")]
     async fn pool_discover_from_relay(&self) {
-        let Some(relay) = self.inner.config.relay.as_ref() else {
-            return;
+        // Snapshot the discovered set (cloned — we hold no lock across the fold below).
+        let known = {
+            let Ok(guard) = self.inner.relay_status.lock() else {
+                return;
+            };
+            match guard.as_ref() {
+                Some(status) => status.known_peers(),
+                None => return,
+            }
         };
-        if !relay.enabled || relay.endpoint.trim().is_empty() {
+        self.fold_relay_known_peers(&known);
+    }
+
+    /// Fold `dig-nat`'s discovered relay peers (#870) into dig-gossip's address book + relay-reachable
+    /// set. The pool-maintenance loop calls this each pass with the attached reservation's
+    /// [`RelayStatus::known_peers`](dig_nat::relay::RelayStatus::known_peers); it is also the pure,
+    /// synchronous consumption seam a caller (or a test) can drive directly with synthetic
+    /// [`RelayPeerInfo`](dig_nat::wire::RelayPeerInfo)s — dig-nat's discovery internals are private, so
+    /// this is the supported way to inject a known-peer set without a live relay socket.
+    ///
+    /// Relay-discovered peers are identity-only ([`Via::Relay`](crate::nat::peer_record::Via::Relay),
+    /// no dialable address), so the address-book merge places none of them by-address — instead they
+    /// SURVIVE as relay-reachable (counted via
+    /// [`ServiceState::relay_reachable_count`](crate::service::state::ServiceState)) rather than being
+    /// DROPPED. Any relay record that ever carries a dialable candidate is still placed through the
+    /// SAME shared, capped merge node peer-exchange uses (audit #179 MEDIUM finding 4): the untrusted
+    /// relay source can never add more peers, cumulatively across passes, than the combined
+    /// per-request/global budget allows.
+    #[cfg(feature = "relay")]
+    pub fn fold_relay_known_peers(&self, known: &[dig_nat::wire::RelayPeerInfo]) {
+        // Refresh the relay-reachable set (a wholesale replace, so dropped peers disappear) — this is
+        // what makes two relay-introduced nodes each count the other as connected.
+        let self_hex = self.local_peer_id().ok().map(|id| id.to_string());
+        self.inner.set_relay_reachable(
+            known.iter().map(|p| p.peer_id.as_str()),
+            self_hex.as_deref(),
+        );
+
+        if known.is_empty() {
             return;
         }
-        let self_hex = match self.local_peer_id() {
-            Ok(id) => id.to_string(),
-            Err(_) => return,
-        };
-        let network_id =
-            crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
-        let cfg = crate::nat::UnifiedDiscoveryConfig {
-            relay_endpoint: relay.endpoint.clone(),
-            self_peer_id_hex: self_hex,
-            network_id,
-            timeout: Duration::from_secs(relay.connection_timeout_secs.max(1)),
-        };
-        let records = crate::nat::unified_discover(&cfg).await;
-        if !records.is_empty() {
-            let bound = self
-                .inner
-                .listen_bound_addr
-                .lock()
-                .ok()
-                .and_then(|g| *g)
-                .unwrap_or(self.inner.config.listen_addr);
-            // Audit #179 (MEDIUM finding 4): route the relay's response through the SAME shared
-            // total_peers_received counter node peer-exchange and introducer discovery use, so
-            // the untrusted relay source cannot add more peers, cumulatively across repeated
-            // pool-maintenance passes, than the combined per-request/global budget allows.
-            crate::nat::merge_records_into_address_manager_capped(
-                &self.inner.address_manager,
-                &records,
-                &bound.ip().to_string(),
-                bound.port(),
-                &self.inner.total_peers_received,
-            );
+        let records: Vec<_> = known
+            .iter()
+            .map(crate::nat::peer_record::PeerRecord::from_nat_relay_peer_info)
+            .collect();
+        let bound = self
+            .inner
+            .listen_bound_addr
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .unwrap_or(self.inner.config.listen_addr);
+        crate::nat::merge_records_into_address_manager_capped(
+            &self.inner.address_manager,
+            &records,
+            &bound.ip().to_string(),
+            bound.port(),
+            &self.inner.total_peers_received,
+        );
+    }
+
+    /// **RLY-* / #870** — whether `dig-nat`'s persistent relay reservation is currently held (a live
+    /// WebSocket to the relay). `false` when no reservation is attached or the relay is down.
+    fn relay_connected(&self) -> bool {
+        self.inner
+            .relay_status
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.is_connected()))
+            .unwrap_or(false)
+    }
+
+    /// **RLY-* / #870** — attach `dig-nat`'s live persistent-reservation status so the pool consumes
+    /// its discovered peer set (see [`Self::pool_discover_from_relay`]).
+    ///
+    /// The node calls this once at startup with the `Arc<RelayStatus>` it hands to
+    /// [`dig_nat::relay::run_relay_connection`], so dig-gossip and the reservation loop share ONE
+    /// status. Idempotent — a later call replaces the handle (e.g. a re-attached reservation).
+    #[cfg(feature = "relay")]
+    pub fn attach_relay_status(&self, status: std::sync::Arc<dig_nat::relay::RelayStatus>) {
+        if let Ok(mut guard) = self.inner.relay_status.lock() {
+            *guard = Some(status);
         }
     }
 
@@ -1166,6 +1235,33 @@ impl GossipHandle {
             .total_connections
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(pid)
+    }
+
+    /// Test hook (#870 finding 1): count of relay-reachable peers NOT already directly connected — the
+    /// deduped contribution that actually feeds the dial budget (a peer reachable both ways counts once).
+    #[doc(hidden)]
+    pub fn __relay_reachable_excluding_connected_for_tests(&self) -> usize {
+        self.inner.relay_reachable_excluding_connected()
+    }
+
+    /// Test hook (#870 finding 2): the free-slot dial budget the pool would use right now — the same
+    /// `direct_connected` + de-duplicated relay + direct-floor math [`Self::run_pool_maintenance_once`]
+    /// applies. Returns `0` when no pool is configured. Lets tests assert the direct-dial floor without
+    /// standing up real dial targets.
+    #[doc(hidden)]
+    pub async fn __pool_free_slot_budget_for_tests(&self) -> usize {
+        let Some(cfg) = self.inner.config.peer_pool.clone() else {
+            return 0;
+        };
+        let cfg = cfg.normalized();
+        let direct_connected = self.peer_count().await;
+        let relay_reachable = self.inner.relay_reachable_excluding_connected();
+        crate::service::peer_pool::free_slot_budget_with_direct_floor(
+            direct_connected,
+            relay_reachable,
+            self.inner.pool.in_flight_count(),
+            &cfg,
+        )
     }
 
     /// Test hook: model an **inbound** stub (different [`NodeType`] / direction) without real TCP.
@@ -1503,9 +1599,11 @@ impl GossipHandle {
             bytes_received,
             known_addresses: self.inner.address_manager.size(),
             seen_messages,
-            // Stub until RLY-*: mirror [`RelayStats::connected`] (always false with `RelayStats::default()`).
-            relay_connected: false,
-            relay_peer_count: 0,
+            // #870: reflect dig-nat's live persistent reservation. `relay_connected` is whether a
+            // reservation socket is currently held; `relay_peer_count` is how many peers it has
+            // discovered (reachable via relay). Both read `0`/`false` when no reservation is attached.
+            relay_connected: self.relay_connected(),
+            relay_peer_count: self.inner.relay_reachable_count(),
         }
     }
 
