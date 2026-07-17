@@ -587,6 +587,34 @@ impl ServiceState {
         self.relay_reachable.lock().map(|g| g.len()).unwrap_or(0)
     }
 
+    /// **RLY-* / #870 (finding 1)** — the number of relay-reachable peers that are NOT already in the
+    /// directly-connected pool: `|relay_reachable \ directly_connected|`.
+    ///
+    /// This is the relay set's genuine contribution to "connected". A peer reachable BOTH directly and
+    /// through the relay (routine during the relay→direct hole-punch upgrade window, and for any direct
+    /// peer that stays relay-registered) MUST count once — as a direct peer — not once per path. Summing
+    /// [`Self::relay_reachable_count`] with the direct peer count double-counts such a peer, inflates the
+    /// pool's notion of how connected it is, and wrongly shrinks the free-slot dial budget so the node
+    /// under-populates its direct pool. Counting the UNION avoids that. Returns `0` on a poisoned lock (a
+    /// degraded read is safer than a panic in the pool loop).
+    pub(crate) fn relay_reachable_excluding_connected(&self) -> usize {
+        let Ok(relay) = self.relay_reachable.lock() else {
+            return 0;
+        };
+        if relay.is_empty() {
+            return 0;
+        }
+        let connected_hex: std::collections::HashSet<String> = self
+            .peers
+            .lock()
+            .map(|g| g.keys().map(|pid| pid.to_string()).collect())
+            .unwrap_or_default();
+        relay
+            .iter()
+            .filter(|id| !connected_hex.contains(*id))
+            .count()
+    }
+
     /// **RLY-* / #870** — replace the relay-reachable set with the peers `dig-nat` currently has
     /// discovered over its live reservation (their `peer_id` hex), skipping this node's own id if the
     /// relay echoes it back. Called each pool-maintenance pass with

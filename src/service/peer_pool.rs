@@ -209,8 +209,14 @@ pub struct PoolPlan {
 /// has no dependency on the live [`ServiceState`]).
 #[derive(Debug, Clone)]
 pub struct PoolSnapshot<'a> {
-    /// Number of peers currently connected (live + adopted).
+    /// Number of peers currently connected (live + adopted), counting the UNION of directly-connected
+    /// and relay-reachable peers (a peer reachable both ways counted once — #870 finding 1). Drives the
+    /// fill-toward-target / cap-at-max math.
     pub connected: usize,
+    /// Of [`Self::connected`], how many are in the live DIRECT pool. Drives the direct-dial floor
+    /// (#870 finding 2) so relay-reachable peers can never starve direct dialing to zero. When there is
+    /// no relay, this equals `connected`.
+    pub direct_connected: usize,
     /// Number of dials currently in flight (reserved slots not yet resolved).
     pub in_flight: usize,
     /// Dedup keys of peers already connected — never dialed again.
@@ -235,6 +241,47 @@ pub fn free_slot_budget(connected: usize, in_flight: usize, cfg: &PeerPoolConfig
     want_to_target.min(room_to_max)
 }
 
+/// One quarter of `target_peers` (at least 1): the minimum number of DIRECT peer connections the pool
+/// always works toward, regardless of how many peers a relay advertises as reachable.
+///
+/// Without this floor a compromised or misbehaving relay reporting `>= target_peers` known peers would
+/// drive the free-slot budget to zero (#870 finding 2), stopping the node from making ANY direct dials
+/// and stranding it on that single relay with no independent fan-out. A quarter keeps meaningful direct
+/// connectivity for gossip resilience while still letting genuine relay reachability reduce redundant
+/// dialing. Relay-reachable peers count toward reachability/health/stats — they just cannot zero out
+/// the direct-dial budget.
+fn min_direct_peers(cfg: &PeerPoolConfig) -> usize {
+    (cfg.target_peers / 4).max(1)
+}
+
+/// Free-slot budget that lets relay-reachable peers reduce redundant direct dialing WITHOUT letting
+/// them starve direct dialing below [`min_direct_peers`].
+///
+/// `direct_connected` is the live direct-pool size; `relay_reachable` is the count of peers reachable
+/// only through the relay reservation, already de-duplicated against the direct set (a peer reachable
+/// both ways is counted once, as direct — #870 finding 1). The relay-aware budget treats relay-reachable
+/// peers as connected so the pool doesn't dial for slots the relay already fills; the direct-dial floor
+/// then guarantees the pool keeps working toward [`min_direct_peers`] direct connections no matter how
+/// many peers the relay advertises. The floor may raise the budget above the relay-aware value, but
+/// direct dialing still never exceeds the hard cap on direct connections.
+pub fn free_slot_budget_with_direct_floor(
+    direct_connected: usize,
+    relay_reachable: usize,
+    in_flight: usize,
+    cfg: &PeerPoolConfig,
+) -> usize {
+    let cfg = cfg.normalized();
+    let relay_aware = free_slot_budget(
+        direct_connected.saturating_add(relay_reachable),
+        in_flight,
+        &cfg,
+    );
+    let direct_current = direct_connected.saturating_add(in_flight);
+    let floor_budget = min_direct_peers(&cfg).saturating_sub(direct_current);
+    let room_to_max = cfg.max_peers.saturating_sub(direct_current);
+    relay_aware.max(floor_budget).min(room_to_max)
+}
+
 /// Plan one maintenance pass: pick up to the free-slot budget of eligible candidates to dial.
 ///
 /// A candidate is ELIGIBLE when it is not already connected, not already selected this pass (dedup by
@@ -242,7 +289,13 @@ pub fn free_slot_budget(connected: usize, in_flight: usize, cfg: &PeerPoolConfig
 /// the candidate order (callers pass most-preferred — e.g. most-direct / most-diverse — first).
 pub fn plan_pass(snap: &PoolSnapshot, cfg: &PeerPoolConfig) -> PoolPlan {
     let cfg = cfg.normalized();
-    let free_slots = free_slot_budget(snap.connected, snap.in_flight, &cfg);
+    let relay_reachable = snap.connected.saturating_sub(snap.direct_connected);
+    let free_slots = free_slot_budget_with_direct_floor(
+        snap.direct_connected,
+        relay_reachable,
+        snap.in_flight,
+        &cfg,
+    );
     if free_slots == 0 {
         return PoolPlan {
             to_dial: Vec::new(),
@@ -429,13 +482,19 @@ pub trait Dialer: Send + Sync {
 /// duration of its dial so concurrent passes / manual connects never double-dial the same peer, and
 /// releases the reservation when the dial resolves. Bounded by the dialer's own per-dial timeout.
 ///
+/// `connected` is the UNION of directly-connected and relay-reachable peers (deduped — #870 finding 1);
+/// `direct_connected` is the directly-connected subset that drives the direct-dial floor (#870 finding
+/// 2). When there is no relay the two are equal.
+///
 /// This is the executable half of the pool; the decision half is the pure [`plan_pass`]. `connected`
 /// / `connected_keys` are supplied by the caller (read from `ServiceState::peers`) so this stays
 /// independent of the exact peer-map layout.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_maintenance_pass<D: Dialer>(
     pool: &Arc<PoolState>,
     cfg: &PeerPoolConfig,
     connected: usize,
+    direct_connected: usize,
     connected_keys: &[CandidateKey],
     candidates: &[PoolCandidate],
     now: u64,
@@ -444,6 +503,7 @@ pub async fn run_maintenance_pass<D: Dialer>(
     let backoff = pool.backoff_snapshot();
     let snap = PoolSnapshot {
         connected,
+        direct_connected,
         in_flight: pool.in_flight_count(),
         connected_keys,
         candidates,
@@ -521,6 +581,37 @@ mod tests {
     }
 
     #[test]
+    fn relay_reachable_peers_do_not_shrink_budget_below_the_direct_floor() {
+        // #870 finding 2: a relay advertising >= target reachable peers must NOT zero out direct
+        // dialing. With target 8 the floor is 8/4 = 2 direct dials, held regardless of relay count.
+        let c = cfg(2, 8, 16);
+        // No direct peers, but the relay claims 100 reachable peers -> relay-aware budget is 0.
+        assert_eq!(free_slot_budget(100, 0, &c), 0);
+        // The floored budget still keeps direct dialing alive at the floor.
+        assert_eq!(free_slot_budget_with_direct_floor(0, 100, 0, &c), 2);
+        // Once the direct floor is met, extra relay peers stop new direct dials.
+        assert_eq!(free_slot_budget_with_direct_floor(2, 100, 0, &c), 0);
+        // In-flight direct dials count toward the floor so we don't over-dial it.
+        assert_eq!(free_slot_budget_with_direct_floor(0, 100, 2, &c), 0);
+    }
+
+    #[test]
+    fn direct_floor_never_dials_past_the_max_cap() {
+        // The floor can raise the budget above the relay-aware value but never past max direct room.
+        let c = cfg(1, 8, 3);
+        // Two direct + one in-flight already occupy all 3 max slots -> no room even for the floor.
+        assert_eq!(free_slot_budget_with_direct_floor(2, 50, 1, &c), 0);
+    }
+
+    #[test]
+    fn relay_aware_budget_matches_plain_budget_without_a_relay() {
+        // With zero relay-reachable peers the floored budget degrades to the plain fill-to-target math.
+        let c = cfg(2, 5, 8);
+        assert_eq!(free_slot_budget_with_direct_floor(3, 0, 0, &c), 2);
+        assert_eq!(free_slot_budget_with_direct_floor(5, 0, 0, &c), 0);
+    }
+
+    #[test]
     fn plan_dedups_candidates_by_peer_id_and_address() {
         let c = cfg(1, 4, 8);
         let id = PeerId::from([7u8; 32]);
@@ -536,6 +627,7 @@ mod tests {
         let backoff = HashMap::new();
         let snap = PoolSnapshot {
             connected: 0,
+            direct_connected: 0,
             in_flight: 0,
             connected_keys: &[],
             candidates: &candidates,
@@ -561,6 +653,7 @@ mod tests {
         let backoff = HashMap::new();
         let snap = PoolSnapshot {
             connected: 1,
+            direct_connected: 1,
             in_flight: 0,
             connected_keys: &[CandidateKey::Id(id)],
             candidates: &candidates,
@@ -581,6 +674,7 @@ mod tests {
         let backoff = HashMap::new();
         let snap = PoolSnapshot {
             connected: 1,
+            direct_connected: 1,
             in_flight: 0,
             connected_keys: &[],
             candidates: &candidates,
@@ -620,6 +714,7 @@ mod tests {
         );
         let snap = PoolSnapshot {
             connected: 0,
+            direct_connected: 0,
             in_flight: 0,
             connected_keys: &[],
             candidates: &candidates,
@@ -669,7 +764,7 @@ mod tests {
             .map(|n| PoolCandidate::from_addr(addr(n)))
             .collect();
         // Empty pool -> should dial exactly `target` (4).
-        let added = run_maintenance_pass(&pool, &c, 0, &[], &candidates, 0, &OkDialer).await;
+        let added = run_maintenance_pass(&pool, &c, 0, 0, &[], &candidates, 0, &OkDialer).await;
         assert_eq!(added, 4);
         assert_eq!(
             pool.in_flight_count(),
@@ -701,7 +796,7 @@ mod tests {
             CandidateKey::Addr(addr(3)),
         ];
         let added =
-            run_maintenance_pass(&pool, &c, 3, &connected_keys, &candidates, 0, &OkDialer).await;
+            run_maintenance_pass(&pool, &c, 3, 3, &connected_keys, &candidates, 0, &OkDialer).await;
         assert_eq!(added, 1, "one slot below target -> dial exactly one more");
     }
 
@@ -719,7 +814,7 @@ mod tests {
             PoolCandidate::from_addr(addr(1)),
             PoolCandidate::from_addr(addr(2)),
         ];
-        let added = run_maintenance_pass(&pool, &c, 0, &[], &candidates, 100, &FailDialer).await;
+        let added = run_maintenance_pass(&pool, &c, 0, 0, &[], &candidates, 100, &FailDialer).await;
         assert_eq!(added, 0);
         // Both candidates now backed off.
         let bo = pool.backoff_snapshot();

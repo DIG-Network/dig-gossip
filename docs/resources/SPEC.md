@@ -1288,11 +1288,25 @@ the other's discovery, so relay-introduced nodes find each other.
 no dialable address — the relay addresses peers by `peer_id`), so it is never placed in the
 by-address book. It MUST nonetheless SURVIVE as a **relay-reachable** peer (tracked in a set folded
 wholesale from `known_peers()` each pass, so a `PeerDisconnected` drops it) and count toward the
-connected total: it shrinks the pool's free-slot dial budget exactly like a direct peer, and is
+connected total so it shrinks the pool's free-slot dial budget like a direct peer, and is
 reported in `GossipStats::relay_peer_count` (with `GossipStats::relay_connected` reflecting whether
 the reservation socket is currently held). This is what makes two relay-introduced nodes each show a
 non-zero connected count. The by-address merge (§7.0.1 caps) still applies to any relay record that
 ever carries a dialable candidate.
+
+Two accounting rules govern how relay-reachable peers feed the dial budget:
+
+- **Union, not sum.** The connected total counts the UNION of directly-connected and relay-reachable
+  peers. A peer reachable BOTH directly and via the relay (routine during the relay→direct hole-punch
+  upgrade window, and for any direct peer that stays relay-registered) MUST count ONCE — as a direct
+  peer. Summing the raw relay-reachable count with the direct peer count double-counts such a peer,
+  inflates the connected total, and wrongly shrinks the free-slot budget so the node under-populates
+  its direct pool. Only relay-reachable peers NOT already directly connected contribute to the total.
+- **Direct-dial floor.** Relay-reachable peers reduce redundant direct dialing but MUST NOT be able to
+  drive the direct-dial budget to zero. The pool always works toward a minimum of `target_peers / 4`
+  (at least 1) DIRECT connections regardless of how many peers a relay advertises, so a compromised or
+  misbehaving relay reporting `>= target_peers` reachable peers cannot suppress all direct dialing and
+  strand the node on that single relay. Direct dialing still never exceeds the hard `max_peers` cap.
 
 ### 7.1 NAT Traversal Upgrade
 

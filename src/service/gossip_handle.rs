@@ -1020,13 +1020,20 @@ impl GossipHandle {
 
         // Count relay-reachable peers (#870) toward "connected": a peer this node can already talk to
         // through dig-nat's relay reservation is connected, so it shrinks the free-slot dial budget
-        // exactly like a direct peer — without it the pool would keep dialing for slots it has
-        // already filled via the relay.
-        let connected = self.peer_count().await + self.inner.relay_reachable_count();
+        // like a direct peer — without it the pool would keep dialing for slots it has already filled
+        // via the relay. Two accounting rules apply (review findings on #870):
+        //  1. Count the UNION, not the sum — a peer reachable BOTH directly and via the relay counts
+        //     once, so `relay_reachable_excluding_connected` drops peers already in the direct pool.
+        //  2. A direct-dial FLOOR (see `free_slot_budget_with_direct_floor`) keeps direct dialing alive
+        //     regardless of how many peers a relay advertises, so a compromised relay can't suppress it.
+        let direct_connected = self.peer_count().await;
+        let relay_reachable = self.inner.relay_reachable_excluding_connected();
+        let connected = direct_connected + relay_reachable;
         let connected_keys = self.inner.connected_pool_keys();
         let now = metric_unix_timestamp_secs();
-        let budget = crate::service::peer_pool::free_slot_budget(
-            connected,
+        let budget = crate::service::peer_pool::free_slot_budget_with_direct_floor(
+            direct_connected,
+            relay_reachable,
             self.inner.pool.in_flight_count(),
             &cfg,
         );
@@ -1040,6 +1047,7 @@ impl GossipHandle {
             &self.inner.pool,
             &cfg,
             connected,
+            direct_connected,
             &connected_keys,
             &candidates,
             now,
@@ -1227,6 +1235,33 @@ impl GossipHandle {
             .total_connections
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(pid)
+    }
+
+    /// Test hook (#870 finding 1): count of relay-reachable peers NOT already directly connected — the
+    /// deduped contribution that actually feeds the dial budget (a peer reachable both ways counts once).
+    #[doc(hidden)]
+    pub fn __relay_reachable_excluding_connected_for_tests(&self) -> usize {
+        self.inner.relay_reachable_excluding_connected()
+    }
+
+    /// Test hook (#870 finding 2): the free-slot dial budget the pool would use right now — the same
+    /// `direct_connected` + de-duplicated relay + direct-floor math [`Self::run_pool_maintenance_once`]
+    /// applies. Returns `0` when no pool is configured. Lets tests assert the direct-dial floor without
+    /// standing up real dial targets.
+    #[doc(hidden)]
+    pub async fn __pool_free_slot_budget_for_tests(&self) -> usize {
+        let Some(cfg) = self.inner.config.peer_pool.clone() else {
+            return 0;
+        };
+        let cfg = cfg.normalized();
+        let direct_connected = self.peer_count().await;
+        let relay_reachable = self.inner.relay_reachable_excluding_connected();
+        crate::service::peer_pool::free_slot_budget_with_direct_floor(
+            direct_connected,
+            relay_reachable,
+            self.inner.pool.in_flight_count(),
+            &cfg,
+        )
     }
 
     /// Test hook: model an **inbound** stub (different [`NodeType`] / direction) without real TCP.

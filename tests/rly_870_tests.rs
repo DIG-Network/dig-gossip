@@ -17,7 +17,7 @@ mod common;
 use std::sync::Arc;
 
 use dig_gossip::nat::{PeerRecord, Via};
-use dig_gossip::{GossipHandle, GossipService, PeerPoolConfig};
+use dig_gossip::{GossipHandle, GossipService, NodeType, PeerPoolConfig};
 use dig_nat::relay::RelayStatus;
 use dig_nat::wire::RelayPeerInfo;
 
@@ -149,6 +149,66 @@ async fn relay_reachable_peers_count_toward_the_pool_and_consume_the_dial_budget
     assert_eq!(
         added, 0,
         "the pool is already at target via the relay — no direct dials are planned"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// #870 finding 1 (regression): a peer reachable BOTH directly and via the relay is counted ONCE
+/// toward the pool's connected total. Counting the raw sum double-counts it, inflating "connected" and
+/// wrongly shrinking the direct-dial budget. Here one direct peer is ALSO advertised by the relay:
+/// the raw relay count is 2, but only 1 relay peer is NOT already directly connected.
+#[tokio::test]
+async fn a_peer_both_directly_connected_and_relay_reachable_is_counted_once() {
+    let (svc, handle, _dir) = running_handle(1, 8, 16).await;
+
+    // Directly connect a stub peer, then advertise its SAME peer_id through the relay (the routine
+    // relay-registered-and-directly-connected overlap).
+    let direct_addr = "203.0.113.10:9000".parse().unwrap();
+    let direct_pid = handle
+        .__connect_stub_peer_with_direction(direct_addr, NodeType::FullNode, true)
+        .await
+        .expect("stub connect");
+    let direct_hex = direct_pid.to_string();
+
+    handle.fold_relay_known_peers(&[relay_peer(&direct_hex), relay_peer(&"44".repeat(32))]);
+
+    assert_eq!(
+        handle.stats().await.relay_peer_count,
+        2,
+        "the raw relay-reachable stat still reports both advertised peers"
+    );
+    assert_eq!(
+        handle.__relay_reachable_excluding_connected_for_tests(),
+        1,
+        "the already-directly-connected peer is NOT double-counted toward the dial budget"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// #870 finding 2 (regression): a compromised/misbehaving relay advertising `>= target` reachable
+/// peers must NOT be able to drive the direct-dial budget to zero. The pool always keeps a floor of
+/// DIRECT dials (a quarter of `target`) so it never relies wholly on a single relay.
+#[tokio::test]
+async fn a_flooding_relay_cannot_starve_direct_dialing_below_the_floor() {
+    // target 8 -> direct-dial floor is 8/4 = 2.
+    let (svc, handle, _dir) = running_handle(1, 8, 16).await;
+
+    // The relay claims far more than `target` reachable peers.
+    let flood: Vec<_> = (0u8..20)
+        .map(|n| relay_peer(&format!("{n:02x}").repeat(32)))
+        .collect();
+    handle.fold_relay_known_peers(&flood);
+
+    assert!(
+        handle.stats().await.relay_peer_count >= 8,
+        "the relay advertises at least `target` reachable peers"
+    );
+    assert_eq!(
+        handle.__pool_free_slot_budget_for_tests().await,
+        2,
+        "direct dialing is NOT starved: the pool still works toward its direct-dial floor"
     );
 
     svc.stop().await.expect("stop");
