@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -48,7 +48,7 @@ dig-protocol = { version = "0.1.1", default-features = false }
 # release-first rule): dig-nat (and the dig-constants 0.2.x it needs) must be on crates.io, and this
 # `git` source swapped for the plain crates.io version, BEFORE dig-gossip is published — `cargo publish`
 # rejects a git dependency. The orchestrator sequences the tags.
-dig-nat = { version = "0.1", git = "https://github.com/DIG-Network/dig-nat" }
+dig-nat = { version = "0.2", git = "https://github.com/DIG-Network/dig-nat" }
 # Canonical relay endpoint (`DIG_RELAY_URL`) — pulled from the SAME git source dig-nat uses so the two
 # resolve to ONE `dig-constants` and stay in lockstep until 0.2.x is on crates.io (see dig-nat's note).
 dig-constants = { version = "0.2", git = "https://github.com/DIG-Network/dig-constants" }
