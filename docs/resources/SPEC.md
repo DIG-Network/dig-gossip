@@ -1250,18 +1250,49 @@ WebSocket stream may be tampered with by an on-path attacker. `relay_get_peers` 
    a connected peer could via `RequestPeers`.
 
 Both bounds live in `relay_get_peers` itself (`src/nat/discovery.rs`) — the earliest point the
-untrusted relay's response is decoded — so every caller (`unified_discover`,
-`GossipHandle::pool_discover_from_relay`) inherits the bound automatically.
+untrusted relay's response is decoded — so any caller of that RLY-005 decode inherits the bound
+automatically. (Since #870 the LIVE discovery path is `dig-nat`'s persistent reservation, §7.0.2;
+the equivalent bound on that path is `dig-nat`'s `MAX_KNOWN_PEERS` set cap plus the capped fold
+below.)
 
-**Cumulative bound across repeated passes.** The pool-maintenance loop calls the relay-discovery
-path every maintenance interval, so per-response caps alone bound one call but not the running
-total. `GossipHandle::pool_discover_from_relay` MUST merge via
+**Cumulative bound across repeated passes.** The pool-maintenance loop folds the relay-discovered
+set every maintenance interval, so per-response caps alone bound one snapshot but not the running
+total. `GossipHandle::fold_relay_known_peers` (the #870 consumption seam) MUST merge via
 `merge_records_into_address_manager_capped`, which additionally routes the batch through
 `cap_received_peers` against the SAME shared `total_peers_received` counter node peer-exchange and
 introducer discovery use (§6.6/§7.0.1 cap parity) — so the relay source cannot cumulatively exceed
 the combined global budget any more than repeated `RequestPeers` rounds could. The plain
 `merge_records_into_address_manager` (uncapped) remains available for callers that already apply
 their own bound or operate on a trusted/local source.
+
+### 7.0.2 Persistent-Reservation Peer Discovery (#870 — normative)
+
+The LIVE relay-discovery path is `dig-nat`'s **persistent reservation**, NOT an ephemeral per-pass
+socket. `dig-nat` owns the relay transport: its `run_relay_connection` loop holds ONE long-lived
+WebSocket that registers once (RLY-001), keeps the reservation alive (RLY-006 keepalive + capped-
+exponential reconnect), AND discovers peers over the SAME socket (RLY-005 `GetPeers` after register +
+periodically, plus pushed `PeerConnected`/`PeerDisconnected`). It exposes the discovered set via
+`RelayStatus::known_peers()` (deduped by `peer_id`, bounded to `MAX_KNOWN_PEERS`, cleared on each
+reconnect).
+
+A node MUST run at most ONE reservation and share its `RelayStatus` with the gossip service via
+`GossipHandle::attach_relay_status`. The pool-maintenance DISCOVER step then folds
+`RelayStatus::known_peers()` in through `GossipHandle::fold_relay_known_peers` each pass. dig-gossip
+MUST NOT open its own ephemeral relay socket for discovery — the removed open→register→get_peers→close
+path reconnected every maintenance interval, so two nodes' sub-second registration windows never
+overlapped and neither ever appeared in the other's `get_peers` (the proven root cause of
+`connected_peers` staying `0`). Holding ONE reservation live makes the relay advertise each node to
+the other's discovery, so relay-introduced nodes find each other.
+
+**Relay-reachable peers survive and count.** A relay-discovered peer is identity-only (`Via::Relay`,
+no dialable address — the relay addresses peers by `peer_id`), so it is never placed in the
+by-address book. It MUST nonetheless SURVIVE as a **relay-reachable** peer (tracked in a set folded
+wholesale from `known_peers()` each pass, so a `PeerDisconnected` drops it) and count toward the
+connected total: it shrinks the pool's free-slot dial budget exactly like a direct peer, and is
+reported in `GossipStats::relay_peer_count` (with `GossipStats::relay_connected` reflecting whether
+the reservation socket is currently held). This is what makes two relay-introduced nodes each show a
+non-zero connected count. The by-address merge (§7.0.1 caps) still applies to any relay record that
+ever carries a dialable candidate.
 
 ### 7.1 NAT Traversal Upgrade
 

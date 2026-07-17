@@ -109,6 +109,27 @@ impl PeerRecord {
         }
     }
 
+    /// Build a record from `dig-nat`'s live-reservation [`RelayPeerInfo`](dig_nat::wire::RelayPeerInfo)
+    /// (#870 — the peer set discovered over the persistent reservation socket, RLY-005 `Peers` +
+    /// `PeerConnected` pushes).
+    ///
+    /// Like [`Self::from_relay_peer_info`] this is an identity-only record with **no dialable address**
+    /// ([`Via::Relay`]): the relay addresses peers by `peer_id`, so such a peer is reached via the
+    /// relay / a relay-coordinated hole punch, not by dialing an IP. It counts as a connected peer but
+    /// is never placed in the by-address book. The two `RelayPeerInfo` types (dig-nat's and dig-gossip's)
+    /// carry byte-identical fields — this is the seam where the consumer folds dig-nat's discovery
+    /// output into dig-gossip's unified [`PeerRecord`].
+    #[cfg(feature = "relay")]
+    pub fn from_nat_relay_peer_info(rpi: &dig_nat::wire::RelayPeerInfo) -> Self {
+        PeerRecord {
+            peer_id: rpi.peer_id.clone(),
+            addresses: Vec::new(),
+            network_id: rpi.network_id.clone(),
+            last_seen: rpi.last_seen,
+            via: Via::Relay,
+        }
+    }
+
     /// Build a record from a Chia peer-exchange [`TimestampedPeerInfo`] (§4b `RespondPeers`).
     ///
     /// Node peer-exchange carries `{host, port, timestamp}` but not the peer's `peer_id` (identity is

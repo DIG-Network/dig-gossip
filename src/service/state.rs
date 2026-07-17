@@ -452,6 +452,29 @@ pub struct ServiceState {
     /// This closes the gap where `max_connections` (checked against the REGISTERED peer count)
     /// does not account for connections still mid-handshake.
     pub(crate) inflight_handshakes: Arc<Semaphore>,
+
+    /// **RLY-* / #870** — a handle to `dig-nat`'s live persistent-reservation relay status, when the
+    /// node (or a test) has one. `dig-nat` OWNS the relay transport: its `run_relay_connection` loop
+    /// holds ONE long-lived WebSocket that both keeps this node reachable AND discovers peers over the
+    /// same socket, exposing them via [`RelayStatus::known_peers`](dig_nat::relay::RelayStatus::known_peers).
+    /// dig-gossip is the CONSUMER — the pool-maintenance DISCOVER step reads this set (see
+    /// [`GossipHandle::pool_discover_from_relay`](super::gossip_handle::GossipHandle)) instead of
+    /// reopening an ephemeral socket per pass (the old open-register-getpeers-close path whose
+    /// sub-second registration windows never overlapped — the proven root cause of `connected_peers`
+    /// staying 0). `None` until [`GossipHandle::attach_relay_status`](super::gossip_handle::GossipHandle::attach_relay_status)
+    /// wires it (dig-node does this at startup; nodes with no relay reservation simply never set it).
+    pub(crate) relay_status: Mutex<Option<Arc<dig_nat::relay::RelayStatus>>>,
+
+    /// **RLY-* / #870** — the set of peers (by `peer_id` hex) currently reachable via the relay,
+    /// folded from `dig-nat`'s discovered set each pool-maintenance pass
+    /// ([`GossipHandle::pool_discover_from_relay`](super::gossip_handle::GossipHandle)). These peers
+    /// carry no directly-dialable address (the relay addresses peers by `peer_id`) so they never
+    /// enter the by-address book — but each IS a peer this node can talk to through the relay, so it
+    /// counts toward the connected total (pool dial-budget + stats' `relay_peer_count`). Kept as
+    /// dig-gossip's own snapshot (rather than reading `dig-nat`'s live set on every access) so the
+    /// fold is a testable seam and the count is stable between passes; replaced wholesale each pass
+    /// so a relay `PeerDisconnected` (already reflected by dig-nat) drops the peer here too.
+    pub(crate) relay_reachable: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Derive a deterministic [`PeerId`] from a [`SocketAddr`].
@@ -533,6 +556,8 @@ impl ServiceState {
             pool: Arc::new(crate::service::peer_pool::PoolState::new()),
             pool_task: Mutex::new(None),
             inflight_handshakes,
+            relay_status: Mutex::new(None),
+            relay_reachable: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -550,6 +575,37 @@ impl ServiceState {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// **RLY-* / #870** — the number of peers currently reachable via the relay, learned over
+    /// `dig-nat`'s live persistent reservation ([`RelayStatus::known_peer_count`](dig_nat::relay::RelayStatus::known_peer_count)).
+    ///
+    /// Reads dig-gossip's own snapshot ([`Self::relay_reachable`]), refreshed each pool-maintenance
+    /// pass from `dig-nat`'s discovered set. Returns `0` when no peers are relay-reachable or the lock
+    /// is poisoned (a degraded read is safer than a panic in the pool loop).
+    pub(crate) fn relay_reachable_count(&self) -> usize {
+        self.relay_reachable.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// **RLY-* / #870** — replace the relay-reachable set with the peers `dig-nat` currently has
+    /// discovered over its live reservation (their `peer_id` hex), skipping this node's own id if the
+    /// relay echoes it back. Called each pool-maintenance pass with
+    /// [`RelayStatus::known_peers`](dig_nat::relay::RelayStatus::known_peers). Wholesale replace so a
+    /// dropped (`PeerDisconnected`) peer disappears here too.
+    pub(crate) fn set_relay_reachable<'a>(
+        &self,
+        peer_id_hexes: impl Iterator<Item = &'a str>,
+        self_peer_id_hex: Option<&str>,
+    ) {
+        if let Ok(mut set) = self.relay_reachable.lock() {
+            set.clear();
+            for id in peer_id_hexes {
+                if Some(id) == self_peer_id_hex {
+                    continue;
+                }
+                set.insert(id.to_string());
+            }
+        }
     }
 
     /// Returns `true` if the service is in the *running* lifecycle state.
