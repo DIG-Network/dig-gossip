@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.3.0] - 2026-07-18
+
+### Features
+- **dig-gossip:** B1 dialable-peer fold + self-filter, B2 relay-transport connected-count (#924 WU4) (#5)
+
 ## [0.2.1] - 2026-07-17
 
 ### Bug Fixes
