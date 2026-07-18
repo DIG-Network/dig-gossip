@@ -45,6 +45,11 @@ pub struct GossipStats {
     pub relay_connected: bool,
     /// Peers discovered reachable via relay. Stub: `0` until RLY peer list is wired.
     pub relay_peer_count: usize,
+    /// **#924 B2** — CONNECTED pool peers reached over the **relay transport** (dig-nat's
+    /// [`TraversalKind::Relayed`](dig_nat::TraversalKind) tier — tunnelled through the relay's RLY-002
+    /// forwarder). These are a subset of [`Self::connected_peers`]; the count makes the NAT-blocked
+    /// last-resort peers visible distinctly from directly-connected ones.
+    pub relay_transport_peer_count: usize,
 }
 
 /// Relay-specific metrics snapshot.

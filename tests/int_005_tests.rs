@@ -112,6 +112,7 @@ fn test_relay_client_registration_flow() {
             peer_id,
             network_id,
             protocol_version,
+            ..
         } => {
             assert_eq!(peer_id, "peer1");
             assert_eq!(network_id, "mainnet");

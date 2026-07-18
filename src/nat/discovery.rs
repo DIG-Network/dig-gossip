@@ -105,6 +105,9 @@ pub async fn relay_get_peers(
                 peer_id: peer_id_hex.clone(),
                 network_id: network_id.clone(),
                 protocol_version: RELAY_PROTOCOL_VERSION,
+                // This is an introducer-query registration (get_peers) only — no gossip listen
+                // candidates advertised (#924 B1 candidate advertisement rides dig-nat's reservation).
+                listen_addrs: Vec::new(),
             },
         )
         .await?;

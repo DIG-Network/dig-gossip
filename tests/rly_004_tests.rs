@@ -87,6 +87,7 @@ mod tests {
             protocol_version: 1,
             connected_at: 100,
             last_seen: 200,
+            addresses: Vec::new(),
         };
         client.handle_peer_connected(peer);
 

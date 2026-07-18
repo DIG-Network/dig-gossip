@@ -784,6 +784,7 @@ impl GossipHandle {
         self.require_running()?;
         let peer_id = conn.peer_id();
         let remote = conn.remote_addr();
+        let method = conn.method();
 
         if self
             .inner
@@ -813,6 +814,7 @@ impl GossipHandle {
                     conn,
                     remote,
                     is_outbound: true,
+                    method,
                 }),
             );
         }
@@ -843,6 +845,30 @@ impl GossipHandle {
         peers
             .iter()
             .map(|(pid, slot)| (*pid, slot.remote(), slot.is_outbound()))
+            .collect()
+    }
+
+    /// **#924 B2** — snapshot each connected pool peer with HOW this node reaches it
+    /// ([`Via`](crate::nat::peer_record::Via)): a peer over dig-nat's relayed transport
+    /// ([`TraversalKind::Relayed`](dig_nat::TraversalKind)) reports [`Via::Relay`] — its gossip is
+    /// routed through the relay's RLY-002 forwarder rather than a direct link — while every other
+    /// peer reports [`Via::Direct`]. This is the "relay-transport peer-kind alongside the direct-TLS
+    /// peer" surface: it lets dig-node see which connected peers ride the relay without exposing the
+    /// transport internals. Non-nat slots (stub/live TLS) are direct by construction.
+    pub fn connected_pool_peers_with_via(&self) -> Vec<(PeerId, crate::nat::peer_record::Via)> {
+        use crate::nat::peer_record::Via;
+        let Ok(peers) = self.inner.peers.lock() else {
+            return Vec::new();
+        };
+        peers
+            .iter()
+            .map(|(pid, slot)| {
+                let via = match slot {
+                    super::state::PeerSlot::Nat(n) => n.via(),
+                    _ => Via::Direct,
+                };
+                (*pid, via)
+            })
             .collect()
     }
 
@@ -1554,7 +1580,13 @@ impl GossipHandle {
             .total_connections
             .load(std::sync::atomic::Ordering::Relaxed) as usize;
 
-        let (connected_peers, inbound_connections, outbound_connections, seen_messages) = {
+        let (
+            connected_peers,
+            inbound_connections,
+            outbound_connections,
+            relay_transport_peers,
+            seen_messages,
+        ) = {
             let peers = match self.inner.peers.lock() {
                 Ok(g) => g,
                 Err(_) => {
@@ -1570,11 +1602,19 @@ impl GossipHandle {
             };
             let mut inb = 0usize;
             let mut out = 0usize;
+            let mut relay_transport = 0usize;
             for p in peers.values() {
                 if p.is_outbound() {
                     out += 1;
                 } else {
                     inb += 1;
+                }
+                // #924 B2: a peer reached over dig-nat's relayed transport still counts as connected,
+                // and is ALSO tallied separately so a NAT-blocked last-resort peer is visible as such.
+                if let super::state::PeerSlot::Nat(n) = p {
+                    if matches!(n.via(), crate::nat::peer_record::Via::Relay) {
+                        relay_transport += 1;
+                    }
                 }
             }
             let connected = peers.len();
@@ -1585,7 +1625,7 @@ impl GossipHandle {
                 .lock()
                 .map(|c| c.len())
                 .unwrap_or(0);
-            (connected, inb, out, seen)
+            (connected, inb, out, relay_transport, seen)
         };
 
         GossipStats {
@@ -1604,6 +1644,7 @@ impl GossipHandle {
             // discovered (reachable via relay). Both read `0`/`false` when no reservation is attached.
             relay_connected: self.relay_connected(),
             relay_peer_count: self.inner.relay_reachable_count(),
+            relay_transport_peer_count: relay_transport_peers,
         }
     }
 

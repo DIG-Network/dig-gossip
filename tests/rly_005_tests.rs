@@ -27,6 +27,7 @@ mod tests {
                 protocol_version: 1,
                 connected_at: 100,
                 last_seen: 200,
+                addresses: Vec::new(),
             },
             RelayPeerInfo {
                 peer_id: "p2".into(),
@@ -34,6 +35,7 @@ mod tests {
                 protocol_version: 1,
                 connected_at: 100,
                 last_seen: 200,
+                addresses: Vec::new(),
             },
         ];
         client.handle_peers(peers);
@@ -51,6 +53,7 @@ mod tests {
             protocol_version: 1,
             connected_at: 100,
             last_seen: 200,
+            addresses: Vec::new(),
         };
 
         client.handle_peer_connected(peer.clone());
@@ -71,6 +74,7 @@ mod tests {
             protocol_version: 1,
             connected_at: 100,
             last_seen: 200,
+            addresses: Vec::new(),
         };
         client.handle_peer_connected(peer);
         assert_eq!(client.peer_count(), 1);

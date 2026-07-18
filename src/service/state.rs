@@ -206,6 +206,24 @@ pub(crate) struct NatSlot {
     pub remote: SocketAddr,
     /// Direction — pool-dialed connections are always outbound.
     pub is_outbound: bool,
+    /// Which `dig-nat` traversal tier established this link (#924 B2). [`TraversalKind::Relayed`] marks
+    /// a **relay-transport** peer — reached by tunnelling through the relay's RLY-002 forwarder rather
+    /// than a direct/hole-punched path — so it can be counted + reported distinctly from a direct peer.
+    pub method: dig_nat::TraversalKind,
+}
+
+impl NatSlot {
+    /// How this node reaches the peer, derived from the traversal tier: a peer reached over the
+    /// relayed transport ([`TraversalKind::Relayed`]) is [`Via::Relay`]; every other tier
+    /// (direct/mapping/hole-punch) is a peer-to-peer data path, [`Via::Direct`].
+    pub(crate) fn via(&self) -> crate::nat::peer_record::Via {
+        use crate::nat::peer_record::Via;
+        if matches!(self.method, dig_nat::TraversalKind::Relayed) {
+            Via::Relay
+        } else {
+            Via::Direct
+        }
+    }
 }
 
 impl fmt::Debug for NatSlot {
@@ -213,8 +231,17 @@ impl fmt::Debug for NatSlot {
         f.debug_struct("NatSlot")
             .field("remote", &self.remote)
             .field("is_outbound", &self.is_outbound)
+            .field("method", &self.method)
             .finish_non_exhaustive()
     }
+}
+
+/// Canonical form of a `peer_id` hex for identity comparison: a stripped optional `0x` prefix,
+/// lowercased. Different producers (this node's [`Bytes32`](dig_protocol::Bytes32) `Display`, a
+/// relay's echo) may spell the same id with/without `0x` and in either case — normalizing both sides
+/// before comparing makes self-exclusion robust to the spelling (#924 self-filter).
+pub(crate) fn normalize_peer_id_hex(id: &str) -> String {
+    id.strip_prefix("0x").unwrap_or(id).to_ascii_lowercase()
 }
 
 /// A slot in the peer map: a lightweight **test-only stub**, a **real** TLS peer, or a
@@ -615,20 +642,27 @@ impl ServiceState {
             .count()
     }
 
-    /// **RLY-* / #870** — replace the relay-reachable set with the peers `dig-nat` currently has
+    /// **RLY-* / #870 / #924** — replace the relay-reachable set with the peers `dig-nat` currently has
     /// discovered over its live reservation (their `peer_id` hex), skipping this node's own id if the
     /// relay echoes it back. Called each pool-maintenance pass with
     /// [`RelayStatus::known_peers`](dig_nat::relay::RelayStatus::known_peers). Wholesale replace so a
     /// dropped (`PeerDisconnected`) peer disappears here too.
+    ///
+    /// **#924 self-filter (round-3 finding 4):** self-exclusion compares the id in NORMALIZED form
+    /// ([`normalize_peer_id_hex`] — a stripped `0x` prefix + lowercase) on BOTH sides. A relay may echo
+    /// this node's own id back in a different spelling than [`local_peer_id`](super::gossip_handle::GossipHandle::local_peer_id)
+    /// renders it (a `0x` prefix, uppercase); a byte-exact compare then missed the match and counted
+    /// self as a peer, inflating `relay_peer_count` by one. Normalizing reconciles the forms.
     pub(crate) fn set_relay_reachable<'a>(
         &self,
         peer_id_hexes: impl Iterator<Item = &'a str>,
         self_peer_id_hex: Option<&str>,
     ) {
+        let self_normalized = self_peer_id_hex.map(normalize_peer_id_hex);
         if let Ok(mut set) = self.relay_reachable.lock() {
             set.clear();
             for id in peer_id_hexes {
-                if Some(id) == self_peer_id_hex {
+                if self_normalized.as_deref() == Some(normalize_peer_id_hex(id).as_str()) {
                     continue;
                 }
                 set.insert(id.to_string());

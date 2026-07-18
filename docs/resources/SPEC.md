@@ -609,8 +609,20 @@ pub struct RelayPeerInfo {
     pub protocol_version: u32,
     pub connected_at: u64,
     pub last_seen: u64,
+    /// Relay-resolved dialable candidate address(es), IPv6-first (§5.2 / #924 B1). The relay
+    /// substitutes its observed reflexive IP for any unspecified/loopback/private advertised
+    /// `listen_addr` host, keeping the port, so a NAT'd peer gets a real dialable candidate.
+    /// Additive since protocol v1 (NC-6 soft-fork): `#[serde(default, skip_serializing_if = Vec::is_empty)]`,
+    /// so pre-#924 peers omit it and the wire stays byte-identical. Byte-identical to
+    /// dig-relay-protocol 0.2.0 (the canonical crate) and dig-nat's vendored copy.
+    pub addresses: Vec<SocketAddr>,
 }
 ```
+
+The RLY-001 `Register` message likewise gains an additive `listen_addrs: Vec<SocketAddr>` (the node's
+advertised gossip listen candidates, IPv6-first), same `#[serde(default, skip_serializing_if)]`
+soft-fork rules. dig-gossip's own introducer-query registration advertises none (identity-only); the
+candidates are advertised by dig-nat over the persistent reservation.
 
 ### 2.10 GossipConfig
 
@@ -956,6 +968,9 @@ pub struct GossipStats {
     pub seen_messages: usize,
     pub relay_connected: bool,
     pub relay_peer_count: usize,
+    /// CONNECTED pool peers reached over the relay transport (`TraversalKind::Relayed`, #924 B2) — a
+    /// subset of `connected_peers`, surfacing the NAT-blocked last-resort peers distinctly.
+    pub relay_transport_peer_count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1284,15 +1299,37 @@ overlapped and neither ever appeared in the other's `get_peers` (the proven root
 `connected_peers` staying `0`). Holding ONE reservation live makes the relay advertise each node to
 the other's discovery, so relay-introduced nodes find each other.
 
-**Relay-reachable peers survive and count.** A relay-discovered peer is identity-only (`Via::Relay`,
-no dialable address — the relay addresses peers by `peer_id`), so it is never placed in the
-by-address book. It MUST nonetheless SURVIVE as a **relay-reachable** peer (tracked in a set folded
-wholesale from `known_peers()` each pass, so a `PeerDisconnected` drops it) and count toward the
+**Relay-reachable peers survive and count.** A relay-discovered peer with NO dialable candidate is
+identity-only (`Via::Relay`, no address — the relay addresses it by `peer_id`), so it is never placed
+in the by-address book. It MUST nonetheless SURVIVE as a **relay-reachable** peer (tracked in a set
+folded wholesale from `known_peers()` each pass, so a `PeerDisconnected` drops it) and count toward the
 connected total so it shrinks the pool's free-slot dial budget like a direct peer, and is
 reported in `GossipStats::relay_peer_count` (with `GossipStats::relay_connected` reflecting whether
 the reservation socket is currently held). This is what makes two relay-introduced nodes each show a
-non-zero connected count. The by-address merge (§7.0.1 caps) still applies to any relay record that
-ever carries a dialable candidate.
+non-zero connected count.
+
+**Dialable fold (#924 B1).** When a relay-discovered peer carries a relay-resolved dialable candidate
+(`RelayPeerInfo.addresses` non-empty), the fold builds a **dialable** `PeerRecord`: each candidate
+becomes an `AddressKind::Direct` address, ordered IPv6-first (§5.2), and the record is `Via::Direct`.
+Such a record has a `to_timestamped_peer_info()` and therefore SURVIVES the dialable-only address-book
+merge (§7.0.1 caps still apply) — the pool then direct-dials the peer over the existing mTLS path, and
+a successful handshake lands it in the DIRECT pool (`connected_peers`). An empty `addresses` keeps the
+identity-only `Via::Relay` behavior above (legacy peers).
+
+**Self-filter.** The relay-reachable set MUST exclude this node's own `peer_id` if the relay echoes it
+back. The comparison is done in NORMALIZED form (a stripped optional `0x` prefix + lowercase) on both
+sides, so a relay that echoes the id in a different spelling than the node renders it does not inflate
+`relay_peer_count` by one (#924 self-filter).
+
+**Relay-transport peers count as connected (#924 B2).** A peer reached over `dig-nat`'s relayed
+transport (`TraversalKind::Relayed` — the traversal ladder's last tier, tunnelled through the relay's
+RLY-002 forwarder) is adopted as a CONNECTED pool peer exactly like a directly-dialed one: it counts in
+`connected_peers`, is tallied distinctly in `GossipStats::relay_transport_peer_count`, and is reported
+`Via::Relay` by `connected_pool_peers_with_via()`. This moves `connected_peers` off zero for a
+NAT-blocked pair with no direct dialability. Per **NC-1** the relay only ever forwards OPAQUE bytes:
+the RLY-002 `payload` is a `Vec<u8>` the relay cannot interpret, so a directed gossip frame handed to
+the transport is carried verbatim (the same frame the direct path carries) and no plaintext-to-relay
+path is introduced.
 
 Two accounting rules govern how relay-reachable peers feed the dial budget:
 

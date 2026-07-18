@@ -110,23 +110,54 @@ impl PeerRecord {
     }
 
     /// Build a record from `dig-nat`'s live-reservation [`RelayPeerInfo`](dig_nat::wire::RelayPeerInfo)
-    /// (#870 — the peer set discovered over the persistent reservation socket, RLY-005 `Peers` +
+    /// (#870 / #924 — the peer set discovered over the persistent reservation socket, RLY-005 `Peers` +
     /// `PeerConnected` pushes).
     ///
-    /// Like [`Self::from_relay_peer_info`] this is an identity-only record with **no dialable address**
-    /// ([`Via::Relay`]): the relay addresses peers by `peer_id`, so such a peer is reached via the
-    /// relay / a relay-coordinated hole punch, not by dialing an IP. It counts as a connected peer but
-    /// is never placed in the by-address book. The two `RelayPeerInfo` types (dig-nat's and dig-gossip's)
-    /// carry byte-identical fields — this is the seam where the consumer folds dig-nat's discovery
-    /// output into dig-gossip's unified [`PeerRecord`].
+    /// **#924 B1 — dialable fold.** When the relay resolved dialable candidate address(es) for the peer
+    /// (`rpi.addresses` non-empty — the relay substituted its observed reflexive IP for the node's
+    /// advertised gossip listen port), this builds a **dialable** record: each candidate becomes a
+    /// [`AddressKind::Direct`] [`PeerAddress`] and the record is [`Via::Direct`], so
+    /// [`Self::to_timestamped_peer_info`] returns `Some` and the record SURVIVES the dialable-only
+    /// address-book merge — the pool then direct-dials the peer over the existing mTLS path. Candidates
+    /// are ordered **IPv6-first** (§5.2) so the dialer prefers IPv6 and falls back to IPv4.
+    ///
+    /// When `rpi.addresses` is empty (a legacy peer the relay addresses by `peer_id` only), this is an
+    /// identity-only record with **no dialable address** ([`Via::Relay`]), exactly as before: it counts
+    /// as relay-reachable but is never placed in the by-address book.
+    ///
+    /// The two `RelayPeerInfo` types (dig-nat's and dig-gossip's) carry byte-identical fields — this is
+    /// the seam where the consumer folds dig-nat's discovery output into dig-gossip's unified
+    /// [`PeerRecord`].
     #[cfg(feature = "relay")]
     pub fn from_nat_relay_peer_info(rpi: &dig_nat::wire::RelayPeerInfo) -> Self {
+        if rpi.addresses.is_empty() {
+            return PeerRecord {
+                peer_id: rpi.peer_id.clone(),
+                addresses: Vec::new(),
+                network_id: rpi.network_id.clone(),
+                last_seen: rpi.last_seen,
+                via: Via::Relay,
+            };
+        }
+
+        // IPv6-first (§5.2): a stable sort keying IPv6 below IPv4 preserves the relay's ordering within
+        // each family while surfacing IPv6 candidates first for the happy-eyeballs dialer.
+        let mut candidates = rpi.addresses.clone();
+        candidates.sort_by_key(|addr| u8::from(addr.is_ipv4()));
+
         PeerRecord {
             peer_id: rpi.peer_id.clone(),
-            addresses: Vec::new(),
+            addresses: candidates
+                .into_iter()
+                .map(|addr| PeerAddress {
+                    host: addr.ip().to_string(),
+                    port: addr.port(),
+                    kind: AddressKind::Direct,
+                })
+                .collect(),
             network_id: rpi.network_id.clone(),
             last_seen: rpi.last_seen,
-            via: Via::Relay,
+            via: Via::Direct,
         }
     }
 

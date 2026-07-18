@@ -266,6 +266,7 @@ fn test_gossip_stats_populated() {
         seen_messages: 99,
         relay_connected: true,
         relay_peer_count: 7,
+        relay_transport_peer_count: 2,
     };
     // The spec-mandated invariant: connected = inbound + outbound.
     assert_eq!(
