@@ -1009,17 +1009,6 @@ impl GossipHandle {
             .map(PoolCandidate::from_addr)
             .collect()
     }
-
-    /// POOL-* / IPv6-first test hook: run [`Self::gather_pool_candidates`] directly so tests can
-    /// assert on dial-candidate ORDER (IPv6-first, IPv4-fallback) without a real network.
-    #[doc(hidden)]
-    pub fn __pool_gathered_candidates_for_tests(
-        &self,
-        want: usize,
-    ) -> Vec<crate::service::peer_pool::PoolCandidate> {
-        self.gather_pool_candidates(want)
-    }
-
     /// IPv6-first / intersection test hook: run [`Self::gather_pool_candidates`] against an EXPLICIT
     /// local stack (`has_v6`, `has_v4`), so a test can assert the local∩candidate intersection
     /// (drop-a-family-the-host-lacks) deterministically regardless of the CI runner's real stack.
@@ -1038,7 +1027,7 @@ impl GossipHandle {
 
     /// IPv6-first test hook: seed the address manager's **new** table directly (bypasses the
     /// `connect_to` + `RequestPeers` round trip) so tests can populate a mixed IPv4/IPv6 address
-    /// book and observe [`Self::__pool_gathered_candidates_for_tests`] ordering deterministically.
+    /// book and observe the `__pool_gathered_candidates_with_stack_for_tests` hook ordering deterministically.
     #[doc(hidden)]
     pub fn __seed_address_book_for_tests(&self, peers: &[(String, u16)]) {
         let src = PeerInfo {
