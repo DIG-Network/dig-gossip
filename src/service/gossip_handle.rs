@@ -943,12 +943,24 @@ impl GossipHandle {
     /// dedups by identity too). `select_peer` biases toward tried-then-new, so preferred peers surface
     /// first.
     ///
-    /// **IPv6-first (ecosystem hard rule, [`SPEC.md`](../../docs/resources/SPEC.md) §1.10):** the raw
-    /// draw from `select_peer` is family-blind (weighted-random over the whole address book), so the
-    /// result is passed through [`order_ipv6_first`](crate::util::ip_address::order_ipv6_first) before
-    /// being returned — every IPv6 candidate is dialed before any IPv4 candidate, with IPv4 kept as the
-    /// fallback (never dropped) and the tried/new preference order preserved within each family.
+    /// **IPv6-first + local∩candidate intersection (ecosystem hard rule, CLAUDE.md §5.2 /
+    /// [`SPEC.md`](../../docs/resources/SPEC.md) §1.10):** the raw draw from `select_peer` is
+    /// family-blind (weighted-random over the whole address book), so the result is passed through
+    /// [`order_by_local_stack`](crate::util::ip_address::order_by_local_stack) — the canonical
+    /// [`dig_ip`]-backed ordering — against the host's live [`dig_ip::LocalStack`]. Every IPv6
+    /// candidate is dialed before any IPv4 candidate, and any candidate of a family THIS host cannot
+    /// originate on is dropped (an IPv4-only host never emits an IPv6 SYN, and vice-versa).
     fn gather_pool_candidates(&self, want: usize) -> Vec<crate::service::peer_pool::PoolCandidate> {
+        self.gather_pool_candidates_with_local(want, &dig_ip::LocalStack::cached())
+    }
+
+    /// [`Self::gather_pool_candidates`] with an explicit [`dig_ip::LocalStack`], so the local∩candidate
+    /// intersection can be exercised deterministically (production passes [`dig_ip::LocalStack::cached`]).
+    fn gather_pool_candidates_with_local(
+        &self,
+        want: usize,
+        local: &dig_ip::LocalStack,
+    ) -> Vec<crate::service::peer_pool::PoolCandidate> {
         use crate::service::peer_pool::PoolCandidate;
         let mut out: Vec<std::net::SocketAddr> = Vec::with_capacity(want);
         let mut seen: std::collections::HashSet<std::net::SocketAddr> =
@@ -992,25 +1004,30 @@ impl GossipHandle {
             seen.insert(addr);
             out.push(addr);
         }
-        crate::util::ip_address::order_ipv6_first(out)
+        crate::util::ip_address::order_by_local_stack(local, &out)
             .into_iter()
             .map(PoolCandidate::from_addr)
             .collect()
     }
-
-    /// POOL-* / IPv6-first test hook: run [`Self::gather_pool_candidates`] directly so tests can
-    /// assert on dial-candidate ORDER (IPv6-first, IPv4-fallback) without a real network.
+    /// IPv6-first / intersection test hook: run [`Self::gather_pool_candidates`] against an EXPLICIT
+    /// local stack (`has_v6`, `has_v4`), so a test can assert the local∩candidate intersection
+    /// (drop-a-family-the-host-lacks) deterministically regardless of the CI runner's real stack.
     #[doc(hidden)]
-    pub fn __pool_gathered_candidates_for_tests(
+    pub fn __pool_gathered_candidates_with_stack_for_tests(
         &self,
         want: usize,
+        has_v6: bool,
+        has_v4: bool,
     ) -> Vec<crate::service::peer_pool::PoolCandidate> {
-        self.gather_pool_candidates(want)
+        self.gather_pool_candidates_with_local(
+            want,
+            &dig_ip::LocalStack::from_flags(has_v6, has_v4),
+        )
     }
 
     /// IPv6-first test hook: seed the address manager's **new** table directly (bypasses the
     /// `connect_to` + `RequestPeers` round trip) so tests can populate a mixed IPv4/IPv6 address
-    /// book and observe [`Self::__pool_gathered_candidates_for_tests`] ordering deterministically.
+    /// book and observe the `__pool_gathered_candidates_with_stack_for_tests` hook ordering deterministically.
     #[doc(hidden)]
     pub fn __seed_address_book_for_tests(&self, peers: &[(String, u16)]) {
         let src = PeerInfo {

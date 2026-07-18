@@ -344,15 +344,24 @@ ordering preference.
 - The CANDIDATE LIST assembled from repeated draws — `GossipHandle`'s `gather_pool_candidates`,
   the source of dial candidates for `run_pool_maintenance_once` / the connected-peer-pool
   planner (POOL-\*) — is passed through
-  [`dig_gossip::util::ip_address::order_ipv6_first`] before being returned: every gathered IPv6
-  candidate sorts before every gathered IPv4 candidate (a stable partition — relative order
-  within each family, e.g. tried-vs-new bias, is preserved). This means the pool planner
-  (`plan_pass`) and its dialer always attempt IPv6 candidates first for a given maintenance pass,
-  falling back to IPv4 candidates only after the IPv6 candidates in that pass are exhausted or
-  fail.
-- Family detection is via `std::net::SocketAddr::is_ipv6()` / `is_ipv4()` on an already-parsed
-  address — never a `contains(':')` string heuristic, which misclassifies a bracketed IPv6 host
-  string (`"[::1]:9444"`) or embedded IPv4-mapped textual forms.
+  [`dig_gossip::util::ip_address::order_by_local_stack`] before being returned. That helper is a
+  thin adapter over the canonical **`dig-ip`** crate (the single ecosystem authority for the
+  address-family / dial contract, CLAUDE.md §5.2), and applies TWO rules:
+  1. **IPv6-first** — candidates are grouped by [`dig_ip::Family`] (which orders `V6` before `V4`)
+     so every gathered IPv6 candidate sorts before every gathered IPv4 candidate, with relative
+     order within each family (e.g. tried-vs-new bias) preserved. The pool planner (`plan_pass`)
+     and its dialer therefore attempt IPv6 candidates first for a given maintenance pass, falling
+     back to IPv4 only after the pass's IPv6 candidates are exhausted or fail.
+  2. **Local∩candidate intersection** — a candidate of a family THIS host cannot originate on
+     (per [`dig_ip::LocalStack`]) is DROPPED, so an IPv4-only host never emits an IPv6 SYN and an
+     IPv6-only host never emits an IPv4 SYN. When local and candidates are disjoint the pass yields
+     no candidates (the multi-peer analog of `dig_ip::dial_order`'s `NoCommonFamily` — a clean
+     "nothing dialable", never a doomed attempt).
+- Family classification and the local-stack check are delegated entirely to **`dig-ip`**
+  ([`dig_ip::Family::of`] / [`dig_ip::LocalStack`]); this crate no longer hand-rolls a family sort
+  or an `is_ipv4()` key. `dig_ip::Family::of` correctly treats an IPv4-mapped IPv6 address as IPv4
+  reachability. The relay-resolved dialable candidate order in `PeerRecord::from_nat_relay_peer_info`
+  is likewise keyed on `dig_ip::Family`.
 - `crate::connection::outbound::connect_outbound_peer` dials exactly one already-resolved
   `SocketAddr` per call and has no candidate list of its own; the IPv6-first ordering is enforced
   entirely at the candidate-list-assembly layer above it (this crate does not implement a

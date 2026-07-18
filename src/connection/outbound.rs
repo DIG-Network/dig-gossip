@@ -172,17 +172,19 @@ pub(crate) fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientE
 ///
 /// **TLS features:** requires `native-tls` and/or `rustls` on this crate (STR-004).
 ///
-/// **IPv6-first ordering happens upstream, not here:** this function dials exactly ONE already-
-/// resolved [`SocketAddr`] and has no multi-candidate list of its own to reorder. The
-/// ecosystem-wide IPv6-first / IPv4-fallback rule (SPEC §1.10) is satisfied by the CALLER: the
-/// pool's candidate list ([`crate::service::gossip_handle::GossipHandle`]'s
-/// `gather_pool_candidates`) is sorted IPv6-first via
-/// [`crate::util::ip_address::order_ipv6_first`] before candidates ever reach a dial loop, so
-/// IPv6 addresses are always attempted before IPv4 ones across a sequence of calls into this
-/// function. A future true happy-eyeballs (race both families over ONE peer's dual-A/AAAA
-/// candidates concurrently) would need `tokio_tungstenite`'s connector to support racing multiple
-/// addresses, which it does not today -- see SPEC §1.10 for the current at-least-attempted-first
-/// guarantee this crate provides instead.
+/// **IPv6-first ordering + local∩candidate intersection happen upstream, not here:** this function
+/// dials exactly ONE already-resolved [`SocketAddr`] and has no multi-candidate list of its own to
+/// reorder or filter. The ecosystem-wide IPv6-first / IPv4-fallback rule (CLAUDE.md §5.2 / SPEC
+/// §1.10) is satisfied by the CALLER: the pool's candidate list
+/// ([`crate::service::gossip_handle::GossipHandle`]'s `gather_pool_candidates`) is ordered IPv6-first
+/// AND filtered to the local host's reachable families via
+/// [`crate::util::ip_address::order_by_local_stack`] (backed by the canonical [`dig_ip`] crate)
+/// before candidates ever reach a dial loop, so IPv6 addresses are always attempted before IPv4 ones
+/// across a sequence of calls into this function and a family this host cannot originate on is never
+/// dialed. A future true happy-eyeballs (race both families over ONE peer's dual-A/AAAA candidates
+/// concurrently, via [`dig_ip::connect`]) would need `tokio_tungstenite`'s connector to support
+/// racing multiple addresses, which it does not today -- see SPEC §1.10 for the current
+/// at-least-attempted-first guarantee this crate provides instead.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 pub(crate) async fn connect_outbound_peer(
     network_id: String,

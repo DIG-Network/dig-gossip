@@ -1,5 +1,5 @@
-//! /16 subnet grouping, outbound diversity filter (**DSC-011**), and IPv6-first candidate
-//! ordering (ecosystem-wide IPv6-first / IPv4-fallback peer-communication rule).
+//! /16 subnet grouping, outbound diversity filter (**DSC-011**), and the local∩peer
+//! family-INTERSECTION candidate ordering (ecosystem-wide IPv6-first / IPv4-fallback rule).
 //!
 //! # Requirements
 //!
@@ -15,13 +15,17 @@
 //!   Matches `PeerInfo::get_group()` in `types/peer.rs` but returns u32 for HashSet.
 //! - **`SubnetGroupFilter`** — HashSet<u32> of outbound /16 groups.
 //!   Fast O(1) check per candidate. Applied before AS filter (DSC-010).
-//! - **`order_ipv6_first()`** — stable-sorts a candidate address list so every IPv6 address
-//!   precedes every IPv4 address, without disturbing relative order within each family. Shared
-//!   by every peer-selection / outbound-dial call site that assembles a candidate list, per the
-//!   ecosystem-wide "IPv6-first, IPv4-fallback for peer communication" rule.
+//! - **`order_by_local_stack()`** — orders a candidate address list IPv6-first and DROPS any
+//!   candidate whose family the LOCAL host cannot originate on, using the canonical
+//!   [`dig_ip`] crate as the single family authority ([`dig_ip::Family`] for the IPv6-first key,
+//!   [`dig_ip::LocalStack`] for the local-capability intersection). This is the ecosystem's one
+//!   implementation of the "IPv6-first, IPv4-fallback" rule (CLAUDE.md §5.2); no crate hand-rolls a
+//!   family sort or a local-capability check any more.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
+
+use dig_ip::{Family, LocalStack};
 
 /// Compute /16 group key for IP. IPv4: first 2 octets. IPv6: first 4 bytes.
 ///
@@ -81,38 +85,45 @@ impl SubnetGroupFilter {
     }
 }
 
-/// Reorder `candidates` so every IPv6 address sorts before every IPv4 address, preserving
-/// relative order within each family (a stable partition, not a full sort).
+/// Order `candidates` IPv6-first over the LOCAL host's reachable families, dropping any candidate of
+/// a family this host cannot originate on.
 ///
 /// # Why this exists
 ///
-/// Ecosystem-wide hard rule (dig_ecosystem `CLAUDE.md` §"IPv6-first, IPv4-fallback for peer
-/// communication" / this crate's [`SPEC.md`](../../docs/resources/SPEC.md) §1.10): peer/address
-/// **selection** must prefer IPv6 and use IPv4 only as a fallback. `dig-gossip`'s address-book
-/// grouping (`PeerInfo::get_group`, `subnet_group` above) was already family-aware, but the
-/// candidate-list assembly that feeds outbound dialing
-/// ([`GossipHandle::gather_pool_candidates`](crate::service::gossip_handle::GossipHandle)) was
-/// family-BLIND — it never considered address family when ordering candidates, so an IPv4
-/// candidate could be dialed ahead of an available IPv6 one purely by the luck of the weighted
-/// random draw. This helper is the single place that ordering is corrected; callers assemble
-/// their candidate list per their own preference logic (tried-vs-new bias, most-diverse-first,
-/// etc.) and pass it through here as a final pass.
+/// Ecosystem-wide hard rule (dig_ecosystem `CLAUDE.md` §5.2 "IPv6-first, IPv4-fallback for peer
+/// communication" / this crate's [`SPEC.md`](../../docs/resources/SPEC.md) §1.10), whose single
+/// canonical implementation is the [`dig_ip`] crate. `dig-gossip`'s candidate-list assembly that
+/// feeds outbound dialing
+/// ([`GossipHandle::gather_pool_candidates`](crate::service::gossip_handle::GossipHandle)) draws
+/// family-BLIND weighted-random addresses from the address book; this helper corrects that draw in
+/// one place. It does two things, both delegated to `dig-ip` as the family authority:
 ///
-/// # Family detection
+/// - **IPv6-first** — for each family the local host has, in [`dig_ip::Family`] preference order
+///   (IPv6 then IPv4), the candidates of that family are emitted in their original (draw) order, so
+///   every IPv6 candidate precedes every IPv4 candidate while unrelated preference signals
+///   (`select_peer`'s tried-vs-new bias) survive within each family.
+/// - **Local∩candidate intersection (the new correctness)** — a candidate of a family the local
+///   host cannot reach ([`dig_ip::LocalStack::has`] is false) is DROPPED, so an IPv4-only host never
+///   emits an IPv6 SYN and an IPv6-only host never emits an IPv4 SYN. Mirrors [`dig_ip::dial_order`]
+///   (whose per-peer variant returns [`dig_ip::NoCommonFamily`] when disjoint); at the multi-peer
+///   pool layer an empty result is the natural "nothing dialable this pass" outcome.
 ///
-/// Uses [`SocketAddr::is_ipv6`] on the already-parsed address — **not** a `contains(':')` string
-/// check, which would misclassify a bracketed IPv6 host string (`"[::1]:9444"`) or trip over an
-/// embedded IPv4-mapped textual form.
+/// # Family authority
 ///
-/// # Stability
-///
-/// [`slice::sort_by_key`] is a stable sort, so within the IPv6 group and within the IPv4 group
-/// candidates keep their original relative order. IPv4 addresses are not dropped — IPv4 remains
-/// the fallback, never removed.
-pub fn order_ipv6_first(mut candidates: Vec<SocketAddr>) -> Vec<SocketAddr> {
-    // `false` (IPv6, `is_ipv4() == false`) sorts before `true` (IPv4), giving IPv6-first order.
-    candidates.sort_by_key(|addr| addr.is_ipv4());
-    candidates
+/// Family classification is [`dig_ip::Family::of`] — never a `contains(':')` string check (which
+/// misclassifies a bracketed IPv6 host string) nor an `is_ipv4()` sort key. An IPv4-mapped IPv6
+/// address is correctly treated as IPv4 reachability by `dig_ip`.
+pub fn order_by_local_stack(local: &LocalStack, candidates: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut ordered = Vec::with_capacity(candidates.len());
+    for family in local.families() {
+        ordered.extend(
+            candidates
+                .iter()
+                .copied()
+                .filter(|addr| Family::of(addr) == family),
+        );
+    }
+    ordered
 }
 
 #[cfg(test)]
@@ -127,30 +138,60 @@ mod tests {
         s.parse().expect("valid IPv6 SocketAddr")
     }
 
+    const DUAL: LocalStack = LocalStack::from_flags(true, true);
+    const V4_ONLY: LocalStack = LocalStack::from_flags(false, true);
+    const V6_ONLY: LocalStack = LocalStack::from_flags(true, false);
+
     #[test]
-    fn order_ipv6_first_promotes_ipv6_over_ipv4() {
+    fn dual_stack_promotes_ipv6_over_ipv4() {
         let candidates = vec![v4("203.0.113.1:9444"), v6("[2001:db8::1]:9444")];
-        let ordered = order_ipv6_first(candidates);
+        let ordered = order_by_local_stack(&DUAL, &candidates);
         assert!(ordered[0].is_ipv6());
         assert!(ordered[1].is_ipv4());
     }
 
     #[test]
-    fn order_ipv6_first_is_a_stable_partition() {
+    fn dual_stack_is_a_stable_partition() {
         let a = v6("[2001:db8::a]:9444");
         let b = v6("[2001:db8::b]:9444");
         let c = v4("203.0.113.1:9444");
         let d = v4("203.0.113.2:9444");
-        let ordered = order_ipv6_first(vec![c, a, d, b]);
+        let ordered = order_by_local_stack(&DUAL, &[c, a, d, b]);
         assert_eq!(ordered, vec![a, b, c, d]);
     }
 
     #[test]
-    fn order_ipv6_first_handles_empty_and_single_family_lists() {
-        assert!(order_ipv6_first(Vec::new()).is_empty());
+    fn dual_stack_handles_empty_and_single_family_lists() {
+        assert!(order_by_local_stack(&DUAL, &[]).is_empty());
         let only_v4 = vec![v4("203.0.113.1:9444"), v4("198.51.100.1:9444")];
-        assert_eq!(order_ipv6_first(only_v4.clone()), only_v4);
+        assert_eq!(order_by_local_stack(&DUAL, &only_v4), only_v4);
         let only_v6 = vec![v6("[::1]:9444"), v6("[2001:db8::1]:9444")];
-        assert_eq!(order_ipv6_first(only_v6.clone()), only_v6);
+        assert_eq!(order_by_local_stack(&DUAL, &only_v6), only_v6);
+    }
+
+    // G1 — never emit a family the LOCAL host lacks: a v4-only host drops every IPv6 candidate.
+    #[test]
+    fn v4_only_local_drops_ipv6_candidates() {
+        let candidates = vec![v6("[2001:db8::1]:9444"), v4("203.0.113.1:9444")];
+        let ordered = order_by_local_stack(&V4_ONLY, &candidates);
+        assert_eq!(ordered, vec![v4("203.0.113.1:9444")]);
+        assert!(ordered.iter().all(|a| a.is_ipv4()));
+    }
+
+    // G1 mirror — a v6-only host drops every IPv4 candidate (IPv4 is the fallback, not always kept).
+    #[test]
+    fn v6_only_local_drops_ipv4_candidates() {
+        let candidates = vec![v6("[2001:db8::1]:9444"), v4("203.0.113.1:9444")];
+        let ordered = order_by_local_stack(&V6_ONLY, &candidates);
+        assert_eq!(ordered, vec![v6("[2001:db8::1]:9444")]);
+        assert!(ordered.iter().all(|a| a.is_ipv6()));
+    }
+
+    // Disjoint families → empty (the multi-peer analog of dig_ip's NoCommonFamily): a v4-only host
+    // with only IPv6 candidates has nothing dialable — a clean empty, never a doomed IPv6 attempt.
+    #[test]
+    fn disjoint_families_yield_no_candidates() {
+        let candidates = vec![v6("[2001:db8::1]:9444"), v6("[2001:db8::2]:9444")];
+        assert!(order_by_local_stack(&V4_ONLY, &candidates).is_empty());
     }
 }
