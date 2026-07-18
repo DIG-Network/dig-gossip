@@ -34,6 +34,7 @@ mod tests {
             peer_id,
             network_id,
             protocol_version,
+            ..
         } = msg
         {
             assert_eq!(peer_id, "peer_a");
@@ -72,6 +73,7 @@ mod tests {
             peer_id: "abc123".to_string(),
             network_id: "dig_mainnet".to_string(),
             protocol_version: 1,
+            listen_addrs: Vec::new(),
         };
 
         let json = serde_json::to_string(&msg).expect("Register must serialize");
@@ -85,6 +87,7 @@ mod tests {
             peer_id,
             network_id,
             protocol_version,
+            ..
         } = parsed
         {
             assert_eq!(peer_id, "abc123");
@@ -231,6 +234,7 @@ mod tests {
             protocol_version: 1,
             connected_at: 1000,
             last_seen: 2000,
+            addresses: Vec::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: RelayPeerInfo = serde_json::from_str(&json).unwrap();
@@ -246,6 +250,7 @@ mod tests {
             protocol_version: 1,
             connected_at: 100,
             last_seen: 200,
+            addresses: Vec::new(),
         };
 
         let connected = RelayMessage::PeerConnected { peer: info.clone() };

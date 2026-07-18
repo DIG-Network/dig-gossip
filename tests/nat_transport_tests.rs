@@ -179,6 +179,7 @@ fn peer_record_from_relay_peer_info_has_no_dialable_address() {
         protocol_version: 1,
         connected_at: 100,
         last_seen: 200,
+        addresses: Vec::new(),
     };
     let rec = PeerRecord::from_relay_peer_info(&rpi);
     assert_eq!(rec.peer_id, "cc".repeat(32));

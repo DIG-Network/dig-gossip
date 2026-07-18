@@ -69,6 +69,9 @@ impl RelayClient {
             peer_id: self.peer_id.clone(),
             network_id: self.network_id.clone(),
             protocol_version: self.protocol_version,
+            // dig-gossip's own relay client registers identity-only; advertising gossip listen
+            // candidates (#924 B1) is done by dig-nat over the persistent reservation, not here.
+            listen_addrs: Vec::new(),
         }
     }
 
