@@ -1308,7 +1308,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caef6056a5788d05d173cdc3c562ac28ae093828f851f69378b74e4e3d578e41"
 dependencies = [
  "heck",
- "indexmap 1.9.3",
+ "indexmap 2.14.0",
  "itertools 0.15.0",
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1394,6 +1394,7 @@ dependencies = [
  "chia-traits 0.26.0",
  "chia_streamable_macro 0.26.0",
  "dig-constants",
+ "dig-ip",
  "dig-nat",
  "dig-protocol",
  "futures-util",
@@ -1417,6 +1418,16 @@ dependencies = [
  "tracing",
  "unicode-general-category",
  "x509-parser",
+]
+
+[[package]]
+name = "dig-ip"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c27cd344c8ff2e6d86609d72c8705f7b03560507637f5566d8f78a00d8bffaa"
+dependencies = [
+ "futures",
+ "tokio",
 ]
 
 [[package]]

@@ -140,10 +140,11 @@ impl PeerRecord {
             };
         }
 
-        // IPv6-first (§5.2): a stable sort keying IPv6 below IPv4 preserves the relay's ordering within
-        // each family while surfacing IPv6 candidates first for the happy-eyeballs dialer.
+        // IPv6-first (§5.2): a stable sort keyed on the canonical [`dig_ip::Family`] (which orders
+        // `V6` before `V4`) preserves the relay's ordering within each family while surfacing IPv6
+        // candidates first for the happy-eyeballs dialer — one family authority, no hand-rolled key.
         let mut candidates = rpi.addresses.clone();
-        candidates.sort_by_key(|addr| u8::from(addr.is_ipv4()));
+        candidates.sort_by_key(dig_ip::Family::of);
 
         PeerRecord {
             peer_id: rpi.peer_id.clone(),
