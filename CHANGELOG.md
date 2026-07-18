@@ -4,21 +4,15 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.4.0] - 2026-07-18
+
+### Features
+- **discovery:** Migrate address ordering + outbound dial to dig-ip (#1030) (#6)
+
 ## [0.3.0] - 2026-07-18
 
 ### Features
 - **dig-gossip:** B1 dialable-peer fold + self-filter, B2 relay-transport connected-count (#924 WU4) (#5)
-
-## [0.4.0] - 2026-07-18
-
-### Features
-- **discovery:** Migrate address-family ordering + outbound dial candidate selection onto the
-  canonical `dig-ip` crate (epic #1020, #1030). `order_ipv6_first` is replaced by
-  `order_by_local_stack`, which keys IPv6-first ordering on `dig_ip::Family` AND applies the
-  local∩candidate family INTERSECTION via `dig_ip::LocalStack` — a candidate of a family the local
-  host cannot originate on is now dropped (an IPv4-only host never emits an IPv6 SYN, and
-  vice-versa). `PeerRecord::from_nat_relay_peer_info` sorts on `dig_ip::Family` too. This is new
-  behaviour (the local-capability filter), so a minor bump.
 
 ## [0.2.1] - 2026-07-17
 
