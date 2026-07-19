@@ -61,6 +61,7 @@ use tokio::sync::broadcast;
 
 use crate::constants::PENALTY_BAN_THRESHOLD;
 use crate::error::GossipError;
+use crate::service::dig_message::StreamFrame;
 use crate::types::peer::{
     message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der, PeerConnection,
     PeerConnectionWireMetrics, PeerId, PeerInfo,
@@ -394,6 +395,161 @@ impl GossipHandle {
         };
         if let Some(p) = maybe_live {
             p.send(body).await.map_err(GossipError::from)?;
+            record_live_peer_outbound_bytes(&self.inner, peer_id, wire_len);
+        } else {
+            self.inner
+                .messages_sent
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner
+                .bytes_sent
+                .fetch_add(wire_len, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // dig-message directed seam (opcode 220 — WU6, epic #796, Wave A)
+    // ------------------------------------------------------------------
+
+    /// Send a directed dig-message **envelope** to a single peer over opcode 220.
+    ///
+    /// dig-gossip is the transport only: `envelope` is carried as **opaque bytes**
+    /// in the `Message.data` field — dig-gossip never seals, opens, or parses it.
+    /// `correlation_id` maps to `Message.id` (pairs a streaming exchange or a
+    /// request/response); pass `None` for fire-and-forget. See
+    /// [`crate::service::dig_message`] for the seam overview.
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::ServiceNotStarted`] — service not running.
+    /// - [`GossipError::PeerBanned`] — the target peer is banned.
+    /// - [`GossipError::PeerNotConnected`] — unknown `peer_id`.
+    /// - [`GossipError::ClientError`] — WebSocket send failure.
+    pub async fn send_dig_message(
+        &self,
+        peer_id: PeerId,
+        envelope: &[u8],
+        correlation_id: Option<u16>,
+    ) -> Result<(), GossipError> {
+        let msg = crate::service::dig_message::frame_envelope(envelope, correlation_id);
+        self.send_directed_message(peer_id, msg).await
+    }
+
+    /// Open a dig-message stream to a peer (sends a [`StreamFrame::Open`] over opcode 220).
+    ///
+    /// The streaming *state machine* (windowing, backpressure, timeouts) is
+    /// dig-message's (WU4); this helper only frames + delivers the OPEN marker.
+    /// All frames of one stream share `stream_id` (mapped to the low 16 bits of
+    /// `Message.id` for cheap correlation).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`send_dig_message`](Self::send_dig_message).
+    pub async fn open_dig_stream(
+        &self,
+        peer_id: PeerId,
+        stream_id: u64,
+    ) -> Result<(), GossipError> {
+        self.send_stream_frame(peer_id, &StreamFrame::Open { stream_id })
+            .await
+    }
+
+    /// Send one `DATA` chunk of a dig-message stream (a [`StreamFrame::Data`]).
+    ///
+    /// `seq` is the monotonic 0-based sequence number; the receiver's
+    /// [`StreamReassembler`](crate::service::dig_message::StreamReassembler)
+    /// restores order. `payload` is opaque.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`send_dig_message`](Self::send_dig_message).
+    pub async fn send_dig_stream_data(
+        &self,
+        peer_id: PeerId,
+        stream_id: u64,
+        seq: u64,
+        payload: Vec<u8>,
+    ) -> Result<(), GossipError> {
+        self.send_stream_frame(
+            peer_id,
+            &StreamFrame::Data {
+                stream_id,
+                seq,
+                payload,
+            },
+        )
+        .await
+    }
+
+    /// Close a dig-message stream (sends a [`StreamFrame::Close`] over opcode 220).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`send_dig_message`](Self::send_dig_message).
+    pub async fn close_dig_stream(
+        &self,
+        peer_id: PeerId,
+        stream_id: u64,
+    ) -> Result<(), GossipError> {
+        self.send_stream_frame(peer_id, &StreamFrame::Close { stream_id })
+            .await
+    }
+
+    /// Encode a [`StreamFrame`] into an opcode-220 envelope and deliver it,
+    /// correlating on `stream_id`'s low 16 bits.
+    async fn send_stream_frame(
+        &self,
+        peer_id: PeerId,
+        frame: &StreamFrame,
+    ) -> Result<(), GossipError> {
+        let stream_id = match frame {
+            StreamFrame::Open { stream_id }
+            | StreamFrame::Data { stream_id, .. }
+            | StreamFrame::Close { stream_id } => *stream_id,
+        };
+        let correlation_id = (stream_id & u64::from(u16::MAX)) as u16;
+        self.send_dig_message(peer_id, &frame.encode(), Some(correlation_id))
+            .await
+    }
+
+    /// Deliver a pre-built directed [`Message`] to a single live peer.
+    ///
+    /// Shared by the dig-message seam helpers: runs the ban check, resolves the
+    /// live [`Peer`], and sends over its WebSocket. Stub / NAT-only pool members
+    /// have no WebSocket transport (the dig-node mux phase adds it), so the send
+    /// is counted but not transmitted — mirroring [`send_to`](Self::send_to).
+    async fn send_directed_message(
+        &self,
+        peer_id: PeerId,
+        msg: Message,
+    ) -> Result<(), GossipError> {
+        self.require_running()?;
+        let wire_len = message_wire_len(&msg).map_err(GossipError::from)?;
+
+        if self
+            .inner
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await
+        {
+            return Err(GossipError::PeerBanned(peer_id));
+        }
+
+        let maybe_live = {
+            let peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            match peers.get(&peer_id) {
+                None => return Err(GossipError::PeerNotConnected(peer_id)),
+                Some(PeerSlot::Live(l)) => Some(l.peer.clone()),
+                Some(PeerSlot::Stub(_)) | Some(PeerSlot::Nat(_)) => None,
+            }
+        };
+        if let Some(p) = maybe_live {
+            p.send_protocol_message(msg)
+                .await
+                .map_err(GossipError::from)?;
             record_live_peer_outbound_bytes(&self.inner, peer_id, wire_len);
         } else {
             self.inner

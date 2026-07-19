@@ -1,3 +1,245 @@
-//! dig-message transport seam (opcode 220 / `DIG_MESSAGE`).
+//! dig-message transport seam — opcode 220 (`DIG_MESSAGE`).
 //!
-//! WIP stub — implementation lands in this PR.
+//! # What this is
+//!
+//! dig-gossip is the **transport** for the DIG directed-message protocol
+//! (`dig-message`): it carries a sealed dig-message *envelope* between peers but
+//! never inspects, seals, or opens it. On the wire a directed message is a stock
+//! [`Message`](dig_protocol::Message) with `msg_type = 220` ([`DIG_MESSAGE`]) whose
+//! `data` field holds the envelope as **opaque bytes** — bytes in equal bytes out.
+//!
+//! This is WU6 of epic #796 (Wave A, envelope-only): the seam that the dig-message
+//! streaming state machine (WU4) and its consumers build on. dig-gossip has **no**
+//! knowledge of sealing (no BLS-G1 dependency) — the envelope is untyped payload.
+//!
+//! # Layers
+//!
+//! - [`DIG_MESSAGE`] — the canonical opcode (220), first of the free 220-255 band
+//!   (200-219 are the consensus band, [`DigMessageType`](dig_protocol::DigMessageType)).
+//! - [`is_dig_message`] / [`dig_message_payload`] — inbound routing: recognise an
+//!   opcode-220 frame and lift its opaque envelope.
+//! - [`frame_envelope`] — build the outbound [`Message`] carrying an envelope.
+//! - [`StreamFrame`] + [`StreamReassembler`] — the streaming seam: OPEN/DATA/CLOSE
+//!   frames ride *inside* the opaque envelope payload; the reassembler restores
+//!   in-order delivery. The streaming *state machine* itself lives in dig-message
+//!   (WU4); dig-gossip only frames the bytes and delivers them ordered.
+//!
+//! The send/stream helpers on [`GossipHandle`](crate::service::gossip_handle::GossipHandle)
+//! (`send_dig_message`, `open_dig_stream`, `send_dig_stream_data`, `close_dig_stream`)
+//! put these frames on the wire.
+
+use std::collections::BTreeMap;
+
+use dig_protocol::{Message, ProtocolMessageTypes};
+
+/// Wire opcode for a directed dig-message envelope.
+///
+/// Canonical value **220** — the first opcode of the free 220-255 band. Mirrors
+/// [`ProtocolMessageTypes::DigMessage`]; also exported as `dig_protocol::DIG_MESSAGE`
+/// for consumers that do not depend on dig-gossip. This value is a cross-repo
+/// canonical constant — it MUST NOT drift.
+pub const DIG_MESSAGE: u8 = ProtocolMessageTypes::DigMessage as u8;
+
+/// True iff `msg_type` is the directed dig-message opcode ([`DIG_MESSAGE`]).
+///
+/// Inbound dispatch calls this on `Message.msg_type as u8` to route opcode-220
+/// frames to the dig-message handler seam.
+#[must_use]
+pub fn is_dig_message(msg_type: u8) -> bool {
+    msg_type == DIG_MESSAGE
+}
+
+/// Lift the opaque dig-message envelope from an inbound [`Message`].
+///
+/// Returns `Some(&envelope_bytes)` iff `msg` is an opcode-220 frame, else `None`.
+/// The returned slice is the payload verbatim — dig-gossip does not parse it.
+#[must_use]
+pub fn dig_message_payload(msg: &Message) -> Option<&[u8]> {
+    if is_dig_message(msg.msg_type as u8) {
+        Some(msg.data.as_ref())
+    } else {
+        None
+    }
+}
+
+/// Build the outbound opcode-220 [`Message`] that carries `envelope` as opaque bytes.
+///
+/// `correlation_id` maps to `Message.id` — used to pair a streaming exchange (all
+/// frames of one stream share an id) or a request/response. `None` for a
+/// fire-and-forget directed message.
+#[must_use]
+pub fn frame_envelope(envelope: &[u8], correlation_id: Option<u16>) -> Message {
+    Message {
+        msg_type: ProtocolMessageTypes::DigMessage,
+        id: correlation_id,
+        data: envelope.to_vec().into(),
+    }
+}
+
+// ============================================================================
+// Streaming seam
+// ============================================================================
+
+/// Wire discriminant for a [`StreamFrame`] — the first byte of a stream payload.
+mod stream_kind {
+    pub const OPEN: u8 = 0;
+    pub const DATA: u8 = 1;
+    pub const CLOSE: u8 = 2;
+}
+
+/// One frame of a directed dig-message stream, carried inside the opaque
+/// opcode-220 payload.
+///
+/// dig-gossip delivers these bytes ordered; the streaming *state machine*
+/// (windowing, credit/backpressure, timeouts) belongs to dig-message (WU4). A
+/// stream is identified by `stream_id`; `DATA` frames carry a monotonic `seq`
+/// so [`StreamReassembler`] can restore order across out-of-order transport
+/// delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamFrame {
+    /// Open a new stream.
+    Open {
+        /// Caller-chosen stream identifier, unique per peer + direction.
+        stream_id: u64,
+    },
+    /// A chunk of stream data at monotonic sequence `seq` (0-based).
+    Data {
+        /// The stream this chunk belongs to.
+        stream_id: u64,
+        /// Monotonic 0-based sequence number within the stream.
+        seq: u64,
+        /// Opaque chunk payload.
+        payload: Vec<u8>,
+    },
+    /// Close the stream — no further frames follow.
+    Close {
+        /// The stream being closed.
+        stream_id: u64,
+    },
+}
+
+impl StreamFrame {
+    /// Encode the frame to the opaque bytes that ride as an opcode-220 payload.
+    ///
+    /// Layout: `[u8 kind] [u64 stream_id]` then, for `Data`, `[u64 seq] [payload…]`.
+    /// All integers are big-endian.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Open { stream_id } => {
+                let mut buf = Vec::with_capacity(1 + 8);
+                buf.push(stream_kind::OPEN);
+                buf.extend_from_slice(&stream_id.to_be_bytes());
+                buf
+            }
+            Self::Close { stream_id } => {
+                let mut buf = Vec::with_capacity(1 + 8);
+                buf.push(stream_kind::CLOSE);
+                buf.extend_from_slice(&stream_id.to_be_bytes());
+                buf
+            }
+            Self::Data {
+                stream_id,
+                seq,
+                payload,
+            } => {
+                let mut buf = Vec::with_capacity(1 + 8 + 8 + payload.len());
+                buf.push(stream_kind::DATA);
+                buf.extend_from_slice(&stream_id.to_be_bytes());
+                buf.extend_from_slice(&seq.to_be_bytes());
+                buf.extend_from_slice(payload);
+                buf
+            }
+        }
+    }
+
+    /// Decode a stream frame from an opcode-220 payload.
+    ///
+    /// Returns `None` if the buffer is truncated or the kind byte is unknown —
+    /// a malformed frame is rejected, never panics.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let (&kind, rest) = bytes.split_first()?;
+        match kind {
+            stream_kind::OPEN => Some(Self::Open {
+                stream_id: read_u64(rest)?,
+            }),
+            stream_kind::CLOSE => Some(Self::Close {
+                stream_id: read_u64(rest)?,
+            }),
+            stream_kind::DATA => {
+                let stream_id = read_u64(rest.get(..8)?)?;
+                let seq = read_u64(rest.get(8..16)?)?;
+                let payload = rest.get(16..)?.to_vec();
+                Some(Self::Data {
+                    stream_id,
+                    seq,
+                    payload,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Read a big-endian `u64` from exactly the first 8 bytes of `bytes`.
+///
+/// Returns `None` unless `bytes` is at least 8 bytes long.
+fn read_u64(bytes: &[u8]) -> Option<u64> {
+    let eight: [u8; 8] = bytes.get(..8)?.try_into().ok()?;
+    Some(u64::from_be_bytes(eight))
+}
+
+/// Restores in-order delivery of a stream's `DATA` chunks.
+///
+/// Transport may deliver opcode-220 frames out of order; the reassembler buffers
+/// chunks by `seq` and releases the longest contiguous run starting at the next
+/// expected sequence. Duplicate or already-delivered chunks are dropped.
+///
+/// This is the ordered-delivery seam dig-message (WU4) consumes; it deliberately
+/// holds no window/credit state — that is the streaming state machine's job.
+#[derive(Debug, Default)]
+pub struct StreamReassembler {
+    /// The next sequence number expected for in-order delivery.
+    next_seq: u64,
+    /// Chunks received ahead of `next_seq`, keyed by their sequence.
+    buffered: BTreeMap<u64, Vec<u8>>,
+}
+
+impl StreamReassembler {
+    /// A fresh reassembler expecting sequence 0 first.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Accept a `DATA` chunk and return every chunk now deliverable, in order.
+    ///
+    /// Feeding chunks in any order yields the same in-order output; a chunk with a
+    /// `seq` below `next_seq` (a duplicate/replay) is ignored and yields nothing.
+    pub fn accept(&mut self, seq: u64, payload: Vec<u8>) -> Vec<Vec<u8>> {
+        if seq < self.next_seq {
+            return Vec::new(); // already delivered — drop duplicate
+        }
+        self.buffered.insert(seq, payload);
+
+        let mut ready = Vec::new();
+        while let Some(chunk) = self.buffered.remove(&self.next_seq) {
+            ready.push(chunk);
+            self.next_seq += 1;
+        }
+        ready
+    }
+
+    /// The next sequence number this reassembler is waiting for.
+    #[must_use]
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// Number of chunks buffered ahead of `next_seq` awaiting a gap fill.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.buffered.len()
+    }
+}
