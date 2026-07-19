@@ -250,6 +250,8 @@ fn loopback_nat_connection(
         peer_id: dig_nat::PeerId::from_bytes(peer_id_bytes),
         method: dig_nat::TraversalKind::Direct,
         remote_addr: remote,
+        // No BLS binding over a loopback duplex (#1204 field, additive in dig-nat 0.5).
+        peer_bls_pub: None,
         session: dig_nat::PeerSession::client(client_io),
     };
     let server = dig_nat::PeerSession::server(server_io);

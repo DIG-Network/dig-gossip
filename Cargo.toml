@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -43,23 +43,15 @@ dig-protocol = { version = "0.1.1", default-features = false }
 # discovery through this so it interops byte-for-byte with dig-node + dig-relay. The gossip ALGORITHMS
 # (Plumtree/ERLAY/Dandelion++/compact-blocks) sit unchanged on top of this transport.
 #
-# Sourcing: dig-nat is not yet on crates.io, so we resolve it from the DIG-Network git repo (same as
-# the superproject). `version = "0.1"` is what `cargo publish` records. RELEASE ORDERING (ecosystem
-# release-first rule): dig-nat (and the dig-constants 0.2.x it needs) must be on crates.io, and this
-# `git` source swapped for the plain crates.io version, BEFORE dig-gossip is published — `cargo publish`
-# rejects a git dependency. The orchestrator sequences the tags.
-# VERSION REQ: `>=0.2, <0.4` spans dig-nat 0.2.x AND 0.3.x. dig-nat `main` advanced to 0.3.0, which
-# carries the address-carrying reservation (B1: `Register.listen_addrs` + `RelayPeerInfo.addresses`)
-# and the real RLY-002 relayed transport (B2) WU4 consumes; a bare `^0.2` req could not resolve the
-# 0.3.0 default branch. `<0.4` guards a future breaking 0.4.
-dig-nat = { version = ">=0.2, <0.4", git = "https://github.com/DIG-Network/dig-nat" }
-# Canonical relay endpoint (`DIG_RELAY_URL`) — pulled from the SAME git source dig-nat uses so the two
-# resolve to ONE `dig-constants` and stay in lockstep until 0.2.x is on crates.io (see dig-nat's note).
-# VERSION REQ: `>=0.2, <0.5` spans 0.2.x through 0.4.x. dig-constants `main` advanced to 0.4.0
-# (additive); a narrower req could not be satisfied by the default branch, failing every fresh resolve.
-# `<0.5` guards a future breaking 0.5. Matches dig-nat 0.3.0's widened req so the two resolve to ONE
-# dig-constants.
-dig-constants = { version = ">=0.2, <0.5", git = "https://github.com/DIG-Network/dig-constants" }
+# Sourcing: dig-nat is published on crates.io (#1214 crates.io cascade), so it is consumed as a plain
+# crates.io dependency — NO git source (a git dep would block `cargo publish`). `^0.5` tracks the
+# current 0.5.x line, which moved the outbound dial path onto `dig-ip` (0.4.0) and keeps the L7
+# `connect()` ladder, `PeerConnection`, relay client, and streaming control types dig-gossip consumes.
+dig-nat = "0.5"
+# Canonical relay endpoint (`DIG_RELAY_URL`) — consumed from crates.io (#1214). The `>=0.2, <0.5` req
+# matches dig-nat 0.5's own dig-constants req, so both resolve to ONE crates.io `dig-constants` (0.4.x)
+# and stay in lockstep. `<0.5` guards a future breaking 0.5.
+dig-constants = ">=0.2, <0.5"
 # Canonical address-family authority (CLAUDE.md §5.2 / SPEC §1.10): `dig_ip::Family` keys the
 # IPv6-first candidate ordering and `dig_ip::LocalStack` supplies the local∩peer family INTERSECTION
 # so this crate never dials a family the LOCAL host cannot originate on. A leaf crate on crates.io
