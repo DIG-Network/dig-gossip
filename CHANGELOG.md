@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.5.0] - 2026-07-19
+
+### Features
+- **dig-message:** Opcode-220 transport seam + streaming helper (WU6) (#7)
+
 ## [0.4.0] - 2026-07-18
 
 ### Features
