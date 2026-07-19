@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.6.1] - 2026-07-19
+
+### Chores
+- **deps:** Consume dig-nat from crates.io (0.5), drop git dep + adapt to 0.5 API (#11)
+
 ## [0.6.0] - 2026-07-19
 
 ### Bug Fixes
