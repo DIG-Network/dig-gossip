@@ -496,7 +496,7 @@ timeouts) belongs to `dig-message` (WU4).
 |------|---------|
 | `open_dig_stream(peer, stream_id)` / `send_dig_stream_data(peer, stream_id, seq, payload)` / `close_dig_stream(peer, stream_id)` | Send OPEN/DATA/CLOSE frames over opcode 220. |
 | `StreamFrame::{encode,decode}` | Serialize a stream frame into / out of an opaque opcode-220 payload. |
-| `StreamReassembler` | Restore in-order delivery of `Data` chunks across out-of-order transport; drops duplicates. |
+| `StreamReassembler` | Restore in-order delivery of `Data` chunks across out-of-order transport; drops duplicates. **Safe-by-default bounded:** the pending out-of-order buffer is capped by chunk count (`MAX_BUFFERED_CHUNKS`, default 256) AND total bytes (`MAX_BUFFERED_BYTES`, default 4 MiB); a chunk that would exceed either cap is rejected with `ReassembleError` (buffer never grows past the cap, never panics) so a peer withholding `next_seq` cannot exhaust memory. A gap-filling chunk at `next_seq` is always accepted (it drains, not grows). Single-stream primitive — bounding *concurrent* streams is the WU4 registry's job. |
 
 ### 2.4 PeerConnection (DIG extension of `chia-sdk-client::Peer`)
 
