@@ -322,11 +322,20 @@ impl StreamReassembler {
             return Ok(Vec::new()); // already delivered — drop duplicate
         }
 
-        // An out-of-order chunk (seq > next_seq) must be buffered until the gap
+        // A seq already buffered is a re-send: keep the FIRST payload and ignore this
+        // one. A buffered chunk is immutable, so a peer cannot resize it — this closes
+        // the byte-cap bypass where re-sending a buffered seq with a larger payload
+        // would otherwise grow `buffered_bytes` past `max_bytes`. (`next_seq` is never
+        // in `buffered` — it is drained on arrival — so this never blocks a gap fill.)
+        if self.buffered.contains_key(&seq) {
+            return Ok(Vec::new());
+        }
+
+        // A NEW out-of-order chunk (seq > next_seq) must be buffered until the gap
         // fills — enforce the caps here so a withheld `next_seq` cannot grow memory
         // without bound. An in-order chunk (seq == next_seq) is exempt: it drains
         // immediately, so it never grows the buffer even when it is at capacity.
-        if seq > self.next_seq && !self.buffered.contains_key(&seq) {
+        if seq > self.next_seq {
             if self.buffered.len() >= self.max_chunks {
                 return Err(ReassembleError::TooManyChunks {
                     limit: self.max_chunks,
@@ -339,14 +348,10 @@ impl StreamReassembler {
             }
         }
 
-        // Maintain the `buffered_bytes == Σ payload lengths` invariant across inserts.
-        let added = payload.len();
-        match self.buffered.insert(seq, payload) {
-            Some(replaced) => {
-                self.buffered_bytes = self.buffered_bytes - replaced.len() + added;
-            }
-            None => self.buffered_bytes += added,
-        }
+        // The seq is not yet buffered (guarded above), so this insert always adds a
+        // new entry — maintain the `buffered_bytes == Σ payload lengths` invariant.
+        self.buffered_bytes += payload.len();
+        self.buffered.insert(seq, payload);
 
         let mut ready = Vec::new();
         while let Some(chunk) = self.buffered.remove(&self.next_seq) {

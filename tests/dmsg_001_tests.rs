@@ -339,6 +339,42 @@ fn reassembler_rebuffered_chunk_is_idempotent() {
     );
 }
 
+/// **Row (regression, byte-cap bypass):** re-sending a buffered seq with a LARGER
+/// payload must NOT grow the buffer past the byte cap — the buffered chunk is
+/// immutable (first payload kept), so `buffered_bytes` can never exceed `max_bytes`
+/// on the replace path. Guards the attack: fill the chunk cap with tiny chunks,
+/// then re-send each with a max-size payload to balloon memory past the byte cap.
+#[test]
+fn reassembler_rebuffered_larger_payload_cannot_exceed_byte_cap() {
+    let max_bytes = 1_000;
+    let mut r = StreamReassembler::with_caps(4, max_bytes);
+    // Withhold seq 0; buffer 1..=4 as 1-byte chunks (fills the chunk cap cheaply).
+    for seq in 1..=4 {
+        assert!(r.accept(seq, vec![0u8; 1]).unwrap().is_empty());
+    }
+    assert_eq!(r.buffered_bytes(), 4);
+    // Attacker re-sends each buffered seq with a huge payload. Each is a re-buffer
+    // of an existing seq — it must be ignored, NOT replace-and-grow.
+    for seq in 1..=4 {
+        assert!(r.accept(seq, vec![0u8; 5_000]).unwrap().is_empty());
+        assert!(
+            r.buffered_bytes() <= max_bytes,
+            "byte cap breached on the replace path: {} > {max_bytes}",
+            r.buffered_bytes()
+        );
+    }
+    // The original small payloads were kept, not the huge re-sends.
+    assert_eq!(r.buffered_bytes(), 4, "first payloads must be retained");
+    // The gap-fill drains the ORIGINAL 1-byte chunks, proving immutability.
+    let delivered = r.accept(0, vec![9u8; 1]).unwrap();
+    assert_eq!(delivered.len(), 5);
+    assert!(
+        delivered[1..].iter().all(|c| c == &vec![0u8; 1]),
+        "re-sent larger payloads must never have been buffered"
+    );
+    assert_eq!(r.buffered_bytes(), 0);
+}
+
 /// **Row:** default caps expose the safe-by-default values.
 #[test]
 fn reassembler_default_caps_are_safe() {
