@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.6.0] - 2026-07-19
+
+### Bug Fixes
+- **stream:** Bound `StreamReassembler` with chunk/byte caps to prevent a withheld-`next_seq` memory DoS; `accept` now returns `Result<_, ReassembleError>` (#1182)
+
 ## [0.5.0] - 2026-07-19
 
 ### Features

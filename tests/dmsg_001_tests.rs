@@ -23,8 +23,9 @@ use std::net::SocketAddr;
 use dig_gossip::gossip::broadcaster::{classify_broadcast, BroadcastStrategy};
 use dig_gossip::{
     dig_message_payload, frame_envelope, is_dig_message, Bytes32, GossipError, GossipHandle,
-    GossipService, NewPeak, NodeType, PenaltyReason, ProtocolMessageTypes, StreamFrame,
-    StreamReassembler, Streamable, DIG_MESSAGE,
+    GossipService, NewPeak, NodeType, PenaltyReason, ProtocolMessageTypes, ReassembleError,
+    StreamFrame, StreamReassembler, Streamable, DIG_MESSAGE, MAX_BUFFERED_BYTES,
+    MAX_BUFFERED_CHUNKS,
 };
 
 // ---------------------------------------------------------------------------
@@ -245,8 +246,8 @@ fn stream_frame_decode_rejects_malformed() {
 #[test]
 fn reassembler_releases_in_order_chunks_immediately() {
     let mut r = StreamReassembler::new();
-    assert_eq!(r.accept(0, b"a".to_vec()), vec![b"a".to_vec()]);
-    assert_eq!(r.accept(1, b"b".to_vec()), vec![b"b".to_vec()]);
+    assert_eq!(r.accept(0, b"a".to_vec()).unwrap(), vec![b"a".to_vec()]);
+    assert_eq!(r.accept(1, b"b".to_vec()).unwrap(), vec![b"b".to_vec()]);
     assert_eq!(r.next_seq(), 2);
     assert_eq!(r.pending(), 0);
 }
@@ -256,12 +257,12 @@ fn reassembler_releases_in_order_chunks_immediately() {
 fn reassembler_orders_out_of_order_delivery() {
     let mut r = StreamReassembler::new();
     // seq 2 and 1 arrive before seq 0 — nothing deliverable yet.
-    assert!(r.accept(2, b"c".to_vec()).is_empty());
-    assert!(r.accept(1, b"b".to_vec()).is_empty());
+    assert!(r.accept(2, b"c".to_vec()).unwrap().is_empty());
+    assert!(r.accept(1, b"b".to_vec()).unwrap().is_empty());
     assert_eq!(r.pending(), 2);
     // seq 0 arrives — the whole contiguous run flushes in order.
     assert_eq!(
-        r.accept(0, b"a".to_vec()),
+        r.accept(0, b"a".to_vec()).unwrap(),
         vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
     );
     assert_eq!(r.next_seq(), 3);
@@ -272,7 +273,88 @@ fn reassembler_orders_out_of_order_delivery() {
 #[test]
 fn reassembler_drops_duplicate_chunks() {
     let mut r = StreamReassembler::new();
-    assert_eq!(r.accept(0, b"a".to_vec()), vec![b"a".to_vec()]);
-    assert!(r.accept(0, b"a-again".to_vec()).is_empty()); // below next_seq — dropped
+    assert_eq!(r.accept(0, b"a".to_vec()).unwrap(), vec![b"a".to_vec()]);
+    assert!(r.accept(0, b"a-again".to_vec()).unwrap().is_empty()); // below next_seq — dropped
     assert_eq!(r.next_seq(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 6b. Safe-by-default bounds (DoS hardening, #1182)
+// ---------------------------------------------------------------------------
+
+/// **Row:** a peer withholding `next_seq` while flooding higher sequences is
+/// bounded — the reassembler rejects at the chunk cap instead of buffering forever.
+#[test]
+fn reassembler_bounds_withheld_seq_chunk_flood() {
+    let mut r = StreamReassembler::with_caps(4, MAX_BUFFERED_BYTES);
+    // seq 0 is withheld; the attacker streams 1..=4 (fills the 4-chunk cap).
+    for seq in 1..=4 {
+        assert!(r.accept(seq, b"x".to_vec()).unwrap().is_empty());
+    }
+    assert_eq!(r.pending(), 4);
+    // The 5th out-of-order chunk is rejected — memory stays bounded.
+    assert_eq!(
+        r.accept(5, b"x".to_vec()),
+        Err(ReassembleError::TooManyChunks { limit: 4 })
+    );
+    assert_eq!(r.pending(), 4, "buffer did not grow past the cap");
+    // The gap-filling chunk at next_seq is still accepted and drains the buffer.
+    assert_eq!(r.accept(0, b"g".to_vec()).unwrap().len(), 5);
+    assert_eq!(r.pending(), 0);
+}
+
+/// **Row:** a few-huge-chunks flood is bounded by the byte cap even under the
+/// chunk cap.
+#[test]
+fn reassembler_bounds_huge_chunk_byte_flood() {
+    // Generous chunk cap, tiny byte cap: bytes are the binding constraint.
+    let mut r = StreamReassembler::with_caps(MAX_BUFFERED_CHUNKS, 10);
+    assert!(r.accept(1, vec![0u8; 6]).unwrap().is_empty());
+    assert_eq!(r.buffered_bytes(), 6);
+    // Another 6-byte chunk would total 12 > 10 — rejected.
+    assert_eq!(
+        r.accept(2, vec![0u8; 6]),
+        Err(ReassembleError::TooManyBytes { limit: 10 })
+    );
+    assert_eq!(
+        r.buffered_bytes(),
+        6,
+        "byte total did not grow past the cap"
+    );
+    assert_eq!(r.pending(), 1);
+}
+
+/// **Row:** a re-sent out-of-order chunk (already buffered) is idempotent — it
+/// neither errors nor double-counts bytes against the cap.
+#[test]
+fn reassembler_rebuffered_chunk_is_idempotent() {
+    let mut r = StreamReassembler::with_caps(2, MAX_BUFFERED_BYTES);
+    assert!(r.accept(1, vec![0u8; 3]).unwrap().is_empty());
+    assert!(r.accept(1, vec![0u8; 3]).unwrap().is_empty()); // dup of a buffered seq
+    assert_eq!(r.pending(), 1);
+    assert_eq!(
+        r.buffered_bytes(),
+        3,
+        "duplicate did not double-count bytes"
+    );
+}
+
+/// **Row:** default caps expose the safe-by-default values.
+#[test]
+fn reassembler_default_caps_are_safe() {
+    assert_eq!(MAX_BUFFERED_CHUNKS, 256);
+    assert_eq!(MAX_BUFFERED_BYTES, 4 * 1024 * 1024);
+    // A default reassembler tolerates ordinary reordering without erroring.
+    let mut r = StreamReassembler::new();
+    for seq in (1..=100).rev() {
+        assert!(r.accept(seq, b"x".to_vec()).unwrap().is_empty());
+    }
+    assert_eq!(r.accept(0, b"x".to_vec()).unwrap().len(), 101);
+}
+
+/// **Row:** the error type carries a human-readable message.
+#[test]
+fn reassemble_error_displays() {
+    let e = ReassembleError::TooManyChunks { limit: 7 };
+    assert!(e.to_string().contains('7'));
 }

@@ -190,45 +190,171 @@ fn read_u64(bytes: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(eight))
 }
 
-/// Restores in-order delivery of a stream's `DATA` chunks.
+/// Default cap on the number of out-of-order chunks buffered ahead of `next_seq`.
+///
+/// A peer that withholds `next_seq` while streaming higher sequences would
+/// otherwise buffer chunks forever; this bounds that gap to at most this many
+/// pending chunks. `256` is generous for real reordering yet small enough that a
+/// flood is rejected quickly. Override per stream with [`StreamReassembler::with_caps`].
+pub const MAX_BUFFERED_CHUNKS: usize = 256;
+
+/// Default cap on the total bytes of out-of-order chunk payloads held ahead of
+/// `next_seq`.
+///
+/// Guards the few-huge-chunks variant of the flood (a handful of oversized chunks
+/// that stay under [`MAX_BUFFERED_CHUNKS`] but exhaust memory). `4 MiB` bounds the
+/// worst-case per-stream buffer. Override per stream with [`StreamReassembler::with_caps`].
+pub const MAX_BUFFERED_BYTES: usize = 4 * 1024 * 1024;
+
+/// Why an out-of-order chunk was rejected instead of buffered.
+///
+/// Returned by [`StreamReassembler::accept`] when accepting the chunk would grow
+/// the pending buffer past a safe-by-default cap. The caller (the dig-message
+/// streaming state machine, WU4) treats this as a fatal stream error and RESETs
+/// the stream — the reassembler never panics and never grows past the cap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReassembleError {
+    /// The pending out-of-order chunk count would exceed `limit`.
+    TooManyChunks {
+        /// The [`MAX_BUFFERED_CHUNKS`]-style cap that was hit.
+        limit: usize,
+    },
+    /// The pending out-of-order byte total would exceed `limit`.
+    TooManyBytes {
+        /// The [`MAX_BUFFERED_BYTES`]-style cap that was hit.
+        limit: usize,
+    },
+}
+
+impl std::fmt::Display for ReassembleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyChunks { limit } => {
+                write!(f, "reassembler buffer full: {limit} out-of-order chunks")
+            }
+            Self::TooManyBytes { limit } => {
+                write!(f, "reassembler buffer full: {limit} out-of-order bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReassembleError {}
+
+/// Restores in-order delivery of a stream's `DATA` chunks — safe-by-default bounded.
 ///
 /// Transport may deliver opcode-220 frames out of order; the reassembler buffers
 /// chunks by `seq` and releases the longest contiguous run starting at the next
 /// expected sequence. Duplicate or already-delivered chunks are dropped.
 ///
-/// This is the ordered-delivery seam dig-message (WU4) consumes; it deliberately
-/// holds no window/credit state — that is the streaming state machine's job.
-#[derive(Debug, Default)]
+/// # Bounds (DoS-safe by default)
+///
+/// The pending out-of-order buffer is capped on BOTH dimensions so an attacker who
+/// withholds `next_seq` while streaming higher sequences cannot grow memory without
+/// bound: at most [`MAX_BUFFERED_CHUNKS`] chunks AND [`MAX_BUFFERED_BYTES`] total
+/// bytes (configurable via [`with_caps`](Self::with_caps)). A chunk that would push
+/// the buffer past either cap is rejected with a [`ReassembleError`] rather than
+/// buffered — the caller RESETs the stream. A gap-filling chunk (at `next_seq`) is
+/// always accepted, since it drains rather than grows the buffer.
+///
+/// This is a **single-stream** primitive: it holds ordering state for ONE stream and
+/// carries no window/credit state — windowing, backpressure, timeouts, and bounding
+/// the number of *concurrent* streams are the streaming state machine's job (WU4,
+/// which owns the per-peer stream registry).
+#[derive(Debug)]
 pub struct StreamReassembler {
     /// The next sequence number expected for in-order delivery.
     next_seq: u64,
     /// Chunks received ahead of `next_seq`, keyed by their sequence.
     buffered: BTreeMap<u64, Vec<u8>>,
+    /// Running total of `buffered` payload bytes (invariant: sum of all values' lengths).
+    buffered_bytes: usize,
+    /// Cap on `buffered.len()` for out-of-order chunks.
+    max_chunks: usize,
+    /// Cap on `buffered_bytes` for out-of-order chunks.
+    max_bytes: usize,
+}
+
+impl Default for StreamReassembler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StreamReassembler {
-    /// A fresh reassembler expecting sequence 0 first.
+    /// A fresh reassembler expecting sequence 0 first, with the default caps
+    /// ([`MAX_BUFFERED_CHUNKS`] / [`MAX_BUFFERED_BYTES`]).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_caps(MAX_BUFFERED_CHUNKS, MAX_BUFFERED_BYTES)
+    }
+
+    /// A fresh reassembler with explicit out-of-order buffer caps.
+    ///
+    /// `max_chunks` bounds the pending chunk COUNT and `max_bytes` the pending byte
+    /// TOTAL; a chunk that would exceed either is rejected by [`accept`](Self::accept).
+    #[must_use]
+    pub fn with_caps(max_chunks: usize, max_bytes: usize) -> Self {
+        Self {
+            next_seq: 0,
+            buffered: BTreeMap::new(),
+            buffered_bytes: 0,
+            max_chunks,
+            max_bytes,
+        }
     }
 
     /// Accept a `DATA` chunk and return every chunk now deliverable, in order.
     ///
     /// Feeding chunks in any order yields the same in-order output; a chunk with a
-    /// `seq` below `next_seq` (a duplicate/replay) is ignored and yields nothing.
-    pub fn accept(&mut self, seq: u64, payload: Vec<u8>) -> Vec<Vec<u8>> {
+    /// `seq` below `next_seq` (a duplicate/replay) — or an out-of-order `seq` already
+    /// buffered — is ignored and yields `Ok(empty)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReassembleError`] when buffering a NEW out-of-order chunk would push
+    /// the pending buffer past [`max_chunks`](Self::with_caps) or
+    /// [`max_bytes`](Self::with_caps). The buffer is left unchanged (never grows past
+    /// the cap); the caller RESETs the stream. A gap-filling chunk at `next_seq` is
+    /// always accepted — it drains the buffer rather than growing it.
+    pub fn accept(&mut self, seq: u64, payload: Vec<u8>) -> Result<Vec<Vec<u8>>, ReassembleError> {
         if seq < self.next_seq {
-            return Vec::new(); // already delivered — drop duplicate
+            return Ok(Vec::new()); // already delivered — drop duplicate
         }
-        self.buffered.insert(seq, payload);
+
+        // An out-of-order chunk (seq > next_seq) must be buffered until the gap
+        // fills — enforce the caps here so a withheld `next_seq` cannot grow memory
+        // without bound. An in-order chunk (seq == next_seq) is exempt: it drains
+        // immediately, so it never grows the buffer even when it is at capacity.
+        if seq > self.next_seq && !self.buffered.contains_key(&seq) {
+            if self.buffered.len() >= self.max_chunks {
+                return Err(ReassembleError::TooManyChunks {
+                    limit: self.max_chunks,
+                });
+            }
+            if self.buffered_bytes.saturating_add(payload.len()) > self.max_bytes {
+                return Err(ReassembleError::TooManyBytes {
+                    limit: self.max_bytes,
+                });
+            }
+        }
+
+        // Maintain the `buffered_bytes == Σ payload lengths` invariant across inserts.
+        let added = payload.len();
+        match self.buffered.insert(seq, payload) {
+            Some(replaced) => {
+                self.buffered_bytes = self.buffered_bytes - replaced.len() + added;
+            }
+            None => self.buffered_bytes += added,
+        }
 
         let mut ready = Vec::new();
         while let Some(chunk) = self.buffered.remove(&self.next_seq) {
+            self.buffered_bytes -= chunk.len();
             ready.push(chunk);
             self.next_seq += 1;
         }
-        ready
+        Ok(ready)
     }
 
     /// The next sequence number this reassembler is waiting for.
@@ -241,5 +367,11 @@ impl StreamReassembler {
     #[must_use]
     pub fn pending(&self) -> usize {
         self.buffered.len()
+    }
+
+    /// Total bytes currently held in the out-of-order buffer.
+    #[must_use]
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffered_bytes
     }
 }
