@@ -9,6 +9,7 @@
 /// without exposing internal types at the crate root (STR-002).
 pub(crate) mod state;
 
+pub mod dig_message;
 pub mod gossip_handle;
 pub mod gossip_service;
 pub mod peer_pool;
