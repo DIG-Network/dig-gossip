@@ -149,6 +149,16 @@ pub enum ProtocolMessageTypes {
     // -------------------------------------------------------------------------
     RegisterPeer = 218,
     RegisterAck = 219,
+
+    // -------------------------------------------------------------------------
+    // DIG dig-message directed-envelope transport (WU6 / epic #796, Wave A).
+    // Opcode 220 carries a dig-message envelope as OPAQUE bytes in `Message.data`.
+    // dig-gossip is the transport only — it never seals/opens the envelope. This
+    // is the FIRST opcode of the 220-255 "free" band (200-219 are the consensus
+    // band, `DigMessageType`); the canonical constant is `dig_protocol::DIG_MESSAGE`
+    // and `crate::service::dig_message::DIG_MESSAGE`.
+    // -------------------------------------------------------------------------
+    DigMessage = 220,
 }
 
 #[cfg(feature = "py-bindings")]

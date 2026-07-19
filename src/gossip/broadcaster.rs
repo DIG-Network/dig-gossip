@@ -72,10 +72,10 @@ pub fn classify_broadcast(
             BroadcastStrategy::Plumtree
         }
 
-        // Unicast: response messages are not broadcast
-        RespondPeers | RespondTransaction | RespondBlocks | RejectBlock | RejectBlocks => {
-            BroadcastStrategy::Unicast
-        }
+        // Unicast: response messages + directed dig-message envelopes are never
+        // broadcast — a `DigMessage` (opcode 220) is a 1:1 directed frame (WU6).
+        RespondPeers | RespondTransaction | RespondBlocks | RejectBlock | RejectBlocks
+        | DigMessage => BroadcastStrategy::Unicast,
 
         // Default: Plumtree for anything else
         _ => BroadcastStrategy::Plumtree,

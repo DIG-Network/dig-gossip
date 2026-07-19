@@ -103,6 +103,10 @@ pub mod privacy;
 
 // -- Core lifecycle types --
 pub use error::GossipError;
+pub use service::dig_message::{
+    dig_message_payload, frame_envelope, is_dig_message, StreamFrame, StreamReassembler,
+    DIG_MESSAGE,
+};
 pub use service::gossip_handle::GossipHandle;
 pub use service::gossip_service::GossipService;
 

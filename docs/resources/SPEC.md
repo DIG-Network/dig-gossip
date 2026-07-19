@@ -456,6 +456,48 @@ pub enum DigMessageType {
 }
 ```
 
+The `200..=219` band is the **consensus** band (`DigMessageType` above, plus
+`RegisterPeer = 218` / `RegisterAck = 219`). The `220..=255` band is **free** for
+directed application protocols.
+
+#### 2.3.1 `DIG_MESSAGE = 220` — directed dig-message transport (WU6, epic #796)
+
+Opcode **220** (`DIG_MESSAGE`) carries a `dig-message` **directed envelope** between
+two peers. It is a first-class `ProtocolMessageTypes::DigMessage` variant so it rides
+the ordinary [`Message`](chia_protocol::Message) transport (send / inbound), and the
+canonical constant is exported as `dig_gossip::DIG_MESSAGE` (mirrored by
+`dig_protocol::DIG_MESSAGE` for non-gossip consumers).
+
+- **Envelope is OPAQUE.** dig-gossip is the transport only — the sealed envelope rides
+  verbatim in `Message.data` (bytes in equal bytes out). dig-gossip never seals, opens,
+  or parses it, and has no BLS / recipient-key dependency (Wave A, envelope-only). The
+  end-to-end sealing to the recipient's DID key is `dig-message`'s (CLAUDE.md §5.4).
+- **Directed, never broadcast.** `classify_broadcast(DigMessage) = Unicast`; a directed
+  message is delivered 1:1 via `send_dig_message`, never Plumtree-flooded.
+- **Correlation.** `Message.id` pairs the frames of one exchange (e.g. a stream).
+
+**Send/route API** (on `GossipHandle`, plus free functions in `service::dig_message`):
+
+| Item | Purpose |
+|------|---------|
+| `send_dig_message(peer, envelope, correlation_id)` | Send a directed envelope over opcode 220. |
+| `dig_message_payload(&Message) -> Option<&[u8]>` | Inbound routing: lift the opaque envelope from an opcode-220 frame (else `None`). |
+| `is_dig_message(u8) -> bool` | Recognise opcode 220. |
+| `frame_envelope(&[u8], Option<u16>) -> Message` | Build the outbound opcode-220 frame. |
+
+#### 2.3.2 Streaming seam
+
+A dig-message **stream** rides as a sequence of opcode-220 frames whose payloads are
+`StreamFrame`s (`Open` / `Data{seq}` / `Close`). dig-gossip provides only the framing +
+**ordered delivery** seam; the streaming *state machine* (windowing, credit/backpressure,
+timeouts) belongs to `dig-message` (WU4).
+
+| Item | Purpose |
+|------|---------|
+| `open_dig_stream(peer, stream_id)` / `send_dig_stream_data(peer, stream_id, seq, payload)` / `close_dig_stream(peer, stream_id)` | Send OPEN/DATA/CLOSE frames over opcode 220. |
+| `StreamFrame::{encode,decode}` | Serialize a stream frame into / out of an opaque opcode-220 payload. |
+| `StreamReassembler` | Restore in-order delivery of `Data` chunks across out-of-order transport; drops duplicates. |
+
 ### 2.4 PeerConnection (DIG extension of `chia-sdk-client::Peer`)
 
 `chia-sdk-client::Peer` handles the WebSocket connection and message I/O. `PeerConnection` wraps it with additional metadata for the gossip layer.
