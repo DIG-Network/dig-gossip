@@ -4,20 +4,10 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
-## [0.7.0] - 2026-07-19
+## [0.7.0] - 2026-07-20
 
 ### Features
-- **deps:** Adopt dig-nat 0.6.0 + dig-tls (self-signed→CA-signed mTLS cutover) (#1268/#1280)
-
-### BREAKING CHANGES
-- The `dig-nat` peer transport now presents a CA-signed `dig-tls` `NodeCert` (chained to the shipped
-  DigNetwork CA, carrying the #1204 BLS-G1 binding) instead of a self-signed `ChiaCertificate`-bridged
-  identity. `GossipHandle::nat_identity()` now returns `Arc<dig_tls::NodeCert>` (was a bridged
-  `LocalIdentity`); `NatLocalIdentity` is now `dig_tls::NodeCert`; `nat_connect`/`dig_nat::connect`
-  take `&Arc<NodeCert>`. The removed `chia_cert_to_nat_identity` bridge and `LocalIdentity` are gone
-  (dig-nat 0.6 delegates all cert/mTLS/peer_id/BLS-binding to dig-tls). The transport `peer_id` is now
-  derived from the NodeCert SPKI and is distinct from `local_peer_id()` (chia-ssl WebSocket path) until
-  a single unified node identity is supplied (#908).
+- **deps:** Adopt dig-nat 0.6.0 + dig-tls (self-signed→CA-signed mTLS cutover) (#13)
 
 ## [0.6.2] - 2026-07-20
 
