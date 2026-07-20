@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.6.2] - 2026-07-20
+
+### Refactor
+- **peer:** Consume dig-nat's canonical peer_id derivation (#12)
+
 ## [0.6.1] - 2026-07-19
 
 ### Chores
