@@ -338,6 +338,14 @@ pub struct ServiceState {
     #[allow(dead_code)]
     pub tls: ChiaCertificate,
 
+    /// The node's CA-signed `dig-tls` mTLS identity for the unified `dig-nat` peer transport
+    /// (#1268/#1280). Lazily minted on first use ([`Self::nat_node_cert`]) so services that never dial
+    /// over `dig-nat` pay no BLS/cert-generation cost, and cached thereafter for a stable transport
+    /// `peer_id` for the life of the service. Distinct from [`Self::tls`] (the chia-ssl cert used by
+    /// the legacy chia-protocol WebSocket path): the `dig-nat` path requires a leaf chained to the
+    /// shipped DigNetwork CA carrying the #1204 BLS-G1 binding, which a self-signed chia cert is not.
+    nat_node_cert: Mutex<Option<Arc<dig_tls::NodeCert>>>,
+
     /// Bitcoin/Chia-style address manager (tried/new bucket tables).
     /// Manages known peer addresses for the discovery loop. Updated on successful
     /// connect (`mark_good`), on peer exchange (`add_to_new_table`), and on connect
@@ -559,6 +567,7 @@ impl ServiceState {
         Ok(Self {
             config,
             tls,
+            nat_node_cert: Mutex::new(None),
             address_manager,
             seen_messages: Mutex::new(LruCache::new(cap)),
             plumtree: Mutex::new(crate::gossip::plumtree::PlumtreeState::new()),
@@ -586,6 +595,37 @@ impl ServiceState {
             relay_status: Mutex::new(None),
             relay_reachable: Mutex::new(std::collections::HashSet::new()),
         })
+    }
+
+    /// The node's CA-signed `dig-tls` [`NodeCert`](dig_tls::NodeCert) for the unified `dig-nat`
+    /// transport, minted (and cached) on first use.
+    ///
+    /// dig-nat 0.6 requires an mTLS leaf **chained to the shipped DigNetwork CA** carrying the #1204
+    /// BLS-G1 binding, so a self-signed chia-ssl cert cannot be bridged (the self-signed→CA-signed
+    /// cutover). Absent an externally-supplied node identity, we mint an ephemeral BLS key + a
+    /// CA-signed [`NodeCert`] here and cache it, giving a stable transport `peer_id` for the life of
+    /// this service. A future refinement (identity boundary, #908) lets `dig-node` inject a persistent
+    /// [`NodeCert`] so the transport identity survives restarts and ties to the node's real identity.
+    ///
+    /// # Errors
+    /// [`GossipError::InvalidConfig`] if BLS key or certificate generation fails.
+    pub(crate) fn nat_node_cert(&self) -> Result<Arc<dig_tls::NodeCert>, GossipError> {
+        let mut slot = self
+            .nat_node_cert
+            .lock()
+            .map_err(|_| GossipError::InvalidConfig("nat_node_cert lock poisoned".to_string()))?;
+        if let Some(existing) = slot.as_ref() {
+            return Ok(Arc::clone(existing));
+        }
+        let mut seed = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut seed);
+        let bls_sk = dig_tls::bls::SecretKey::from_seed(&seed);
+        let node = dig_tls::NodeCert::generate_signed(&bls_sk).map_err(|e| {
+            GossipError::InvalidConfig(format!("mint dig-nat NodeCert (dig-tls): {e}"))
+        })?;
+        let node = Arc::new(node);
+        *slot = Some(Arc::clone(&node));
+        Ok(node)
     }
 
     /// **POOL-*** — dedup keys of every currently-connected peer, for

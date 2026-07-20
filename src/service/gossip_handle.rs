@@ -864,19 +864,21 @@ impl GossipHandle {
         Ok(peer_id_from_tls_spki_der(&spki))
     }
 
-    /// Bridge this node's TLS material to a [`dig-nat`](dig_nat) identity for the unified transport.
+    /// This node's CA-signed [`dig-tls`](dig_nat::NodeCert) identity for the unified `dig-nat`
+    /// transport.
     ///
-    /// The returned [`NatLocalIdentity`](crate::nat::NatLocalIdentity) carries the DER cert + key and
-    /// the derived `peer_id` (== [`Self::local_peer_id`]); it is what
-    /// [`Self::connect_via_nat`] presents as the mTLS client certificate. Gated on the running
-    /// lifecycle.
-    pub fn nat_identity(&self) -> Result<crate::nat::NatLocalIdentity, GossipError> {
+    /// The returned [`NatLocalIdentity`](crate::nat::NatLocalIdentity) is a
+    /// [`NodeCert`](dig_nat::NodeCert): an mTLS leaf chained to the shipped DigNetwork CA carrying the
+    /// #1204 BLS-G1 binding — what [`Self::connect_via_nat`] presents as the mTLS client certificate
+    /// (#1268/#1280 self-signed→CA-signed cutover). Minted + cached on first use for a stable transport
+    /// `peer_id`. NOTE: this transport `peer_id` is derived from the NodeCert's SPKI and is therefore
+    /// distinct from [`Self::local_peer_id`] (the chia-ssl WebSocket-path id) until `dig-node` supplies
+    /// a single unified identity (#908). Gated on the running lifecycle.
+    pub fn nat_identity(
+        &self,
+    ) -> Result<std::sync::Arc<crate::nat::NatLocalIdentity>, GossipError> {
         self.require_running()?;
-        crate::nat::chia_cert_to_nat_identity(&self.inner.tls).ok_or_else(|| {
-            GossipError::InvalidConfig(
-                "node TLS certificate could not be bridged to a dig-nat identity".to_string(),
-            )
-        })
+        self.inner.nat_node_cert()
     }
 
     /// Establish a peer connection over the unified `dig-nat` NAT-traversal ladder.

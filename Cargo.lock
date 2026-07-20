@@ -1440,6 +1440,7 @@ dependencies = [
  "dig-ip",
  "dig-nat",
  "dig-protocol",
+ "dig-tls",
  "futures-util",
  "lru",
  "native-tls",
@@ -1490,20 +1491,19 @@ dependencies = [
 
 [[package]]
 name = "dig-nat"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a0ff058c63c8c8d0531a122302451b9378e1e33ba110c3093686be4a6873dc0"
+checksum = "b9ab5e37d699c9ac1ec9413ea7505587bff6ec4e0e8d9d966af8f0e28db46445"
 dependencies = [
  "async-trait",
  "dig-constants",
  "dig-identity",
  "dig-ip",
+ "dig-tls",
  "futures",
  "futures-util",
  "igd-next",
- "rcgen",
  "ring",
- "rustls",
  "rustls-pki-types",
  "serde",
  "serde_bytes",
@@ -1515,9 +1515,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
- "x509-parser",
  "yamux",
- "zeroize",
 ]
 
 [[package]]
@@ -1533,6 +1531,27 @@ dependencies = [
  "chia-traits 0.26.0",
  "chia_streamable_macro 0.26.0",
  "serde",
+]
+
+[[package]]
+name = "dig-tls"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92132ecd0d40254676788e391382cbd2e7743b157df037de0a270f025053847"
+dependencies = [
+ "blst",
+ "chia-bls 0.26.0",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "rustls-webpki 0.102.8",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "time",
+ "tracing",
+ "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
@@ -3792,7 +3811,7 @@ dependencies = [
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki",
+ "rustls-webpki 0.103.13",
  "subtle",
  "zeroize",
 ]
@@ -3813,6 +3832,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046"
 dependencies = [
  "zeroize",
+]
+
+[[package]]
+name = "rustls-webpki"
+version = "0.102.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64ca1bc8749bd4cf37b5ce386cc146580777b4e8572c7b97baf22c83f444bee9"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "untrusted 0.9.0",
 ]
 
 [[package]]

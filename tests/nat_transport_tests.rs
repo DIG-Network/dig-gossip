@@ -4,8 +4,8 @@
 //! `connect(peer)` NAT-traversal ladder + yamux-multiplexed transport) instead of a bespoke dialer.
 //! This suite covers the ADAPTER layer that wires the two together — with NO real network:
 //!
-//! - **identity bridge** — a `dig-gossip` `ChiaCertificate` (PEM) becomes a `dig-nat` `LocalIdentity`
-//!   whose `peer_id` matches what the gossip layer derives, so the same TLS material drives both.
+//! - **identity** — the node mints a CA-signed `dig-tls` `NodeCert` (the #1268/#1280 self-signed→
+//!   CA-signed cutover) whose `peer_id = SHA-256(SPKI DER)` is derived identically by the gossip layer.
 //! - **`PeerTarget` construction** — a gossip `PeerId` + address becomes a `dig-nat` `PeerTarget`.
 //! - **`PeerRecord` wire shape** — the spec's `dig.getPeers` record
 //!   (`{peer_id, addresses:[{host,port,kind}], network_id, last_seen, via}`) round-trips through JSON
@@ -15,56 +15,31 @@
 //!   over a `dig-nat` `PeerSession` and control/data round-trips (the transport dig-gossip layers its
 //!   gossip algorithms on top of).
 
-use dig_gossip::nat::{
-    chia_cert_to_nat_identity, peer_target_for, AddressKind, PeerAddress, PeerRecord, Via,
-};
+use dig_gossip::nat::{peer_target_for, AddressKind, PeerAddress, PeerRecord, Via};
 use dig_gossip::PeerId;
 
 // -----------------------------------------------------------------------------------------------
-// Identity bridge: ChiaCertificate (PEM) -> dig-nat LocalIdentity
+// Identity: a CA-signed dig-tls NodeCert whose peer_id the gossip layer derives identically
 // -----------------------------------------------------------------------------------------------
 
 #[test]
-fn chia_cert_bridges_to_nat_identity_with_matching_peer_id() {
-    // A freshly generated node certificate (chia-ssl PEM form), as GossipService::new would load.
-    let cert = dig_gossip::ChiaCertificate::generate().expect("generate ChiaCertificate");
+fn nat_node_cert_peer_id_matches_gossip_spki_derivation() {
+    // Mint the node's CA-signed dig-tls NodeCert (the #1268/#1280 cutover) from an ephemeral BLS key,
+    // exactly as the service does on first use of the dig-nat transport.
+    let bls_sk = dig_tls::bls::SecretKey::from_seed(&[7u8; 32]);
+    let node = dig_tls::NodeCert::generate_signed(&bls_sk).expect("mint a CA-signed NodeCert");
 
-    // Bridge to a dig-nat identity.
-    let identity = chia_cert_to_nat_identity(&cert)
-        .expect("a valid ChiaCertificate bridges to a dig-nat LocalIdentity");
-
-    // The dig-nat identity's peer_id must equal the gossip-derived peer_id from the SAME cert's SPKI.
-    let der_cert = pem_first_der(&cert.cert_pem, "CERTIFICATE");
-    let (_, x509) =
-        x509_parser::parse_x509_certificate(&der_cert).expect("parse the bridged leaf cert");
+    // The gossip layer, given the SAME leaf certificate's SPKI DER, derives the SAME peer_id
+    // (peer_id = SHA-256(TLS SPKI DER) — the frozen contract across dig-gossip / dig-nat / dig-tls).
+    let (_, x509) = x509_parser::parse_x509_certificate(node.cert_der())
+        .expect("parse the CA-signed leaf cert");
     let gossip_id = dig_gossip::peer_id_from_tls_spki_der(x509.tbs_certificate.subject_pki.raw);
 
     assert_eq!(
-        identity.peer_id.as_bytes(),
+        node.peer_id().as_bytes(),
         gossip_id.as_ref(),
-        "the bridged dig-nat identity must carry the same peer_id the gossip layer derives"
+        "the NodeCert's peer_id must equal the gossip-layer SPKI derivation from the same cert"
     );
-}
-
-/// Extract the first DER block of `label` from a PEM string (test helper).
-fn pem_first_der(pem: &str, label: &str) -> Vec<u8> {
-    for p in x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes()).flatten() {
-        if p.label == label {
-            return p.contents;
-        }
-    }
-    panic!("no {label} block in PEM");
-}
-
-#[test]
-fn chia_cert_bridge_rejects_a_malformed_certificate() {
-    // A ChiaCertificate with no valid PEM cert block cannot be bridged — returns None (the same
-    // failure a corrupt on-disk cert would produce), never panics.
-    let bad = dig_gossip::ChiaCertificate {
-        cert_pem: "not a pem".to_string(),
-        key_pem: "also not a pem".to_string(),
-    };
-    assert!(chia_cert_to_nat_identity(&bad).is_none());
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -250,7 +225,7 @@ fn loopback_nat_connection(
         peer_id: dig_nat::PeerId::from_bytes(peer_id_bytes),
         method: dig_nat::TraversalKind::Direct,
         remote_addr: remote,
-        // No BLS binding over a loopback duplex (#1204 field, additive in dig-nat 0.5).
+        // No BLS binding over a loopback duplex (#1204 field on dig-nat's PeerConnection).
         peer_bls_pub: None,
         session: dig_nat::PeerSession::client(client_io),
     };
