@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.7.1] - 2026-07-20
+
+### Chores
+- **deps:** Bump dig-nat to 0.7 (full NAT ladder unification, #836) (#14)
+
 ## [0.7.0] - 2026-07-20
 
 ### Features
