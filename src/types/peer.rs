@@ -49,10 +49,15 @@ pub type PeerId = Bytes32;
 /// the `x509-parser` crate when parsing X.509 certs. CON-001 will lift this blob from the negotiated peer cert.
 ///
 /// **Not** the bare RSA/EC bit string alone — callers must pass the full SPKI DER slice.
+///
+/// **Delegates to [`dig_nat::peer_id_from_tls_spki_der`]** — the canonical, foundational-crate
+/// derivation (`dig-nat` is the transport crate `dig-node`/`dig-relay` build on, so it owns this
+/// identity primitive). This crate only re-shapes the 32 bytes into its own [`PeerId`] (a
+/// `chia-protocol::Bytes32`) so wire types stay aligned with the rest of the Chia-derived protocol
+/// surface; the derivation itself is no longer duplicated here (was a hand-rolled `SHA256`, #1266 —
+/// see `tests/nat_identity_conformance_tests.rs` for the byte-identity proof this consolidation relies on).
 pub fn peer_id_from_tls_spki_der(spki_der: &[u8]) -> PeerId {
-    let digest = Sha256::digest(spki_der);
-    let bytes: [u8; 32] = digest.into();
-    PeerId::from(bytes)
+    PeerId::from(*dig_nat::peer_id_from_tls_spki_der(spki_der).as_bytes())
 }
 
 /// Resolved peer socket identity for the **address manager** (tried/new buckets, group diversity).
