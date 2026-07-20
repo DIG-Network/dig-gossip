@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -44,12 +44,14 @@ dig-protocol = { version = "0.1.1", default-features = false }
 # (Plumtree/ERLAY/Dandelion++/compact-blocks) sit unchanged on top of this transport.
 #
 # Sourcing: dig-nat is published on crates.io (#1214 crates.io cascade), so it is consumed as a plain
-# crates.io dependency — NO git source (a git dep would block `cargo publish`). `0.6` adopts the
+# crates.io dependency — NO git source (a git dep would block `cargo publish`). `0.6` adopted the
 # dig-tls cutover (#1268/#1280): dig-nat now consumes `dig-tls` for ALL cert/mTLS/peer_id/BLS-binding,
 # so `connect(peer, &Arc<NodeCert>, config)` takes a CA-signed `dig_tls::NodeCert` (self-signed certs
 # are rejected). It keeps the L7 `connect()` ladder, `PeerConnection`, relay client, and streaming
 # control types dig-gossip consumes, and re-exports the dig-tls identity surface (NodeCert, PeerId, …).
-dig-nat = "0.6"
+# `0.7` is additive (connect_with_runtime/NatRuntime added for the full NAT ladder, #836) — no API
+# removed, so this is a mechanical re-pin.
+dig-nat = "0.7"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
