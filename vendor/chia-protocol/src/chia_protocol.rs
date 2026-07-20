@@ -159,6 +159,18 @@ pub enum ProtocolMessageTypes {
     // and `crate::service::dig_message::DIG_MESSAGE`.
     // -------------------------------------------------------------------------
     DigMessage = 220,
+
+    // -------------------------------------------------------------------------
+    // DIG store-melted broadcast (epic #1316, piece #1).
+    // Opcode 221 announces that a dig-store's on-chain coin has been melted so peers
+    // stop hosting its `.dig` content. A PUBLIC all-peers flood broadcast (public-by-
+    // nature: store deletion is addressed to everyone), signed + mTLS-authenticated,
+    // NOT recipient-sealed (§5.4-EXEMPT, same carve-out as L2 consensus gossip). The
+    // payload is `StoreMeltedAnnounce` (`crate::service::store_melted`); the canonical
+    // constant is `crate::service::store_melted::STORE_MELTED`. Second opcode of the
+    // 220-255 "free" band, after `DigMessage = 220`.
+    // -------------------------------------------------------------------------
+    StoreMelted = 221,
 }
 
 #[cfg(feature = "py-bindings")]

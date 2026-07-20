@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.8.0] - 2026-07-20
+
+### Features
+- **wire:** Add `store-melted` broadcast message (`STORE_MELTED = 221`) — the additive
+  store-melt propagation wire (epic #1316, piece #1). Public all-peers flood (§5.4-exempt),
+  signed via `dig_tls::bls` with on-chain verify gating deletion downstream (dig-node #3).
+
 ## [0.7.1] - 2026-07-20
 
 ### Chores

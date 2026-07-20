@@ -109,6 +109,11 @@ pub use service::dig_message::{
 };
 pub use service::gossip_handle::GossipHandle;
 pub use service::gossip_service::GossipService;
+pub use service::store_melted::{
+    frame_store_melted, is_store_melted, sig_preimage as store_melted_sig_preimage,
+    sign as sign_store_melted, store_melted_payload, StoreMeltedAnnounce,
+    ENCODED_LEN as STORE_MELTED_ENCODED_LEN, STORE_MELTED,
+};
 
 // -- Configuration --
 #[cfg(feature = "dandelion")]

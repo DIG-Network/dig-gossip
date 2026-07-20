@@ -58,7 +58,10 @@ impl MessagePriority {
             | RespondPeers
             | RequestMempoolTransactions
             | RequestPeersIntroducer
-            | RespondPeersIntroducer => Self::Bulk,
+            | RespondPeersIntroducer
+            // StoreMelted (opcode 221): a small, infrequent public broadcast — never
+            // consensus-critical, so it rides the bulk lane (#1316).
+            | StoreMelted => Self::Bulk,
 
             // Default for any unclassified type
             _ => Self::Normal,
@@ -76,6 +79,10 @@ impl MessagePriority {
             208 => Self::Bulk,
             // Plumtree control → Normal
             214..=217 => Self::Normal,
+            // StoreMelted (opcode 221) → Bulk: small, infrequent public broadcast (#1316).
+            // Kept in agreement with `from_chia_type` (221 is a `ProtocolMessageTypes`
+            // variant) so both classification paths route store-melted to the bulk lane.
+            crate::service::store_melted::STORE_MELTED => Self::Bulk,
             // Default
             _ => Self::Normal,
         }
