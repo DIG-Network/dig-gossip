@@ -1,10 +1,10 @@
 //! INT-019 — `GossipHandle` exposes the `dig-nat` transport.
 //!
-//! The gossip service's TLS identity + config drive `dig-nat` peer connections: the handle bridges
-//! its own `ChiaCertificate` to a `dig-nat` identity and connects peers over the unified NAT-traversal
-//! ladder. This suite proves the wiring WITHOUT a real network:
+//! The gossip service mints a CA-signed `dig-tls` `NodeCert` for the `dig-nat` transport and connects
+//! peers over the unified NAT-traversal ladder. This suite proves the wiring WITHOUT a real network:
 //!
-//! - a running handle derives a `dig-nat` `LocalIdentity` whose `peer_id` matches the gossip layer's;
+//! - a running handle exposes a CA-signed `dig-nat` identity (`NodeCert`) that is stable across calls
+//!   and self-consistent with the `peer_id = SHA-256(SPKI DER)` derivation;
 //! - `connect_via_nat` to an unreachable address fails cleanly (bounded, never hangs) rather than
 //!   panicking — the graceful-fallback guarantee;
 //! - after `stop()` the NAT methods are gated like every other handle method.
@@ -28,19 +28,29 @@ async fn running_handle() -> (GossipService, GossipHandle) {
 }
 
 #[tokio::test]
-async fn handle_derives_a_nat_identity_matching_the_gossip_peer_id() {
+async fn handle_exposes_a_stable_self_consistent_nat_identity() {
     let (svc, handle) = running_handle().await;
 
     let identity = handle
         .nat_identity()
-        .expect("a running handle bridges its TLS cert to a dig-nat identity");
+        .expect("a running handle exposes its CA-signed dig-nat NodeCert identity");
 
-    // The bridged identity's peer_id must equal the gossip-derived peer_id of the service's own cert.
-    let expected = handle.local_peer_id().expect("local peer id");
+    // The NodeCert's peer_id is the frozen SHA-256(SPKI DER) derivation of its own leaf certificate.
+    let (_, x509) = x509_parser::parse_x509_certificate(identity.cert_der())
+        .expect("parse the CA-signed NodeCert leaf");
+    let derived = dig_gossip::peer_id_from_tls_spki_der(x509.tbs_certificate.subject_pki.raw);
     assert_eq!(
-        identity.peer_id.as_bytes(),
-        expected.as_ref(),
-        "the NAT identity peer_id must equal the node's own gossip peer_id"
+        identity.peer_id().as_bytes(),
+        derived.as_ref(),
+        "the NAT identity peer_id must equal the SPKI derivation of its own cert"
+    );
+
+    // It is minted once and cached: a second call hands back the SAME identity (stable peer_id).
+    let again = handle.nat_identity().expect("second nat_identity call");
+    assert_eq!(
+        identity.peer_id().as_bytes(),
+        again.peer_id().as_bytes(),
+        "the NAT identity must be stable across calls"
     );
 
     svc.stop().await.expect("stop");

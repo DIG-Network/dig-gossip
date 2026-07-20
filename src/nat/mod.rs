@@ -21,19 +21,20 @@
 //!
 //! | Concern | This module | The unified protocol it conforms to |
 //! |---|---|---|
-//! | **Identity** | [`chia_cert_to_nat_identity`] bridges the node's `ChiaCertificate` (PEM) to a `dig-nat` [`LocalIdentity`](dig_nat::LocalIdentity) | `peer_id = SHA-256(TLS SPKI DER)` — identical in both crates (guarded by `tests/nat_identity_conformance_tests.rs`) |
+//! | **Identity** | [`NatLocalIdentity`] (a [`dig_tls::NodeCert`](dig_nat::NodeCert)) — the node's CA-signed mTLS cert, presented to [`nat_connect`] | `peer_id = SHA-256(TLS SPKI DER)`, chained to the shipped DigNetwork CA + carrying the #1204 BLS-G1 binding (guarded by `tests/nat_identity_conformance_tests.rs`) |
 //! | **Transport** | [`nat_connect`] establishes an mTLS, peer_id-verified, multiplexed [`NatPeerConnection`] via [`dig_nat::connect`] | the L7 `connect(peer)` ladder + streaming/multiplexed transport (spec §2, §8) |
 //! | **Discovery** | [`PeerRecord`] + [`discovery`] combine the relay introducer (RLY-005 `get_peers`) with node peer-exchange (`dig.getPeers`) | multi-source discovery (spec §4, §7) |
 //!
-//! ## Why the identity BRIDGE (and not making `dig-nat` speak `ChiaCertificate`)
+//! ## Identity: a CA-signed `dig-tls` [`NodeCert`], NOT a self-signed chia-ssl bridge (#1268/#1280)
 //!
-//! `dig-nat` is the foundational transport crate: it is deliberately Chia-free (pure-Rust rustls, no
-//! OpenSSL, no `chia-ssl`) so `dig-node`/`dig-relay` can depend on it WITHOUT the L2/Chia stack.
-//! `ChiaCertificate` is merely `{cert_pem, key_pem}` — PEM wrappers around exactly the DER
-//! [`LocalIdentity::from_der`](dig_nat::LocalIdentity::from_der) already takes. So the bridge is a
-//! thin PEM→DER decode living in `dig-gossip` (which already carries the Chia deps), not a new Chia
-//! dependency pushed down into `dig-nat`. The frozen contract — the `peer_id` derivation — already
-//! matches byte-for-byte; only the encoding differs.
+//! `dig-nat` 0.6 consumes [`dig-tls`](dig_tls) for ALL cert/mTLS/peer_id/BLS-binding: a peer presents
+//! a [`NodeCert`](dig_nat::NodeCert) — an ECDSA P-256 leaf **signed by the shipped, public DigNetwork
+//! CA** and self-attesting its BLS-G1 identity key over the cert SPKI (the #1204 binding). This
+//! replaces the previous self-signed `ChiaCertificate`→`LocalIdentity` PEM bridge: a self-signed cert
+//! now FAILS dig-nat's DigNetwork-CA chain check, so the transport identity is minted via
+//! [`NodeCert::load_or_generate`](dig_nat::NodeCert::load_or_generate) / `generate_signed`. The frozen
+//! contract — `peer_id = SHA-256(TLS SPKI DER)` — is unchanged and still matches byte-for-byte across
+//! crates.
 
 pub mod discovery;
 pub mod peer_record;
@@ -45,14 +46,16 @@ pub use discovery::{
 #[cfg(feature = "relay")]
 pub use discovery::{relay_get_peers, unified_discover, UnifiedDiscoveryConfig};
 pub use peer_record::{AddressKind, PeerAddress, PeerRecord, Via};
-pub use transport::{chia_cert_to_nat_identity, nat_connect, peer_target_for, NatPeerConnection};
+pub use transport::{nat_connect, peer_target_for, NatPeerConnection};
 
 // Re-export the dig-nat surface a caller (e.g. `dig-node`, the next integration phase) needs so it
-// can drive the transport without also depending on `dig-nat` directly.
+// can drive the transport without also depending on `dig-nat` directly. `NatLocalIdentity` is the
+// canonical `dig_tls::NodeCert` (re-exported by dig-nat 0.6) — the CA-signed mTLS identity a node
+// presents; the `NatBindingPolicy` selects how a peer's #1204 binding is enforced.
 pub use dig_nat::{
     peer_id_from_leaf_cert_der as nat_peer_id_from_leaf_cert_der,
-    peer_id_from_tls_spki_der as nat_peer_id_from_tls_spki_der, LocalIdentity as NatLocalIdentity,
-    NatConfig, NatError, PeerConnection as NatConnection, PeerId as NatPeerId,
-    PeerSession as NatPeerSession, PeerStream as NatPeerStream, PeerTarget as NatPeerTarget,
-    TraversalKind,
+    peer_id_from_tls_spki_der as nat_peer_id_from_tls_spki_der, BindingPolicy as NatBindingPolicy,
+    NatConfig, NatError, NodeCert as NatLocalIdentity, PeerConnection as NatConnection,
+    PeerId as NatPeerId, PeerSession as NatPeerSession, PeerStream as NatPeerStream,
+    PeerTarget as NatPeerTarget, TraversalKind,
 };

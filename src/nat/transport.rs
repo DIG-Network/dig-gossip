@@ -9,36 +9,11 @@
 //! [`NatPeerConnection`] whose remote `peer_id` is already confirmed to equal the one asked for.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use dig_nat::{LocalIdentity, NatConfig, NatError, PeerConnection as NatConnection, PeerTarget};
-use dig_protocol::ChiaCertificate;
+use dig_nat::{NatConfig, NatError, NodeCert, PeerConnection as NatConnection, PeerTarget};
 
 use crate::types::peer::PeerId;
-
-/// Bridge a node's [`ChiaCertificate`] (chia-ssl PEM cert + key) to a `dig-nat` [`LocalIdentity`]
-/// (DER cert + DER key), deriving the `peer_id` from the cert SPKI so it matches the gossip layer.
-///
-/// `dig-nat` is Chia-free and takes DER; `ChiaCertificate` is PEM. The only difference is encoding,
-/// so this is a thin PEM→DER decode — see [module docs](super) for why the bridge lives here and not
-/// inside `dig-nat`. Returns `None` if either PEM block is missing/unparsable or the cert's SPKI
-/// cannot be read (the same failure a malformed on-disk cert would produce).
-pub fn chia_cert_to_nat_identity(cert: &ChiaCertificate) -> Option<LocalIdentity> {
-    let cert_der = first_pem_der(&cert.cert_pem, "CERTIFICATE")?;
-    // chia-ssl emits a PKCS#8 key; accept the common labels so a re-serialized key still bridges.
-    let key_der = first_pem_der(&cert.key_pem, "PRIVATE KEY")
-        .or_else(|| first_pem_der(&cert.key_pem, "RSA PRIVATE KEY"))
-        .or_else(|| first_pem_der(&cert.key_pem, "EC PRIVATE KEY"))?;
-    LocalIdentity::from_der(cert_der, key_der)
-}
-
-/// Extract the DER contents of the first PEM block whose label is `label`. Uses `x509-parser`'s PEM
-/// reader (already a dependency) so no new PEM crate is pulled in.
-fn first_pem_der(pem: &str, label: &str) -> Option<Vec<u8>> {
-    x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes())
-        .flatten()
-        .find(|p| p.label == label)
-        .map(|p| p.contents)
-}
 
 /// Construct a `dig-nat` [`PeerTarget`] from a gossip [`PeerId`] + optional dialable address +
 /// network id.
@@ -141,16 +116,19 @@ impl std::fmt::Debug for NatPeerConnection {
 
 /// Establish a peer connection through the unified `dig-nat` NAT-traversal ladder.
 ///
-/// `identity` is this node's mTLS identity ([`chia_cert_to_nat_identity`] from its `ChiaCertificate`);
-/// `target` describes the peer ([`peer_target_for`]); `config` selects enabled methods + timeouts +
-/// relay/STUN. On success the returned [`NatPeerConnection`] carries the verified remote `peer_id`
-/// (== `target.peer_id`), the tier that established it, and the multiplexed session. Never panics or
-/// hangs: every method is bounded by the per-method timeout (a `dig-nat` guarantee).
+/// `node` is this node's CA-signed mTLS identity — a [`dig_tls::NodeCert`](dig_nat::NodeCert) chained
+/// to the shipped DigNetwork CA and carrying the #1204 peer_id ↔ BLS-G1 binding — presented as the
+/// client certificate (the self-signed→CA-signed cutover; an old self-signed cert would be rejected
+/// by dig-nat's DigNetwork-CA chain check). `target` describes the peer ([`peer_target_for`]);
+/// `config` selects enabled methods + timeouts + relay/STUN. On success the returned
+/// [`NatPeerConnection`] carries the verified remote `peer_id` (== `target.peer_id`), the tier that
+/// established it, and the multiplexed session. Never panics or hangs: every method is bounded by the
+/// per-method timeout (a `dig-nat` guarantee).
 pub async fn nat_connect(
     target: &PeerTarget,
-    identity: &LocalIdentity,
+    node: &Arc<NodeCert>,
     config: &NatConfig,
 ) -> Result<NatPeerConnection, NatError> {
-    let conn = dig_nat::connect(target, identity, config).await?;
+    let conn = dig_nat::connect(target, node, config).await?;
     Ok(NatPeerConnection::new(conn))
 }

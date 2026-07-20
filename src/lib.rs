@@ -133,9 +133,9 @@ pub use discovery::introducer_peers::{IntroducerPeers, VettedPeer};
 // ladder + multiplexed transport + relay), plus the `dig.getPeers` `PeerRecord` shapes. The gossip
 // ALGORITHMS ride unchanged on top — this only swaps where connections + addresses come from.
 pub use nat::{
-    chia_cert_to_nat_identity, merge_records_into_address_manager, nat_connect, peer_target_for,
-    AddressKind, NatConfig, NatError, NatLocalIdentity, NatPeerConnection, NatPeerId, PeerAddress,
-    PeerRecord, TraversalKind, Via,
+    merge_records_into_address_manager, nat_connect, peer_target_for, AddressKind,
+    NatBindingPolicy, NatConfig, NatError, NatLocalIdentity, NatPeerConnection, NatPeerId,
+    PeerAddress, PeerRecord, TraversalKind, Via,
 };
 #[cfg(feature = "relay")]
 pub use nat::{unified_discover, UnifiedDiscoveryConfig};
