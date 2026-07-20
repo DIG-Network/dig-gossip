@@ -13,3 +13,4 @@ pub mod dig_message;
 pub mod gossip_handle;
 pub mod gossip_service;
 pub mod peer_pool;
+pub mod store_melted;

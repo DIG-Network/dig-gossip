@@ -458,7 +458,8 @@ pub enum DigMessageType {
 
 The `200..=219` band is the **consensus** band (`DigMessageType` above, plus
 `RegisterPeer = 218` / `RegisterAck = 219`). The `220..=255` band is **free** for
-directed application protocols.
+application protocols — directed (`DIG_MESSAGE = 220`) or broadcast
+(`STORE_MELTED = 221`).
 
 #### 2.3.1 `DIG_MESSAGE = 220` — directed dig-message transport (WU6, epic #796)
 
@@ -497,6 +498,59 @@ timeouts) belongs to `dig-message` (WU4).
 | `open_dig_stream(peer, stream_id)` / `send_dig_stream_data(peer, stream_id, seq, payload)` / `close_dig_stream(peer, stream_id)` | Send OPEN/DATA/CLOSE frames over opcode 220. |
 | `StreamFrame::{encode,decode}` | Serialize a stream frame into / out of an opaque opcode-220 payload. |
 | `StreamReassembler` | Restore in-order delivery of `Data` chunks across out-of-order transport; drops duplicates. **Safe-by-default bounded:** the pending out-of-order buffer is capped by chunk count (`MAX_BUFFERED_CHUNKS`, default 256) AND total bytes (`MAX_BUFFERED_BYTES`, default 4 MiB); a chunk that would exceed either cap is rejected with `ReassembleError` (buffer never grows past the cap, never panics) so a peer withholding `next_seq` cannot exhaust memory. A gap-filling chunk at `next_seq` is always accepted (it drains, not grows). Single-stream primitive — bounding *concurrent* streams is the WU4 registry's job. |
+
+#### 2.3.3 `STORE_MELTED = 221` — store-melt broadcast (epic #1316)
+
+Opcode **221** (`STORE_MELTED`) announces that a dig-store's on-chain coin has been
+**melted** (the store-lifecycle "delete"), so peers stop hosting the store's `.dig`
+content and reclaim disk. It is a first-class `ProtocolMessageTypes::StoreMelted`
+variant (the second opcode of the free `220..=255` band, after `DIG_MESSAGE = 220`);
+the canonical constant is exported as `dig_gossip::STORE_MELTED`.
+
+- **PUBLIC broadcast, flood-disseminated.** A store deletion is public-by-nature and
+  addressed to everyone, so `classify_broadcast(StoreMelted) = Plumtree` (eager/lazy
+  flood) at **Bulk** priority. Termination is the receiver's job: the transport
+  `seen_set` dedups, and the dig-node handler (#3) rebroadcasts ONLY on a real
+  `holding → deleted` transition, so the epidemic converges (§SYSTEM.md).
+- **§5.4-EXEMPT (signed + mTLS, NOT recipient-sealed).** Because it carries no
+  recipient-specific content — it is a public all-peers broadcast, exactly the L2
+  consensus-gossip carve-out — `store-melted` is mTLS-authenticated and signed but NOT
+  end-to-end sealed to a recipient key. This is a deliberate, documented exemption.
+- **The signature is attribution/anti-spam, NOT authority to delete.** The receiver
+  MUST verify the melt **on-chain** (singleton-lineage walk, NC-9, fail-closed) before
+  deleting anything; a forged or replayed `store-melted` for a live store deletes
+  nothing. `melt_height` is an ADVISORY hint (a starting point for the chain lookup),
+  never trusted on its face.
+
+**`StoreMeltedAnnounce` wire layout** — fixed length `ENCODED_LEN = 164`, big-endian:
+
+| Offset | Len | Field | Type | Notes |
+|-------:|----:|-------|------|-------|
+| 0 | 32 | `store_id` | `Bytes32` | Melted store's singleton launcher id. |
+| 32 | 4 | `melt_height` | `u32` big-endian | Advisory hint only. |
+| 36 | 32 | `sender_peer_id` | `Bytes32` | Announcer's `peer_id = SHA-256(TLS SPKI DER)` — attribution, NOT the verify key. |
+| 68 | 96 | `signature` | `[u8; 96]` | BLS AugScheme (G2) compressed. |
+
+`decode` rejects any frame not exactly 164 bytes.
+
+**Signature.** `signature = BLS-AugScheme-sign(sk, SHA-256("dig:store-melted:v1" ‖
+store_id ‖ melt_height_be))` over the identity key `sk` (`dig_tls::bls`, the same
+AugScheme primitive as the #1204 cert binding — no new cryptography). `verify` recomputes
+the preimage and checks the signature against the signer's **48-byte BLS G1 identity
+key**, supplied by the caller from the peer's mTLS cert binding (the message carries a
+32-byte `peer_id` hash, not a public key). Fail-closed on any malformed input.
+
+**Send/route API** (free functions in `service::store_melted`):
+
+| Item | Purpose |
+|------|---------|
+| `StoreMeltedAnnounce::new_signed(sk, store_id, melt_height, sender_peer_id)` | Build a signed announcement (originator). |
+| `StoreMeltedAnnounce::verify(&self, signer_pk_g1: &[u8; 48]) -> bool` | Verify the signature against the signer's BLS G1 key (receiver). |
+| `StoreMeltedAnnounce::{encode,decode}` | Fixed-length big-endian wire round-trip. |
+| `sign_store_melted(sk, store_id, melt_height) -> [u8; 96]` / `store_melted_sig_preimage(store_id, melt_height) -> [u8; 32]` | Signature helpers. |
+| `frame_store_melted(&StoreMeltedAnnounce) -> Message` | Build the outbound opcode-221 broadcast frame (`id = None`). |
+| `store_melted_payload(&Message) -> Option<StoreMeltedAnnounce>` | Inbound routing: lift + decode an opcode-221 frame (else `None`). |
+| `is_store_melted(u8) -> bool` | Recognise opcode 221. |
 
 ### 2.4 PeerConnection (DIG extension of `chia-sdk-client::Peer`)
 

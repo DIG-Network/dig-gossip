@@ -80,6 +80,14 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
         DigMessageType::RegisterAck as u8,
         RateLimit::new(4.0, 256.0, None),
     );
+    // #1316 — store-melted (opcode 221) is a fixed-size, infrequent public broadcast. Bound its
+    // ingress like `ValidatorAnnounce`: a peer cannot flood store-melt announcements. Keyed by the
+    // raw opcode (221 is a `ProtocolMessageTypes` variant in the vendored fork, not a
+    // `DigMessageType`); the `dig_wire` map is `u8 -> RateLimit`, so the bound applies uniformly.
+    m.insert(
+        crate::service::store_melted::STORE_MELTED,
+        RateLimit::new(10.0, 4096.0, None),
+    );
     m
 }
 
