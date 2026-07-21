@@ -12,10 +12,7 @@ use chia_protocol::{
     TransactionAck,
 };
 use chia_traits::Streamable;
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot, Mutex},
@@ -30,9 +27,21 @@ use crate::{request_map::RequestMap, ClientError, RateLimiter, V2_RATE_LIMITS};
 use tokio_tungstenite::Connector;
 
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type Sink = SplitSink<WebSocket, tungstenite::Message>;
-type Stream = SplitStream<WebSocket>;
 type Response<T, E> = std::result::Result<T, E>;
+
+/// Type-erased WebSocket write half.
+///
+/// Boxing decouples [`PeerInner`] from the concrete transport so a **server-side** TLS stream
+/// (e.g. `tokio_rustls::server::TlsStream`, which cannot inhabit the `#[non_exhaustive]`
+/// client-oriented [`MaybeTlsStream`] enum) can back a [`Peer`] via [`Peer::from_server_websocket`]
+/// while [`Peer`] itself stays non-generic (dig-gossip #1371).
+type BoxedSink =
+    Box<dyn futures_util::Sink<tungstenite::Message, Error = tungstenite::Error> + Send + Unpin>;
+
+/// Type-erased WebSocket read half — the counterpart to [`BoxedSink`] (dig-gossip #1371).
+type BoxedStream = Box<
+    dyn futures_util::Stream<Item = Result<tungstenite::Message, tungstenite::Error>> + Send + Unpin,
+>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PeerOptions {
@@ -50,13 +59,22 @@ impl Default for PeerOptions {
 #[derive(Debug, Clone)]
 pub struct Peer(Arc<PeerInner>);
 
-#[derive(Debug)]
 struct PeerInner {
-    sink: Mutex<Sink>,
+    sink: Mutex<BoxedSink>,
     inbound_handle: JoinHandle<()>,
     requests: Arc<RequestMap>,
     socket_addr: SocketAddr,
     outbound_rate_limiter: Mutex<RateLimiter>,
+}
+
+// Manual `Debug`: `BoxedSink` is a trait object without a `Debug` bound, so `#[derive(Debug)]`
+// (required by `Peer`'s derive) cannot see through it. Only the stable, printable fields are shown.
+impl std::fmt::Debug for PeerInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerInner")
+            .field("socket_addr", &self.socket_addr)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Peer {
@@ -107,6 +125,53 @@ impl Peer {
         };
 
         let (sink, stream) = ws.split();
+        Ok(Self::from_parts(
+            Box::new(sink),
+            Box::new(stream),
+            socket_addr,
+            options,
+        ))
+    }
+
+    /// Creates a peer from an already-established **server-side** WebSocket connection.
+    ///
+    /// Unlike [`Peer::from_websocket`] — which inspects a client [`MaybeTlsStream`] to recover the
+    /// peer socket address — an inbound acceptor already knows `socket_addr` and holds a server-side
+    /// TLS stream (e.g. `tokio_rustls::server::TlsStream`) that cannot inhabit the
+    /// `#[non_exhaustive]` client-oriented [`MaybeTlsStream`] enum. This constructor is therefore
+    /// generic over the underlying transport, keeping [`Peer`] non-generic by boxing the split
+    /// halves. Used by dig-gossip's rustls inbound acceptor (#1371).
+    ///
+    /// The caller is responsible for deriving `PeerId` from the captured client certificate before
+    /// calling this (the peer certificate is not reachable once the stream is split).
+    pub fn from_server_websocket<S>(
+        ws: WebSocketStream<S>,
+        socket_addr: SocketAddr,
+        options: PeerOptions,
+    ) -> Result<(Self, mpsc::Receiver<Message>), ClientError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (sink, stream) = ws.split();
+        Ok(Self::from_parts(
+            Box::new(sink),
+            Box::new(stream),
+            socket_addr,
+            options,
+        ))
+    }
+
+    /// Wire the split WebSocket halves into a live [`Peer`] + inbound message channel.
+    ///
+    /// Shared by [`Peer::from_websocket`] (client/`MaybeTlsStream`) and
+    /// [`Peer::from_server_websocket`] (server transport) so both construction paths stay identical
+    /// below the type-erasure boundary.
+    fn from_parts(
+        sink: BoxedSink,
+        stream: BoxedStream,
+        socket_addr: SocketAddr,
+        options: PeerOptions,
+    ) -> (Self, mpsc::Receiver<Message>) {
         let (sender, receiver) = mpsc::channel(32);
 
         let requests = Arc::new(RequestMap::new());
@@ -131,7 +196,7 @@ impl Peer {
             )),
         }));
 
-        Ok((peer, receiver))
+        (peer, receiver)
     }
 
     /// The IP address and port of the peer connection.
@@ -361,7 +426,7 @@ impl Drop for PeerInner {
 }
 
 async fn handle_inbound_messages(
-    mut stream: Stream,
+    mut stream: BoxedStream,
     sender: mpsc::Sender<Message>,
     requests: Arc<RequestMap>,
 ) -> Result<(), ClientError> {
