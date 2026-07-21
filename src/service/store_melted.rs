@@ -31,7 +31,7 @@
 //!
 //! # Wire layout
 //!
-//! A `store-melted` frame is a stock [`Message`](dig_protocol::Message) with
+//! A `store-melted` frame is a stock [`Message`](dig_peer_protocol::Message) with
 //! `msg_type = 221` ([`STORE_MELTED`]) whose `data` is the fixed-length big-endian
 //! encoding of [`StoreMeltedAnnounce`] (see [`StoreMeltedAnnounce::encode`]).
 //!
@@ -42,7 +42,7 @@
 //! consensus-critical. See [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast)
 //! and [`MessagePriority`](crate::gossip::priority::MessagePriority).
 
-use dig_protocol::{Bytes, Bytes32, Message, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, Bytes32, Message, ProtocolMessageTypes};
 use dig_tls::bls::{sign_message, verify_signature, SecretKey};
 use sha2::{Digest, Sha256};
 

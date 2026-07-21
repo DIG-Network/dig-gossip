@@ -5,7 +5,7 @@
 //! dig-gossip is the **transport** for the DIG directed-message protocol
 //! (`dig-message`): it carries a sealed dig-message *envelope* between peers but
 //! never inspects, seals, or opens it. On the wire a directed message is a stock
-//! [`Message`](dig_protocol::Message) with `msg_type = 220` ([`DIG_MESSAGE`]) whose
+//! [`Message`](dig_peer_protocol::Message) with `msg_type = 220` ([`DIG_MESSAGE`]) whose
 //! `data` field holds the envelope as **opaque bytes** — bytes in equal bytes out.
 //!
 //! This is WU6 of epic #796 (Wave A, envelope-only): the seam that the dig-message
@@ -15,7 +15,7 @@
 //! # Layers
 //!
 //! - [`DIG_MESSAGE`] — the canonical opcode (220), first of the free 220-255 band
-//!   (200-219 are the consensus band, [`DigMessageType`](dig_protocol::DigMessageType)).
+//!   (200-219 are the consensus band, [`DigMessageType`](dig_peer_protocol::DigMessageType)).
 //! - [`is_dig_message`] / [`dig_message_payload`] — inbound routing: recognise an
 //!   opcode-220 frame and lift its opaque envelope.
 //! - [`frame_envelope`] — build the outbound [`Message`] carrying an envelope.
@@ -30,12 +30,12 @@
 
 use std::collections::BTreeMap;
 
-use dig_protocol::{Message, ProtocolMessageTypes};
+use dig_peer_protocol::{Message, ProtocolMessageTypes};
 
 /// Wire opcode for a directed dig-message envelope.
 ///
 /// Canonical value **220** — the first opcode of the free 220-255 band. Mirrors
-/// [`ProtocolMessageTypes::DigMessage`]; also exported as `dig_protocol::DIG_MESSAGE`
+/// [`ProtocolMessageTypes::DigMessage`]; also exported as `dig_peer_protocol::DIG_MESSAGE`
 /// for consumers that do not depend on dig-gossip. This value is a cross-repo
 /// canonical constant — it MUST NOT drift.
 pub const DIG_MESSAGE: u8 = ProtocolMessageTypes::DigMessage as u8;

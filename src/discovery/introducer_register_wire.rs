@@ -5,7 +5,7 @@
 //! Introducer registration is a **DIG extension** — it is not part of stock Chia’s introducer RPC
 //! ([`ProtocolMessageTypes::RequestPeersIntroducer`] / [`RespondPeersIntroducer`] only cover peer
 //! list fetch). We still send traffic inside the standard [`chia_protocol::Message`] envelope so
-//! [`dig_protocol::Peer::request_infallible`] can correlate request/response `id`s exactly like
+//! [`dig_peer_protocol::Peer::request_infallible`] can correlate request/response `id`s exactly like
 //! full-node RPCs.
 //!
 //! Stock **`chia-protocol` 0.26** on crates.io stops enumerating [`ProtocolMessageTypes`] at **107**,
@@ -23,7 +23,7 @@
 //! - **STR-003:** re-exported from [`crate::lib`](../../lib.rs).
 
 use chia_streamable_macro::streamable;
-use dig_protocol::NodeType;
+use dig_peer_protocol::NodeType;
 
 /// Registration request: advertise this node’s P2P reachability to the introducer index.
 #[streamable(message)]

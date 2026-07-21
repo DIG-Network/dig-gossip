@@ -11,7 +11,7 @@
 //! discovery, and identity* layer for the unified protocol. It does **not** touch the gossip
 //! ALGORITHMS — Plumtree ([`crate::gossip::plumtree`]), ERLAY ([`crate::gossip::erlay`]),
 //! Dandelion++ ([`crate::privacy::dandelion`]), compact blocks ([`crate::gossip::compact_block`]),
-//! priority lanes, and the seen-set/message-cache dedup all operate on opaque [`Message`](dig_protocol::Message)
+//! priority lanes, and the seen-set/message-cache dedup all operate on opaque [`Message`](dig_peer_protocol::Message)
 //! payloads + [`PeerId`](crate::types::peer::PeerId) keys and are transport-agnostic. They sit
 //! unchanged on top of whatever byte transport
 //! delivers a peer's messages, so routing that transport through `dig-nat`'s multiplexed streams

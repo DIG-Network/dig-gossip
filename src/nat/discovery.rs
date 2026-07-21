@@ -22,7 +22,7 @@
 //!   connected peers for their address lists ([`crate::service::gossip_handle::GossipHandle::connect_to`]
 //!   sends `RequestPeers` on connect; [`crate::service::gossip_handle::GossipHandle::discover_from_introducer`]
 //!   queries a dedicated introducer). Those return Chia-streamable
-//!   [`TimestampedPeerInfo`](dig_protocol::TimestampedPeerInfo) which
+//!   [`TimestampedPeerInfo`](dig_peer_protocol::TimestampedPeerInfo) which
 //!   [`PeerRecord::from_timestamped_peer_info`] normalizes into the same record type.
 //!
 //! Both sources reduce to [`PeerRecord`], which [`merge_records_into_address_manager`] folds into the

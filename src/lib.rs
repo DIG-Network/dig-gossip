@@ -155,13 +155,13 @@ pub use service::peer_pool::{
 pub use types::config::PeerPoolConfig;
 
 // -- Chia protocol types (re-exported, not reimplemented) --
-pub use dig_protocol::ChiaCertificate;
-pub use dig_protocol::Streamable;
-pub use dig_protocol::{
+pub use dig_peer_protocol::ChiaCertificate;
+pub use dig_peer_protocol::Streamable;
+pub use dig_peer_protocol::{
     load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
     RateLimiter, RateLimits, V2_RATE_LIMITS,
 };
-pub use dig_protocol::{
+pub use dig_peer_protocol::{
     Bytes, Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
     NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
     RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
@@ -171,9 +171,9 @@ pub use dig_protocol::{
 
 // -- Feature-gated public types --
 #[cfg(feature = "native-tls")]
-pub use dig_protocol::create_native_tls_connector;
+pub use dig_peer_protocol::create_native_tls_connector;
 #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
-pub use dig_protocol::create_rustls_connector;
+pub use dig_peer_protocol::create_rustls_connector;
 
 #[cfg(feature = "relay")]
 pub use relay::relay_types::{RelayMessage, RelayPeerInfo};

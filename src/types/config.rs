@@ -29,7 +29,7 @@
 //!
 //! Several fields in [`GossipConfig`] originate from Chia's Python `node_discovery.py` and
 //! `server_api.py`: target outbound count, connect interval, and the `PeerOptions` rate limit
-//! factor. The [`Network`](dig_protocol::Network) field delegates DNS seed lookup to
+//! factor. The [`Network`](dig_peer_protocol::Network) field delegates DNS seed lookup to
 //! `chia-sdk-client`'s `Network::lookup_all()`, avoiding reimplementation.
 //!
 //! # Design decisions
@@ -44,8 +44,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use dig_protocol::Bytes32;
-use dig_protocol::{Network, PeerOptions};
+use dig_peer_protocol::Bytes32;
+use dig_peer_protocol::{Network, PeerOptions};
 use serde::{Deserialize, Serialize};
 
 use super::peer::PeerId;
@@ -156,11 +156,11 @@ pub struct GossipConfig {
     pub network_id: Bytes32,
 
     /// DNS seed / network parameters delegated to
-    /// [`dig_protocol::Network::lookup_all()`](dig_protocol::Network). Configures which DNS
+    /// [`dig_peer_protocol::Network::lookup_all()`](dig_peer_protocol::Network). Configures which DNS
     /// introducers are contacted first before the WebSocket introducer fallback (DSC-003).
     pub network: Network,
 
-    /// Timeout forwarded to [`Network::lookup_all`](dig_protocol::Network::lookup_all) for each
+    /// Timeout forwarded to [`Network::lookup_all`](dig_peer_protocol::Network::lookup_all) for each
     /// DNS introducer in the current batch (DSC-003). Default **30 s** per [`DEFAULT_DNS_SEED_TIMEOUT_SECS`].
     pub dns_seed_timeout: Duration,
 
@@ -203,7 +203,7 @@ pub struct GossipConfig {
     pub relay: Option<RelayConfig>,
 
     /// Filesystem path to the PEM-encoded TLS certificate used for both inbound accept and
-    /// outbound connect. Loaded via `dig_protocol::load_ssl_cert` (CON-009).
+    /// outbound connect. Loaded via `dig_peer_protocol::load_ssl_cert` (CON-009).
     pub cert_path: String,
 
     /// Filesystem path to the PEM-encoded TLS private key (paired with `cert_path`).
@@ -226,7 +226,7 @@ pub struct GossipConfig {
     /// in tests means in-memory only; production should point to a durable location.
     pub peers_file_path: PathBuf,
 
-    /// Per-connection options forwarded to `chia-sdk-client` when constructing a [`Peer`](dig_protocol::Peer).
+    /// Per-connection options forwarded to `chia-sdk-client` when constructing a [`Peer`](dig_peer_protocol::Peer).
     /// The main knob here is `rate_limit_factor` which scales the V2 rate limits (CON-005).
     pub peer_options: PeerOptions,
 

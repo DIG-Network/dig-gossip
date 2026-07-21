@@ -139,7 +139,7 @@ fn test_cargo_toml_has_chia_protocol() {
 }
 
 #[test]
-fn test_cargo_toml_has_dig_protocol() {
+fn test_cargo_toml_has_dig_peer_protocol() {
     // dig-protocol is the single protocol dependency that re-exports all chia-* crates.
     // chia-sdk-client and chia-ssl are now accessed through dig-protocol.
     let manifest = load_cargo_toml();
