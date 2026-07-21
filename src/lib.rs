@@ -123,7 +123,9 @@ pub use types::config::ErlayConfig;
 pub use types::config::{GossipConfig, IntroducerConfig, PeerIdRotationConfig, RelayConfig};
 
 // -- Peer types --
-pub use types::dig_messages::{DigMessageType, UnknownDigMessageType};
+pub use types::dig_messages::{
+    route_dig_message, DigMessageType, RoutingStrategy, UnknownDigMessageType,
+};
 pub use types::peer::{ExtendedPeerInfo, PeerConnection, PeerId, PeerInfo};
 pub use types::reputation::{PeerReputation, PenaltyReason};
 pub use types::stats::{GossipStats, RelayStats};

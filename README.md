@@ -564,8 +564,12 @@ they ride on top of whatever byte transport delivers a peer's messages.
   unified `PeerRecord` (`{ peer_id, addresses:[{host,port,kind}], network_id, last_seen, via }`);
   `merge_records_into_address_manager()` folds dialable records into the same `AddressManager`.
 
-`dig-nat` (and the `dig-constants` it needs) are git dependencies until published to crates.io; they
-must be released **before** `dig-gossip` is (a git dependency cannot be `cargo publish`ed).
+`dig-nat` (and the `dig-constants` it needs) are consumed as **crates.io** dependencies
+(`dig-nat = "0.8"`), released before `dig-gossip` per the bottom-up publish order — a git dependency
+cannot be `cargo publish`ed. The former `dig-protocol` crate has been renamed to **`dig-peer-protocol`**
+(consumed as `dig-peer-protocol = "0.2"`); it re-exports the chia-* surface plus the DIG `200..=219`
+opcode band (`DigMessage`, `DigMessageType`), so dig-gossip consumes those wire types rather than
+hand-rolling them.
 
 ---
 
