@@ -139,17 +139,18 @@ fn test_cargo_toml_has_chia_protocol() {
 }
 
 #[test]
-fn test_cargo_toml_has_dig_protocol() {
-    // dig-protocol is the single protocol dependency that re-exports all chia-* crates.
-    // chia-sdk-client and chia-ssl are now accessed through dig-protocol.
+fn test_cargo_toml_has_dig_peer_protocol() {
+    // dig-peer-protocol is the single protocol dependency that re-exports all chia-* crates
+    // (the rename of the former dig-protocol, #1383). chia-sdk-client and chia-ssl are accessed
+    // through it.
     let manifest = load_cargo_toml();
     let deps = dependencies_table(&manifest);
     let dep = deps
-        .get("dig-protocol")
-        .expect("dig-protocol must be declared");
+        .get("dig-peer-protocol")
+        .expect("dig-peer-protocol must be declared");
     assert!(
         !dep_default_features(dep),
-        "dig-protocol must use default-features = false so TLS is selected via our features"
+        "dig-peer-protocol must use default-features = false so TLS is selected via our features"
     );
 }
 
@@ -275,8 +276,8 @@ fn test_feature_native_tls() {
         .expect("native-tls feature must exist");
     let entries: Vec<&str> = flag.iter().filter_map(Value::as_str).collect();
     assert!(
-        entries.contains(&"dig-protocol/native-tls"),
-        "native-tls must forward through dig-protocol, got {entries:?}"
+        entries.contains(&"dig-peer-protocol/native-tls"),
+        "native-tls must forward through dig-peer-protocol, got {entries:?}"
     );
 }
 
@@ -290,8 +291,8 @@ fn test_feature_rustls() {
         .expect("rustls feature must exist");
     let entries: Vec<&str> = flag.iter().filter_map(Value::as_str).collect();
     assert!(
-        entries.contains(&"dig-protocol/rustls"),
-        "rustls must forward through dig-protocol, got {entries:?}"
+        entries.contains(&"dig-peer-protocol/rustls"),
+        "rustls must forward through dig-peer-protocol, got {entries:?}"
     );
 }
 

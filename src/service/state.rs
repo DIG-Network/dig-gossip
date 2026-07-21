@@ -42,7 +42,7 @@
 //!
 //! # Stub peers (pre-CON-001)
 //!
-//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_protocol::Peer`].
+//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_peer_protocol::Peer`].
 //! Until CON-001 (outbound WSS connect) was implemented, we tracked synthetic peers in
 //! [`ServiceState::peers`] via [`PeerSlot::Stub`] so `peer_count`, `broadcast`, and
 //! `connect_to` semantics could be tested without TLS sockets. Stubs remain for
@@ -63,16 +63,16 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dig_protocol::ChiaCertificate;
-use dig_protocol::{ClientState, Peer, RateLimiter};
-use dig_protocol::{Message, NodeType};
+use dig_peer_protocol::ChiaCertificate;
+use dig_peer_protocol::{ClientState, Peer, RateLimiter};
+use dig_peer_protocol::{Message, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use dig_protocol::Bytes32;
+use dig_peer_protocol::Bytes32;
 
 use crate::discovery::address_manager::AddressManager;
 use crate::error::GossipError;
@@ -237,7 +237,7 @@ impl fmt::Debug for NatSlot {
 }
 
 /// Canonical form of a `peer_id` hex for identity comparison: a stripped optional `0x` prefix,
-/// lowercased. Different producers (this node's [`Bytes32`](dig_protocol::Bytes32) `Display`, a
+/// lowercased. Different producers (this node's [`Bytes32`](dig_peer_protocol::Bytes32) `Display`, a
 /// relay's echo) may spell the same id with/without `0x` and in either case — normalizing both sides
 /// before comparing makes self-exclusion robust to the spelling (#924 self-filter).
 pub(crate) fn normalize_peer_id_hex(id: &str) -> String {
@@ -720,7 +720,7 @@ impl ServiceState {
     }
 
     // -------------------------------------------------------------------------
-    // CON-007 — timed `PeerId` bans mirrored into `dig_protocol::ClientState`
+    // CON-007 — timed `PeerId` bans mirrored into `dig_peer_protocol::ClientState`
     // -------------------------------------------------------------------------
 
     /// Drop [`DigBanEntry`] rows whose `until` timestamp has passed, call [`ClientState::unban`]

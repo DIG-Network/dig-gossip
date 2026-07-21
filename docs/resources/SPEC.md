@@ -467,7 +467,7 @@ Opcode **220** (`DIG_MESSAGE`) carries a `dig-message` **directed envelope** bet
 two peers. It is a first-class `ProtocolMessageTypes::DigMessage` variant so it rides
 the ordinary [`Message`](chia_protocol::Message) transport (send / inbound), and the
 canonical constant is exported as `dig_gossip::DIG_MESSAGE` (mirrored by
-`dig_protocol::DIG_MESSAGE` for non-gossip consumers).
+`dig_peer_protocol::DIG_MESSAGE` for non-gossip consumers).
 
 - **Envelope is OPAQUE.** dig-gossip is the transport only — the sealed envelope rides
   verbatim in `Message.data` (bytes in equal bytes out). dig-gossip never seals, opens,
@@ -1795,6 +1795,40 @@ All types are from `chia-protocol` (used directly, not reimplemented):
 | DIG `NewAttestation` | `DigMessageType` | Plumtree eager/lazy | Validator attestation |
 | DIG `NewCheckpointProposal` | `DigMessageType` | Plumtree eager/lazy | Checkpoint proposal |
 | DIG `NewCheckpointSignature` | `DigMessageType` | Plumtree eager/lazy | Checkpoint BLS signature |
+
+#### 8.6.1 DIG L2 per-opcode routing contract (`200..=219`)
+
+`DigMessageType` is **consumed from `dig-peer-protocol`** (the authoritative wire crate), not
+hand-rolled in dig-gossip, so the discriminants + `u8` serde encoding are byte-identical across every
+peer crate. Every opcode carries exactly ONE declared dissemination strategy. `route_dig_message(op)
+-> RoutingStrategy` is the single per-opcode routing authority (exhaustive over `DigMessageType`); this
+table is normative and MUST match it:
+
+| Opcode | `DigMessageType` | `RoutingStrategy` |
+|--------|------------------|-------------------|
+| 200 | `NewAttestation` | `PlumtreeEager` |
+| 201 | `NewCheckpointProposal` | `PlumtreeEager` |
+| 202 | `NewCheckpointSignature` | `PlumtreeEager` |
+| 203 | `RequestCheckpointSignatures` | `UnicastRequest` |
+| 204 | `RespondCheckpointSignatures` | `UnicastResponse` |
+| 205 | `RequestStatus` | `UnicastRequest` |
+| 206 | `RespondStatus` | `UnicastResponse` |
+| 207 | `NewCheckpointSubmission` | `PlumtreeEager` |
+| 208 | `ValidatorAnnounce` | `BroadcastFlood` |
+| 209 | `RequestBlockTransactions` | `UnicastRequest` |
+| 210 | `RespondBlockTransactions` | `UnicastResponse` |
+| 211 | `ReconciliationSketch` | `ErlayReconciliation` |
+| 212 | `ReconciliationResponse` | `ErlayReconciliation` |
+| 213 | `StemTransaction` | `DandelionStem` |
+| 214 | `PlumtreeLazyAnnounce` | `PlumtreeLazy` |
+| 215 | `PlumtreePrune` | `PlumtreeControl` |
+| 216 | `PlumtreeGraft` | `PlumtreeControl` |
+| 217 | `PlumtreeRequestByHash` | `PlumtreePull` |
+| 218 | `RegisterPeer` | `UnicastToIntroducer` |
+| 219 | `RegisterAck` | `UnicastFromIntroducer` |
+
+A Plumtree-eager consensus type MUST NOT be flooded naively, and a unicast request/response MUST NOT be
+broadcast. INT-016 tests assert every opcode routes by its declared strategy.
 
 ---
 

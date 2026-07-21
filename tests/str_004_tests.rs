@@ -101,8 +101,8 @@ fn read_source(rel: &str) -> String {
 
 /// **Row:** `test_feature_native_tls_forwards_to_chia_sdk_client`
 ///
-/// Verifies the `native-tls` feature forwards through `dig-protocol/native-tls`,
-/// which in turn activates `chia-sdk-client/native-tls`. dig-protocol is the
+/// Verifies the `native-tls` feature forwards through `dig-peer-protocol/native-tls`,
+/// which in turn activates `chia-sdk-client/native-tls`. dig-peer-protocol is the
 /// single protocol dependency that wraps all chia-* crates.
 #[test]
 fn test_feature_native_tls_forwards_to_chia_sdk_client() {
@@ -114,14 +114,14 @@ fn test_feature_native_tls_forwards_to_chia_sdk_client() {
         .expect("native-tls feature");
     let e: Vec<&str> = v.iter().filter_map(Value::as_str).collect();
     assert!(
-        e.contains(&"dig-protocol/native-tls"),
-        "native-tls must forward through dig-protocol, got {e:?}"
+        e.contains(&"dig-peer-protocol/native-tls"),
+        "native-tls must forward through dig-peer-protocol, got {e:?}"
     );
 }
 
 /// **Row:** `test_feature_rustls_forwards_to_chia_sdk_client`
 ///
-/// Verifies the `rustls` feature forwards through `dig-protocol/rustls`,
+/// Verifies the `rustls` feature forwards through `dig-peer-protocol/rustls`,
 /// which in turn activates `chia-sdk-client/rustls`.
 #[test]
 fn test_feature_rustls_forwards_to_chia_sdk_client() {
@@ -133,8 +133,8 @@ fn test_feature_rustls_forwards_to_chia_sdk_client() {
         .expect("rustls feature");
     let e: Vec<&str> = v.iter().filter_map(Value::as_str).collect();
     assert!(
-        e.contains(&"dig-protocol/rustls"),
-        "rustls must forward through dig-protocol, got {e:?}"
+        e.contains(&"dig-peer-protocol/rustls"),
+        "rustls must forward through dig-peer-protocol, got {e:?}"
     );
 }
 

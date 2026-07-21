@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dig_protocol::Bytes32;
+use dig_peer_protocol::Bytes32;
 
 use crate::constants::PLUMTREE_LAZY_TIMEOUT_MS;
 use crate::types::peer::{metric_unix_timestamp_secs, PeerId};
@@ -169,7 +169,8 @@ impl Default for PlumtreeState {
 // =========================================================================
 //
 // SPEC §8.1 — LazyAnnounce, Prune, Graft, RequestByHash.
-// DigMessageType IDs 214-217 defined in types/dig_messages.rs.
+// DigMessageType IDs 214-217 are defined in dig-peer-protocol (re-exported via
+// crate::types::dig_messages); these structs are their serializable message bodies.
 // These structs are the serializable message bodies.
 
 /// Hash-only announcement sent to lazy peers (**PLT-003**, DigMessageType 214).

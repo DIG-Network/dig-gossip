@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -32,10 +32,14 @@ keywords = ["dig-network", "gossip", "p2p", "chia", "blockchain"]
 categories = ["network-programming", "cryptography::cryptocurrencies"]
 
 [dependencies]
-# DIG protocol — superset of chia-protocol, re-exports all chia-* crate types plus
+# DIG peer protocol — superset of chia-protocol, re-exports all chia-* crate types plus
 # DIG extension opcodes (200-219), DigMessage, DigMessageType, introducer wire types.
 # Single import replaces: chia-protocol, chia-sdk-client, chia-ssl, chia-traits, chia_streamable_macro.
-dig-protocol = { version = "0.1.1", default-features = false }
+# `dig-peer-protocol` is the rename of the former `dig-protocol` crate (#1383); the crate name in
+# code is `dig_peer_protocol`. TLS backends are forwarded through it to chia-sdk-client, so we keep
+# `default-features = false` and select the backend exclusively via our own `native-tls` / `rustls`
+# feature flags (see the `chia-sdk-client` shape rationale at the top of this manifest).
+dig-peer-protocol = { version = "0.2", default-features = false }
 # Unified DIG Node peer transport (L7 peer-network spec): mTLS `connect(peer)` over the NAT-traversal
 # ladder (direct → UPnP → NAT-PMP → PCP → hole-punch → relay-last) yielding a yamux-multiplexed
 # `PeerConnection`, plus `peer_id = SHA256(TLS SPKI DER)` verification, the relay client, and the
@@ -50,8 +54,10 @@ dig-protocol = { version = "0.1.1", default-features = false }
 # are rejected). It keeps the L7 `connect()` ladder, `PeerConnection`, relay client, and streaming
 # control types dig-gossip consumes, and re-exports the dig-tls identity surface (NodeCert, PeerId, …).
 # `0.7` is additive (connect_with_runtime/NatRuntime added for the full NAT ladder, #836) — no API
-# removed, so this is a mechanical re-pin.
-dig-nat = "0.7"
+# removed. `0.8` (#1385) is additive too — it adds §5.2 STUN happy-eyeballs reflexive discovery on top
+# of the same L7 `connect()` ladder / `PeerConnection` / relay-client / streaming control surface, so
+# this is a mechanical re-pin (no API removed).
+dig-nat = "0.8"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
@@ -70,7 +76,7 @@ dig-ip = "0.1"
 # and generates `chia_protocol::` paths at compile time.
 chia_streamable_macro = "0.26"
 # Required by chia_streamable_macro — the proc-macro panics if these aren't in Cargo.toml.
-# Code should import these types through dig-protocol, not directly.
+# Code should import these types through dig-peer-protocol, not directly.
 chia-protocol = "0.26"
 chia-traits = "0.26"
 chia-sha2 = "0.26"
@@ -171,14 +177,14 @@ rcgen = "0.13"
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
 default = ["native-tls", "relay", "erlay", "compact-blocks", "dandelion"]
 
-# TLS backends — forwarded through dig-protocol to chia-sdk-client.
+# TLS backends — forwarded through dig-peer-protocol to chia-sdk-client.
 native-tls = [
-    "dig-protocol/native-tls",
+    "dig-peer-protocol/native-tls",
     "dep:native-tls",
     "dep:tokio-native-tls",
 ]
 rustls = [
-    "dig-protocol/rustls",
+    "dig-peer-protocol/rustls",
     "dep:rustls",
     "dep:tokio-rustls",
     "dep:rustls-pemfile",

@@ -45,7 +45,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use dig_protocol::TimestampedPeerInfo;
+use dig_peer_protocol::TimestampedPeerInfo;
 use rand::Rng;
 use rand::RngCore;
 

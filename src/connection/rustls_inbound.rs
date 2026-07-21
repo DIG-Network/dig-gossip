@@ -37,7 +37,7 @@
 
 use std::sync::Arc;
 
-use dig_protocol::{ChiaCertificate, ClientError};
+use dig_peer_protocol::{ChiaCertificate, ClientError};
 use rustls::client::danger::HandshakeSignatureValid;
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, UnixTime};

@@ -22,9 +22,9 @@
 //! `connect_peer()` semantics (TLS connector, `Handshake`, `FullNode` peer validation, DIG
 //! `network_id` as the Chia **string** field).
 //!
-//! ## Why this module exists (vs calling `dig_protocol::connect_peer` directly)
+//! ## Why this module exists (vs calling `dig_peer_protocol::connect_peer` directly)
 //!
-//! Upstream [`dig_protocol::connect_peer`](https://docs.rs/chia-sdk-client/latest/chia_sdk_client/fn.connect_peer.html)
+//! Upstream [`dig_peer_protocol::connect_peer`](https://docs.rs/chia-sdk-client/latest/chia_sdk_client/fn.connect_peer.html)
 //! validates the handshake but **drops** the parsed [`Handshake`] and never exposes the remote TLS
 //! **SubjectPublicKeyInfo** bytes. DIG [`PeerConnection`](crate::types::peer::PeerConnection) and
 //! [`PeerId`](crate::types::peer::PeerId) (API-005) require:
@@ -39,27 +39,27 @@
 //!
 //! ## `network_id` typing
 //!
-//! [`crate::types::config::GossipConfig`] stores `network_id` as [`dig_protocol::Bytes32`]. Chia’s
+//! [`crate::types::config::GossipConfig`] stores `network_id` as [`dig_peer_protocol::Bytes32`]. Chia’s
 //! wire [`Handshake::network_id`](chia_protocol::Handshake) is a [`String`]; the conventional
-//! encoding is the **lowercase hex** of the 32 bytes (matches [`Bytes32`’s `Display`](dig_protocol::Bytes32)).
+//! encoding is the **lowercase hex** of the 32 bytes (matches [`Bytes32`’s `Display`](dig_peer_protocol::Bytes32)).
 #![allow(clippy::result_large_err)]
 // Upstream [`ClientError`] is wide; we propagate it verbatim per API-004 `GossipError::ClientError`.
 
 use std::net::SocketAddr;
 
-use dig_protocol::ChiaCertificate;
-use dig_protocol::Streamable;
-use dig_protocol::{Handshake, Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::ChiaCertificate;
+use dig_peer_protocol::Streamable;
+use dig_peer_protocol::{Handshake, Message, NodeType, ProtocolMessageTypes};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use dig_protocol::{ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{ClientError, Peer, PeerOptions};
 
 use crate::connection::handshake::{validate_remote_handshake, ADVERTISED_PROTOCOL_VERSION};
 
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
-use dig_protocol::Connector;
+use dig_peer_protocol::Connector;
 
 /// Successful outbound dial: live [`Peer`], inbound wire channel, parsed remote handshake, SPKI DER.
 ///
@@ -96,16 +96,16 @@ pub struct OutboundConnectResult {
 pub(crate) fn tls_connector_for_cert(cert: &ChiaCertificate) -> Result<Connector, ClientError> {
     #[cfg(feature = "native-tls")]
     {
-        dig_protocol::create_native_tls_connector(cert)
+        dig_peer_protocol::create_native_tls_connector(cert)
     }
     #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
     {
-        dig_protocol::create_rustls_connector(cert)
+        dig_peer_protocol::create_rustls_connector(cert)
     }
 }
 
 /// Map configured genesis id to the Chia handshake string (`Display` = hex).
-pub(crate) fn network_id_handshake_string(network_id: dig_protocol::Bytes32) -> String {
+pub(crate) fn network_id_handshake_string(network_id: dig_peer_protocol::Bytes32) -> String {
     network_id.to_string()
 }
 

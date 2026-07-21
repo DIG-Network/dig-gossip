@@ -347,7 +347,7 @@ async fn nat_peer_connection_opens_channels_range_and_availability() {
 
 #[test]
 fn peer_record_from_timestamped_peer_info_is_a_direct_candidate() {
-    let tpi = dig_protocol::TimestampedPeerInfo::new("203.0.113.50".to_string(), 9444, 12_345);
+    let tpi = dig_peer_protocol::TimestampedPeerInfo::new("203.0.113.50".to_string(), 9444, 12_345);
     let rec = PeerRecord::from_timestamped_peer_info(&tpi, "DIG_MAINNET");
     assert_eq!(rec.addresses.len(), 1);
     assert_eq!(rec.addresses[0].kind, AddressKind::Direct);

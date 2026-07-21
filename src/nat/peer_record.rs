@@ -9,7 +9,7 @@
 //! expects. The JSON field names + the `kind`/`via` lowercase tokens are the wire contract and must
 //! match the spec byte-for-byte (see `tests/nat_transport_tests.rs`).
 
-use dig_protocol::TimestampedPeerInfo;
+use dig_peer_protocol::TimestampedPeerInfo;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "relay")]

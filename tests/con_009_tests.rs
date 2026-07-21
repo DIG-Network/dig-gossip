@@ -89,7 +89,7 @@ fn test_rustls_mtls_connector() {
     let _ = common::generate_test_certs(dir.path());
     let cfg = common::test_gossip_config(dir.path());
     let cert = load_ssl_cert(&cfg.cert_path, &cfg.key_path).expect("load_ssl_cert");
-    let _ = dig_protocol::create_rustls_connector(&cert)
+    let _ = dig_peer_protocol::create_rustls_connector(&cert)
         .expect("rustls connector with client identity");
 }
 

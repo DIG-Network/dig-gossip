@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1439,7 +1439,7 @@ dependencies = [
  "dig-constants",
  "dig-ip",
  "dig-nat",
- "dig-protocol",
+ "dig-peer-protocol",
  "dig-tls",
  "futures-util",
  "lru",
@@ -1494,9 +1494,9 @@ dependencies = [
 
 [[package]]
 name = "dig-nat"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a3ffda0e69477f375229044c3d391fb8132ba0dfabbb59bba1914fcf0cdbb68"
+checksum = "a23079e8803483d36226111e638be976b1ed016022d82c41e7706cfe789623aa"
 dependencies = [
  "async-trait",
  "dig-constants",
@@ -1522,10 +1522,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "dig-protocol"
-version = "0.1.1"
+name = "dig-peer-protocol"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb7ae091c70ec0311d2d3b364960568621d807b16c723e933df5677a34c3adf9"
+checksum = "114832cad5ae6b8adfd319e8480d1eed0ffb8bc77e41b9d3f7fb4ce9ef6219ee"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",
