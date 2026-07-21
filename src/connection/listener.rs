@@ -63,6 +63,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use dig_protocol::ChiaCertificate;
 use dig_protocol::Streamable;
 use dig_protocol::{ClientError, Peer, PeerOptions};
@@ -74,10 +75,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
-use tokio_tungstenite::{accept_async, MaybeTlsStream, WebSocketStream};
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::{accept_async, WebSocketStream};
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
-use crate::connection::outbound::{network_id_handshake_string, spki_der_from_leaf_cert_der};
+use crate::connection::outbound::network_id_handshake_string;
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+use crate::connection::outbound::spki_der_from_leaf_cert_der;
 use crate::service::state::{
     apply_inbound_rate_limit_violation, peer_id_for_addr, record_live_peer_inbound_bytes,
     record_live_peer_outbound_bytes, LiveSlot, PeerSlot, ServiceState, StubPeer,
@@ -109,10 +114,17 @@ const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // doc § "TLS backends (STR-004)" for the full story.
 // ---------------------------------------------------------------------------
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
+// Inbound TLS backend selection (#1371):
+// - `rustls` feature (incl. dig-node's `default-features = false, features = ["rustls"]` build) uses
+//   the pure-Rust acceptor in [`crate::connection::rustls_inbound`], which requests + captures the
+//   peer client cert on every platform (fixes the OpenSSL/Linux "cert never requested" drop).
+// - `native-tls` WITHOUT `rustls` keeps the historical `native_tls::TlsAcceptor` path.
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use native_tls::Identity;
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use tokio_native_tls::TlsAcceptor as TokioNativeTlsAcceptor;
+
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Build a [`TokioNativeTlsAcceptor`] from the node's [`ChiaCertificate`] (PEM key + cert).
 ///
@@ -133,7 +145,7 @@ use tokio_native_tls::TlsAcceptor as TokioNativeTlsAcceptor;
 ///
 /// Returns [`ClientError::Io`] if the PEM material cannot be parsed into a PKCS#8 identity
 /// or if the platform TLS library rejects the certificate (e.g., expired, unsupported algo).
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor, ClientError> {
     // PKCS#8 is the Chia default PEM format produced by `dig_protocol::ChiaCertificate`.
     let ident =
@@ -170,7 +182,7 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
 ///   OS TLS stack cannot expose it. On **Windows** the caller may fall back to [`peer_id_for_addr`]
 ///   (see [`handle_inbound_native_inner`]); on **OpenSSL** backends anonymous clients fail earlier.
 /// - [`ClientError::Io`] — the leaf cert DER could not be extracted or parsed.
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 fn remote_spki_from_native_tls_stream(
     tls: &tokio_native_tls::TlsStream<TcpStream>,
 ) -> Result<Vec<u8>, ClientError> {
@@ -202,7 +214,7 @@ fn remote_spki_from_native_tls_stream(
 /// - `tcp` — the raw TCP stream from `TcpListener::accept()`, before TLS negotiation.
 /// - `remote_addr` — the peer's socket address as reported by the OS.
 /// - `acceptor` — the pre-built [`TokioNativeTlsAcceptor`] from [`native_tls_acceptor`].
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 async fn handle_inbound_native(
     state: Arc<ServiceState>,
     tcp: TcpStream,
@@ -212,6 +224,144 @@ async fn handle_inbound_native(
     if let Err(e) = handle_inbound_native_inner(state, tcp, remote_addr, acceptor).await {
         tracing::debug!(target: "dig_gossip::listener", "inbound native session ended: {e}");
     }
+}
+
+/// Shared pre-registration guards run once a peer's [`PeerId`] is known, independent of TLS backend.
+///
+/// Both the `native-tls` ([`handle_inbound_native_inner`]) and rustls ([`handle_inbound_rustls`])
+/// inbound handlers call this after deriving `peer_id` from the captured certificate and before the
+/// WebSocket upgrade. Extracting it keeps the two TLS paths byte-for-byte identical in their
+/// admission policy (#1371).
+///
+/// Enforces, in order: self-connection rejection (SPEC §4 `SelfConnection`), timed-ban expiry +
+/// ban check (CON-007), and the one-slot-per-`PeerId` duplicate check.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Io`] with a specific `ErrorKind` for each rejection reason.
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
+async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<(), ClientError> {
+    // Self-connection guard — Chia `full_node_server.py` drops connections to self.
+    if peer_id == state.config.peer_id {
+        return Err(ClientError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "inbound self-connection (remote PeerId equals local config.peer_id)",
+        )));
+    }
+
+    // CON-007: expire timed bans before the lookup so a peer can reconnect exactly when `until`
+    // elapses (inclusive boundary, same as [`PeerReputation::refresh_ban_status`]).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    state.prune_expired_dig_bans(now).await;
+
+    // Ban check — reject peers penalized past the threshold (CON-007 / API-006).
+    if state
+        .banned
+        .lock()
+        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?
+        .contains_key(&peer_id)
+    {
+        return Err(ClientError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "inbound peer is banned",
+        )));
+    }
+
+    // Duplicate check — only one slot per PeerId in the peer map. The lock scope is intentionally
+    // narrow to avoid holding it across async points.
+    let peers = state
+        .peers
+        .lock()
+        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
+    if peers.contains_key(&peer_id) {
+        return Err(ClientError::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "duplicate inbound PeerId",
+        )));
+    }
+    Ok(())
+}
+
+/// Top-level wrapper for a single inbound connection attempt using the **rustls** acceptor (#1371).
+///
+/// Spawned by [`accept_loop`] for each accepted TCP connection when the `rustls` feature is enabled
+/// (the production dig-node build). Delegates to [`handle_inbound_rustls_inner`] and logs failures at
+/// `debug` — rejections (banned/duplicate/TLS) are expected, not bugs.
+#[cfg(feature = "rustls")]
+async fn handle_inbound_rustls(
+    state: Arc<ServiceState>,
+    tcp: TcpStream,
+    remote_addr: SocketAddr,
+    acceptor: tokio_rustls::TlsAcceptor,
+) {
+    if let Err(e) = handle_inbound_rustls_inner(state, tcp, remote_addr, acceptor).await {
+        tracing::debug!(target: "dig_gossip::listener", "inbound rustls session ended: {e}");
+    }
+}
+
+/// Inbound connection pipeline using the rustls acceptor — the CA-agnostic mTLS path (#1371).
+///
+/// Same acceptance flow as [`handle_inbound_native_inner`] (TLS accept → SPKI capture → guards →
+/// WebSocket upgrade → Chia handshake) but built on rustls so the peer client certificate is
+/// requested + captured on **every** platform, including OpenSSL/Linux where the old native-tls
+/// acceptor silently failed to request it (the #1062 "strangers cannot connect" root cause).
+///
+/// Deriving `peer_id` reuses [`crate::connection::rustls_inbound::remote_spki_from_rustls_stream`] →
+/// [`peer_id_from_tls_spki_der`] — the exact SPKI-capture + hash the outbound path uses — so the
+/// `peer_id` is **byte-identical** to the native-tls-derived value for the same certificate.
+///
+/// # Errors
+///
+/// Any failure returns [`ClientError`]; [`handle_inbound_rustls`] logs and drops it.
+#[cfg(feature = "rustls")]
+async fn handle_inbound_rustls_inner(
+    state: Arc<ServiceState>,
+    tcp: TcpStream,
+    remote_addr: SocketAddr,
+    acceptor: tokio_rustls::TlsAcceptor,
+) -> Result<(), ClientError> {
+    if !state.is_running() {
+        return Ok(());
+    }
+
+    // Step 1: TLS accept — negotiate server-side rustls, requiring the client certificate.
+    let tls = acceptor
+        .accept(tcp)
+        .await
+        .map_err(|e| ClientError::Io(std::io::Error::other(format!("rustls accept: {e}"))))?;
+
+    // Step 2: Derive PeerId from the captured client SPKI (CON-009 / API-005). rustls requires the
+    // client cert, so a missing SPKI here is unexpected. On Windows/macOS keep the historical
+    // `peer_id_for_addr` dev fallback (parity with the native-tls path) so local development is not
+    // regressed; OpenSSL/Linux — the production target — always has the strict SPKI binding.
+    let peer_id = match crate::connection::rustls_inbound::remote_spki_from_rustls_stream(&tls) {
+        Ok(spki) => peer_id_from_tls_spki_der(&spki),
+        Err(e) => {
+            if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
+                tracing::warn!(
+                    target: "dig_gossip::listener",
+                    "no remote TLS leaf cert after rustls accept; using peer_id_for_addr fallback: {e}"
+                );
+                peer_id_for_addr(remote_addr)
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
+    // Steps 3-5: self / ban / duplicate guards (shared with the native-tls path).
+    precheck_inbound_peer(&state, peer_id).await?;
+
+    // Step 6: WebSocket upgrade over the server rustls stream. The server-side stream cannot inhabit
+    // the `#[non_exhaustive]` client `MaybeTlsStream`, so we hand the raw stream to `accept_async`
+    // and later build the `Peer` via `Peer::from_server_websocket` (see `negotiate_inbound_over_ws`).
+    let ws = accept_async(tls).await.map_err(ws_err)?;
+
+    // Step 7: Chia handshake negotiation, address-manager registration, peer insertion.
+    negotiate_inbound_over_ws(state, remote_addr, ws, peer_id).await
 }
 
 /// Inner implementation of the inbound connection pipeline using `native_tls`.
@@ -231,7 +381,7 @@ async fn handle_inbound_native(
 /// # Errors
 ///
 /// Any failure returns [`ClientError`]; the outer [`handle_inbound_native`] logs and drops it.
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 async fn handle_inbound_native_inner(
     state: Arc<ServiceState>,
     tcp: TcpStream,
@@ -270,50 +420,8 @@ async fn handle_inbound_native_inner(
         }
     };
 
-    // Step 3: Self-connection guard — SPEC §4 `GossipError::SelfConnection`.
-    // Chia `full_node_server.py` drops connections to self.
-    if peer_id == state.config.peer_id {
-        return Err(ClientError::Io(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "inbound self-connection (remote PeerId equals local config.peer_id)",
-        )));
-    }
-
-    // CON-007: expire timed bans before the lookup so a peer can reconnect exactly when `until`
-    // elapses (inclusive boundary, same as [`PeerReputation::refresh_ban_status`]).
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    state.prune_expired_dig_bans(now).await;
-
-    // Step 4: Ban check — reject peers penalized past the threshold (CON-007 / API-006).
-    if state
-        .banned
-        .lock()
-        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?
-        .contains_key(&peer_id)
-    {
-        return Err(ClientError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "inbound peer is banned",
-        )));
-    }
-
-    // Step 5: Duplicate check — only one slot per PeerId in the peer map.
-    // The lock scope is intentionally narrow to avoid holding it across async points.
-    {
-        let peers = state
-            .peers
-            .lock()
-            .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
-        if peers.contains_key(&peer_id) {
-            return Err(ClientError::Io(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "duplicate inbound PeerId",
-            )));
-        }
-    }
+    // Steps 3-5: self / ban / duplicate guards (shared with the rustls path).
+    precheck_inbound_peer(&state, peer_id).await?;
 
     // Step 6: WebSocket upgrade over the now-established TLS stream.
     // We wrap the `native_tls` stream in `MaybeTlsStream::NativeTls` so the type matches
@@ -430,9 +538,10 @@ async fn relay_new_peer_to_live_peers(
 /// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives use the vendored
 /// [`chia_sdk_client`] patch (`vendor/chia-sdk-client`): inbound `RequestPeers` is forwarded to the
 /// application and answered with [`Peer::send_protocol_message`](dig_protocol::Peer::send_protocol_message).
-async fn read_next_wire_message(
-    ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-) -> Result<Message, ClientError> {
+async fn read_next_wire_message<S>(ws: &mut WebSocketStream<S>) -> Result<Message, ClientError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     loop {
         let raw = ws.next().await.ok_or(ClientError::MissingHandshake)??;
         match raw {
@@ -479,12 +588,15 @@ async fn read_next_wire_message(
 ///
 /// Returns [`ClientError`] for handshake timeouts, validation failures, or WebSocket errors.
 /// The peer map is not modified if this function returns `Err`.
-async fn negotiate_inbound_over_ws(
+async fn negotiate_inbound_over_ws<S>(
     state: Arc<ServiceState>,
     remote_addr: SocketAddr,
-    mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    mut ws: WebSocketStream<S>,
     peer_id: PeerId,
-) -> Result<(), ClientError> {
+) -> Result<(), ClientError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let opts: PeerOptions = state.config.peer_options;
 
     // --- Phase 1: Receive the remote's Handshake (with timeout) ---
@@ -595,8 +707,11 @@ async fn negotiate_inbound_over_ws(
 
     // --- Phase 7: Upgrade to `Peer` (chia_sdk_client managed reader/writer) ---
     // After this point the WebSocket is consumed; all further communication goes through
-    // the `Peer` handle (send) and the `inbound_rx` channel (receive).
-    let (peer, mut inbound_rx) = Peer::from_websocket(ws, opts)?;
+    // the `Peer` handle (send) and the `inbound_rx` channel (receive). We use
+    // `from_server_websocket` (not `from_websocket`) because the server rustls stream cannot inhabit
+    // the client-oriented `MaybeTlsStream`; the peer address is already known so no stream
+    // introspection is needed. Byte-identical behaviour for the native-tls path (#1371).
+    let (peer, mut inbound_rx) = Peer::from_server_websocket(ws, remote_addr, opts)?;
 
     // --- Phase 8: Per-connection inbound rate limiter (CON-005) + peer map insert ---
     // SPEC §5.4 — "Inbound: create a separate RateLimiter for each connection"
@@ -713,6 +828,20 @@ pub(crate) async fn accept_loop(
     listener: TcpListener,
     stop: Arc<Notify>,
 ) {
+    // Inbound TLS backend (#1371): rustls when enabled (production dig-node build — captures the peer
+    // cert on every platform), otherwise the historical native-tls acceptor.
+    #[cfg(feature = "rustls")]
+    let tls_acceptor = {
+        let config = match crate::connection::rustls_inbound::rustls_server_config(&state.tls) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(target: "dig_gossip::listener", "failed to build inbound rustls acceptor: {e}");
+                return;
+            }
+        };
+        tokio_rustls::TlsAcceptor::from(Arc::new(config))
+    };
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     let tls_acceptor = match native_tls_acceptor(&state.tls) {
         Ok(a) => a,
         Err(e) => {
@@ -769,6 +898,9 @@ pub(crate) async fn accept_loop(
                 let acc = tls_acceptor.clone();
                 tokio::spawn(async move {
                     let _permit = permit; // held until the handshake task finishes, then dropped
+                    #[cfg(feature = "rustls")]
+                    handle_inbound_rustls(st, tcp, remote_addr, acc).await;
+                    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
                     handle_inbound_native(st, tcp, remote_addr, acc).await;
                 });
             }

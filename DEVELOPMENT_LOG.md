@@ -2,6 +2,31 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## Inbound mTLS: `[patch.crates-io]` does not cross a git dependency (#1371)
+
+- **Root cause of "strangers cannot connect on Linux" (#1062).** dig-gossip's inbound acceptor used
+  `native_tls::TlsAcceptor`. The "require + capture the client cert" behaviour on OpenSSL/Linux lived
+  in a **vendored `native-tls` fork** applied via `[patch.crates-io]`. A `[patch]` only applies to the
+  crate that declares it — it does **not** propagate when dig-gossip is consumed as a *git*
+  dependency. dig-node patches `chia-protocol` + `chia-sdk-client` (same git rev) but NOT `native-tls`,
+  so the stock `native-tls` shipped, the server never sent a CertificateRequest, `peer_certificate()`
+  returned `None` on OpenSSL, `peer_id` was underivable, and every inbound gossip connection was
+  dropped. Windows (SChannel) / macOS (SecureTransport) masked it via the `peer_id_for_addr` fallback,
+  which is why CI (and Windows dev) stayed green.
+- **Fix = rustls inbound acceptor (Option A, CA-agnostic).** rustls configures the client-cert request
+  in pure Rust (a custom `ClientCertVerifier`), so it needs no `[patch]` to propagate and behaves
+  identically on every platform. The verifier **requests + requires + captures** the peer cert but
+  does NOT validate a CA chain (DIG peers are self-signed / chia-ssl — a CA check would reject them);
+  proof-of-possession is still enforced via the TLS CertificateVerify signature. `peer_id` reuses the
+  shared `spki_der_from_leaf_cert_der` + `peer_id_from_tls_spki_der` helpers → byte-identical.
+- **`MaybeTlsStream` is `#[non_exhaustive]` and only types the CLIENT rustls stream.** A server-side
+  `tokio_rustls::server::TlsStream` cannot inhabit it, so `Peer::from_websocket` is unusable inbound.
+  The vendored `chia-sdk-client` boxes `PeerInner`'s split sink/stream and exposes
+  `Peer::from_server_websocket(ws, addr, opts)` (generic over the transport, `Peer` stays non-generic).
+- **aws-lc-sys on Windows.** The rustls `aws_lc_rs` backend fails to C-compile in a deep worktree
+  (CMake `tlog` path exceeds Windows MAX_PATH). Build/test the rustls features with a short
+  `CARGO_TARGET_DIR` (e.g. `/c/t/...`); CI (Linux) is unaffected.
+
 ## Relay peer discovery + connect-leg (#870 / #924)
 
 - **`connected_peers` root cause (#870).** dig-gossip's old ephemeral open→register→get_peers→close

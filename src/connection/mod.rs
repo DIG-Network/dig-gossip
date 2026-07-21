@@ -14,5 +14,9 @@ pub mod inbound_limits;
 
 pub mod listener;
 
+/// CON-009 inbound rustls acceptor — requests + captures the peer cert on all platforms (#1371).
+#[cfg(feature = "rustls")]
+pub mod rustls_inbound;
+
 /// Outbound `wss://` + handshake + SPKI capture (CON-001).
 pub mod outbound;

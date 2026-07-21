@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.9.0] - 2026-07-20
+
+### Bug Fixes
+- **connection:** rustls inbound acceptor requests + captures the peer client certificate on every
+  platform, fixing the OpenSSL/Linux bug where the cert was never requested (`peer_certificate()` ==
+  `None` → `peer_id` underivable → every inbound gossip connection dropped; #1062 "strangers cannot
+  connect"). CA-agnostic verifier keeps existing self-signed peers valid; `peer_id = SHA-256(peer
+  SPKI DER)` stays byte-identical. Vendored `chia-sdk-client` gains `Peer::from_server_websocket`
+  (additive) so a server rustls stream can back a `Peer`; the outbound/dial path is untouched.
+  (#1371)
+
 ## [0.8.0] - 2026-07-20
 
 ### Features
