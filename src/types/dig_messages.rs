@@ -84,9 +84,10 @@ pub fn route_dig_message(msg_type: DigMessageType) -> RoutingStrategy {
     use DigMessageType::*;
     match msg_type {
         // Plumtree eager push — latency-critical consensus data (SPEC §8.1).
-        NewAttestation | NewCheckpointProposal | NewCheckpointSignature | NewCheckpointSubmission => {
-            RoutingStrategy::PlumtreeEager
-        }
+        NewAttestation
+        | NewCheckpointProposal
+        | NewCheckpointSignature
+        | NewCheckpointSubmission => RoutingStrategy::PlumtreeEager,
 
         // Unicast request → a specific peer.
         RequestCheckpointSignatures | RequestStatus | RequestBlockTransactions => {

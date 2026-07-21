@@ -47,7 +47,11 @@ fn unicast_request_class_routes_unicast_request() {
         DigMessageType::RequestStatus,
         DigMessageType::RequestBlockTransactions,
     ] {
-        assert_eq!(route_dig_message(op), RoutingStrategy::UnicastRequest, "{op:?}");
+        assert_eq!(
+            route_dig_message(op),
+            RoutingStrategy::UnicastRequest,
+            "{op:?}"
+        );
     }
 }
 
@@ -59,7 +63,11 @@ fn unicast_response_class_routes_unicast_response() {
         DigMessageType::RespondStatus,
         DigMessageType::RespondBlockTransactions,
     ] {
-        assert_eq!(route_dig_message(op), RoutingStrategy::UnicastResponse, "{op:?}");
+        assert_eq!(
+            route_dig_message(op),
+            RoutingStrategy::UnicastResponse,
+            "{op:?}"
+        );
     }
 }
 
@@ -79,7 +87,11 @@ fn erlay_class_routes_reconciliation() {
         DigMessageType::ReconciliationSketch,
         DigMessageType::ReconciliationResponse,
     ] {
-        assert_eq!(route_dig_message(op), RoutingStrategy::ErlayReconciliation, "{op:?}");
+        assert_eq!(
+            route_dig_message(op),
+            RoutingStrategy::ErlayReconciliation,
+            "{op:?}"
+        );
     }
 }
 
@@ -100,7 +112,11 @@ fn plumtree_lazy_control_and_pull_route_correctly() {
         RoutingStrategy::PlumtreeLazy
     );
     for op in [DigMessageType::PlumtreePrune, DigMessageType::PlumtreeGraft] {
-        assert_eq!(route_dig_message(op), RoutingStrategy::PlumtreeControl, "{op:?}");
+        assert_eq!(
+            route_dig_message(op),
+            RoutingStrategy::PlumtreeControl,
+            "{op:?}"
+        );
     }
     assert_eq!(
         route_dig_message(DigMessageType::PlumtreeRequestByHash),
@@ -142,6 +158,11 @@ fn every_opcode_routes_by_declared_strategy() {
         }
     };
     for op in DigMessageType::ALL {
-        assert_eq!(route_dig_message(op), expected(op), "opcode {} mis-routed", op as u8);
+        assert_eq!(
+            route_dig_message(op),
+            expected(op),
+            "opcode {} mis-routed",
+            op as u8
+        );
     }
 }

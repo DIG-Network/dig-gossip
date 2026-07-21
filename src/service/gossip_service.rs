@@ -513,7 +513,9 @@ fn ensure_parent_dirs(cert_path: &str, key_path: &str) -> Result<(), GossipError
 /// [`ServiceState::tls`] and used for both outbound `connect_peer()` calls and the
 /// inbound TLS acceptor in the CON-002 accept loop (see `vendor/native-tls/README.dig-gossip.md`
 /// for inbound OpenSSL `CERT_REQUIRED` behavior).
-fn load_tls_material(config: &GossipConfig) -> Result<dig_peer_protocol::ChiaCertificate, GossipError> {
+fn load_tls_material(
+    config: &GossipConfig,
+) -> Result<dig_peer_protocol::ChiaCertificate, GossipError> {
     load_ssl_cert(&config.cert_path, &config.key_path).map_err(map_sdk_tls_err)
 }
 
