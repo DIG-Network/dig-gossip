@@ -25,6 +25,29 @@ Dandelion++ privacy, and relay fallback for NAT traversal.
 
 ---
 
+## DIG L2 dispatch authority (opcodes 200-219)
+
+`route_dig_message(op)` is the single per-opcode routing authority. `broadcast_dig` (fan-out)
+and `send_dig` (unicast) are the ONLY sanctioned way to put a DIG opcode on the wire — both
+dispatch by strategy. Each strategy is either **implemented** (has a live send leg today) or
+**deferred-to-producer** (STATE-only; the send leg lands with the producer that generates it, so
+dispatch fails safe with `StrategyNotYetProduced` rather than guessing a wire shape).
+
+| Strategy | Opcodes | Entry point | Status |
+|----------|---------|-------------|--------|
+| `PlumtreeEager` | 200, 201, 202, 207 | `broadcast_dig` (seen-set-deduped) | implemented |
+| `BroadcastFlood` | 208 | `broadcast_dig` (seen-set-deduped) | implemented |
+| `UnicastRequest` | 203, 205, 209 | `send_dig` (not deduped) | implemented |
+| `UnicastResponse` | 204, 206, 210 | `send_dig` (not deduped) | implemented |
+| `UnicastToIntroducer` / `UnicastFromIntroducer` | 218, 219 | `register_with_introducer` (dedicated socket) | via introducer method |
+| `ErlayReconciliation` | 211, 212 | — | deferred-to-producer |
+| `DandelionStem` | 213 | — | deferred-to-producer |
+| `PlumtreeLazy` | 214 | — | deferred-to-producer |
+| `PlumtreeControl` | 215, 216 | — | deferred-to-producer |
+| `PlumtreePull` | 217 | — | deferred-to-producer |
+
+---
+
 ## Lifecycle
 
 ```rust
@@ -131,6 +154,24 @@ impl GossipHandle {
         &self,
         peer_id: PeerId,
         body: T,
+    ) -> Result<(), GossipError>;
+
+    /// Dispatch a DIG L2 consensus-band opcode (200-219) along its declared routing
+    /// strategy (fan-out). The ONLY sanctioned way to broadcast a DIG opcode — see the
+    /// dispatch-authority table below. Errors WrongDispatchShape for a unicast opcode.
+    pub async fn broadcast_dig(
+        &self,
+        msg_type: DigMessageType,
+        body: Vec<u8>,
+    ) -> Result<usize, GossipError>;
+
+    /// Dispatch a DIG L2 consensus-band opcode (200-219) to one peer (unicast). The ONLY
+    /// sanctioned way to unicast a DIG opcode. Errors WrongDispatchShape for a fan-out opcode.
+    pub async fn send_dig(
+        &self,
+        peer_id: PeerId,
+        msg_type: DigMessageType,
+        body: Vec<u8>,
     ) -> Result<(), GossipError>;
 
     /// Send a request and await a typed response from one peer.

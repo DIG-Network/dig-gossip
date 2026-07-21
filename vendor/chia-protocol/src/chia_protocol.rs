@@ -143,6 +143,34 @@ pub enum ProtocolMessageTypes {
     RespondCostInfo = 107,
 
     // -------------------------------------------------------------------------
+    // DIG L2 consensus band (200-217) — the `DigMessageType` opcodes (#1404).
+    // These extend Chia's namespace so a stock `Message` can carry a DIG consensus
+    // opcode on the wire (its `msg_type` field is a `ProtocolMessageTypes`). Each
+    // value MUST equal the matching `dig_peer_protocol::DigMessageType` discriminant;
+    // `frame_dig_message` in dig-gossip converts one to the other losslessly. They are
+    // ADDITIVE (§5.1): no existing opcode moves. dig-gossip's `broadcast_dig`/`send_dig`
+    // (via `route_dig_message`) are the ONLY sanctioned way to put them on the wire.
+    // -------------------------------------------------------------------------
+    NewAttestation = 200,
+    NewCheckpointProposal = 201,
+    NewCheckpointSignature = 202,
+    RequestCheckpointSignatures = 203,
+    RespondCheckpointSignatures = 204,
+    RequestStatus = 205,
+    RespondStatus = 206,
+    NewCheckpointSubmission = 207,
+    ValidatorAnnounce = 208,
+    RequestBlockTransactions = 209,
+    RespondBlockTransactions = 210,
+    ReconciliationSketch = 211,
+    ReconciliationResponse = 212,
+    StemTransaction = 213,
+    PlumtreeLazyAnnounce = 214,
+    PlumtreePrune = 215,
+    PlumtreeGraft = 216,
+    PlumtreeRequestByHash = 217,
+
+    // -------------------------------------------------------------------------
     // DIG dig-gossip extension — introducer registration (DSC-005 / SPEC §6.5).
     // Upstream Chia does not assign these; `dig-gossip` vendors `chia-protocol` to reserve
     // stable opcodes for `RegisterPeer` / `RegisterAck` bodies (`introducer_register_wire.rs`).
