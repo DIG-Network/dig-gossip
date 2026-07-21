@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -82,6 +82,8 @@ chia-traits = "0.26"
 chia-sha2 = "0.26"
 # SHA256(peer TLS SubjectPublicKeyInfo DER) — API-005 / CON-001 peer_id derivation (NIST SHA-256).
 sha2 = "0.10"
+# HOL-001 (#1428): hex-encode/decode the 64-char `provider_peer_id` in a `HoldingsAnnounce`.
+hex = "0.4"
 # Parse peer X.509 after outbound TLS (CON-001) — extract SPKI DER for [`peer_id_from_tls_spki_der`].
 x509-parser = "0.16"
 # CON-002 dual-stack bind: clear `IPV6_V6ONLY` on the `[::]` listening socket before `listen()` so

@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1442,6 +1442,7 @@ dependencies = [
  "dig-peer-protocol",
  "dig-tls",
  "futures-util",
+ "hex",
  "lru",
  "native-tls",
  "rand 0.8.6",

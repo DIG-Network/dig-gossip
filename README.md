@@ -46,6 +46,17 @@ dispatch fails safe with `StrategyNotYetProduced` rather than guessing a wire sh
 | `PlumtreeControl` | 215, 216 | — | deferred-to-producer |
 | `PlumtreePull` | 217 | — | deferred-to-producer |
 
+### Free band (opcodes 220-255) — application protocols
+
+Beyond the 200-219 consensus band (and the introducer opcodes 218/219), the `220..=255`
+band is free for application protocols, each with its own module + canonical constant:
+
+| Opcode | Constant | Shape | Module | Notes |
+|-------:|----------|-------|--------|-------|
+| 220 | `DIG_MESSAGE` | Unicast (directed) | `service::dig_message` | dig-message envelope transport (opaque). |
+| 221 | `STORE_MELTED` | Plumtree flood (Bulk) | `service::store_melted` | Store-melt broadcast; §5.4-EXEMPT. |
+| 222 | `HOLDINGS_ANNOUNCE` | Plumtree flood (Bulk) | `service::holdings_announce` | Signed holdings add/remove batch → dig-dht holder set; §5.4-EXEMPT; `verify_holdings_announce` is the DHT-poisoning gate. |
+
 ---
 
 ## Lifecycle

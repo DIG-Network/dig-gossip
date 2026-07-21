@@ -12,7 +12,6 @@ pub(crate) mod state;
 pub mod dig_message;
 pub mod gossip_handle;
 pub mod gossip_service;
+pub mod holdings_announce;
 pub mod peer_pool;
 pub mod store_melted;
-
-//! Opcode 222 HoldingsAnnounce — WIP stub (#1428).

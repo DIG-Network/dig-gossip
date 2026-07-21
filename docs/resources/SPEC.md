@@ -459,7 +459,7 @@ pub enum DigMessageType {
 The `200..=219` band is the **consensus** band (`DigMessageType` above, plus
 `RegisterPeer = 218` / `RegisterAck = 219`). The `220..=255` band is **free** for
 application protocols — directed (`DIG_MESSAGE = 220`) or broadcast
-(`STORE_MELTED = 221`).
+(`STORE_MELTED = 221`, `HOLDINGS_ANNOUNCE = 222`).
 
 #### 2.3.1 `DIG_MESSAGE = 220` — directed dig-message transport (WU6, epic #796)
 
@@ -551,6 +551,79 @@ key**, supplied by the caller from the peer's mTLS cert binding (the message car
 | `frame_store_melted(&StoreMeltedAnnounce) -> Message` | Build the outbound opcode-221 broadcast frame (`id = None`). |
 | `store_melted_payload(&Message) -> Option<StoreMeltedAnnounce>` | Inbound routing: lift + decode an opcode-221 frame (else `None`). |
 | `is_store_melted(u8) -> bool` | Recognise opcode 221. |
+
+#### 2.3.4 `HOLDINGS_ANNOUNCE = 222` — holdings-announce broadcast (#1428, spec #1394)
+
+Opcode **222** (`HOLDINGS_ANNOUNCE`) lets a provider (a dig-node hosting `.dig` content)
+flood a **signed batch** of holdings add/remove deltas telling every peer which content
+keys it now serves and at which addresses. dig-node verifies each announcement
+(`verify_holdings_announce`) before feeding the deltas into **dig-dht's holder set**. It
+is a first-class `ProtocolMessageTypes::HoldingsAnnounce` variant (the third opcode of the
+free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is exported as
+`dig_gossip::HOLDINGS_ANNOUNCE`.
+
+- **PUBLIC broadcast, flood-disseminated.** Holdings are public discovery data addressed
+  to everyone, so `classify_broadcast(HoldingsAnnounce) = Plumtree` (eager/lazy flood) at
+  **Bulk** priority. The transport `seen_set` dedups by the announcement bytes; a later
+  `seq` from the same provider supersedes an earlier one.
+- **§5.4-EXEMPT (signed + mTLS, NOT recipient-sealed).** It carries no recipient-specific
+  content — it is a public all-peers broadcast, exactly the L2 consensus-gossip carve-out
+  (NC-1) — so it is mTLS-authenticated and signed but NOT end-to-end sealed to a recipient
+  key. Deliberate, documented exemption.
+- **The signature IS the DHT-poisoning gate** (unlike store-melt, whose authority is an
+  on-chain proof). It binds the batch of `(content_key, addresses)` deltas to the provider
+  identity, so no third party can advertise content on the provider's behalf or point
+  resolvers at attacker-controlled addresses. `verify_holdings_announce` checks, fail-closed:
+  (1) the signature over the exact digest, (2) `SHA-256(provider_pubkey) == provider_peer_id`,
+  (3) `changes.len() <= 256`.
+- **Pluggable signer (unblocked from dig-tls #1422).** Signing is abstracted behind the
+  `HoldingsSigner` trait; the v1 pinned scheme is BLS-G1 (`BlsHoldingsSigner` /
+  `BlsHoldingsVerifier`, the node identity key — same primitive as store-melt). A future
+  holder-TLS-key signer plugs in via the same trait with no wire change. `provider_pubkey`
+  is the signer's published key material and `provider_peer_id = hex(SHA-256(provider_pubkey))`
+  regardless of key type.
+
+**`HoldingsAnnounce` wire layout** — variable length, big-endian; a `⟨lp⟩` field is
+`u16`-big-endian length-prefixed:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `provider_peer_id` | `⟨lp⟩` ASCII | 64 lowercase hex chars = `SHA-256(provider_pubkey)`. |
+| `provider_pubkey` | `⟨lp⟩` bytes | Holder key material (v1: 48-byte BLS G1). |
+| `seq` | `u64` BE | Monotonic; later supersedes earlier. |
+| `announced_at` | `u64` BE | Unix seconds. |
+| `change_count` | `u16` BE | `<= 256`; decode rejects a larger count. |
+| `changes` | `canonical_encode` | See below. |
+| `signature` | `⟨lp⟩` bytes | Over `digest` (v1: 96-byte BLS AugScheme). |
+
+`decode` rejects any truncated frame, a `change_count > 256`, or trailing bytes.
+
+**`canonical_encode(changes)`** — the signed bytes; per delta a **kind-tag** byte then:
+
+- `Add`: `0x01 ‖ content_key[32] ‖ addr_count(u16 BE) ‖ (host⟨lp⟩ ‖ port(u16 BE))* ‖ expires_at(u64 BE)` — addresses ARE signed.
+- `Remove`: `0x02 ‖ content_key[32]`.
+
+**Digest / signature.** `digest = SHA-256("dig:holdings:v1" ‖ provider_peer_id(32B) ‖
+seq_be ‖ announced_at_be ‖ canonical_encode(changes))`; `signature = HoldingsSigner::sign(digest)`.
+The domain tag `"dig:holdings:v1"` is a cross-repo canonical constant — dig-node's verify
+and dig-dht's ingest recompute it byte-identically.
+
+**Send/route API** (in `service::holdings_announce`):
+
+| Item | Purpose |
+|------|---------|
+| `HoldingsAnnounce::new_signed(&signer, seq, announced_at, changes) -> Result` | Build a signed announcement (rejects `> 256` changes). |
+| `verify_holdings_announce(&HoldingsAnnounce) -> Result<(), HoldingsError>` | The DHT-ingest gate (default BLS verifier), fail-closed. |
+| `verify_holdings_announce_with(&announce, &verifier)` | Verify with a pluggable `HoldingsVerifier`. |
+| `HoldingsAnnounce::{encode,decode}` | Variable-length big-endian wire round-trip. |
+| `canonical_encode(&[HoldingsDelta]) -> Vec<u8>` / `digest(&peer_id, seq, announced_at, &changes) -> [u8;32]` | Signed-bytes + digest helpers. |
+| `frame_holdings_announce(&HoldingsAnnounce) -> Message` | Build the outbound opcode-222 broadcast frame (`id = None`). |
+| `holdings_announce_payload(&Message) -> Option<HoldingsAnnounce>` | Inbound routing: lift + decode an opcode-222 frame (else `None`). |
+| `is_holdings_announce(u8) -> bool` | Recognise opcode 222. |
+
+**KAT golden vectors.** `service::holdings_announce` pins a digest + BLS signature vector
+under a deterministic test key; CI fails on any digest/encoding/scheme drift in this
+cross-repo wire+crypto contract.
 
 ### 2.4 PeerConnection (DIG extension of `chia-sdk-client::Peer`)
 
