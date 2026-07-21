@@ -1830,6 +1830,25 @@ table is normative and MUST match it:
 A Plumtree-eager consensus type MUST NOT be flooded naively, and a unicast request/response MUST NOT be
 broadcast. INT-016 tests assert every opcode routes by its declared strategy.
 
+##### Dispatch authority — `broadcast_dig` / `send_dig`
+
+`route_dig_message` is not only the routing map; it is the **live per-opcode dispatch authority**.
+The two `GossipHandle` entry points below are the ONLY sanctioned way to put a `200..=219` opcode on
+the wire — a caller MUST NOT hand-frame a DIG opcode and call `broadcast` / `send_directed_message`
+directly. Both frame the opcode through the single encoder `frame_dig_message` (which mirrors each
+`DigMessageType` discriminant onto the vendored `ProtocolMessageTypes`, so a stock `Message` carries
+the DIG opcode) and then dispatch by strategy:
+
+| Strategy (opcodes) | Entry point | Behaviour | Wrong entry point |
+|--------------------|-------------|-----------|-------------------|
+| `PlumtreeEager` (200/201/202/207), `BroadcastFlood` (208) | `broadcast_dig` | fan-out via `broadcast()` — **seen-set-deduped + message-cached** | `send_dig` → `WrongDispatchShape` |
+| `UnicastRequest` (203/205/209), `UnicastResponse` (204/206/210) | `send_dig` | unicast via `send_directed_message()` — **NOT seen-set-deduped** (a directed request is never content-deduped) | `broadcast_dig` → `WrongDispatchShape` |
+| `UnicastToIntroducer` (218), `UnicastFromIntroducer` (219) | neither | classified correctly, then `UseDedicatedIntroducerMethod` — introducer traffic uses the bespoke `IntroducerClient` socket, not the peer map (`register_with_introducer` / `RegisterAck`) | — |
+| `ErlayReconciliation` (211/212), `DandelionStem` (213), `PlumtreeLazy` (214), `PlumtreeControl` (215/216), `PlumtreePull` (217) | neither | `StrategyNotYetProduced { strategy, opcode }` — these are STATE-only with no live producer; the real send leg lands with the producer (fail-safe, never a speculative send) | — |
+
+Fan-out dissemination is seen-set-deduped; unicast dissemination is not. INT-017 tests assert every
+opcode's dispatch outcome-class equals its `route_dig_message` classification (the anti-drift guard).
+
 ---
 
 ## 9. Compatibility Notes

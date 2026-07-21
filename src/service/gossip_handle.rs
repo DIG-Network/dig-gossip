@@ -61,7 +61,8 @@ use tokio::sync::broadcast;
 
 use crate::constants::PENALTY_BAN_THRESHOLD;
 use crate::error::GossipError;
-use crate::service::dig_message::StreamFrame;
+use crate::service::dig_message::{frame_dig_message, StreamFrame};
+use crate::types::dig_messages::{route_dig_message, DigMessageType, RoutingStrategy};
 use crate::types::peer::{
     message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der, PeerConnection,
     PeerConnectionWireMetrics, PeerId, PeerInfo,
@@ -75,6 +76,40 @@ use super::state::{
     record_live_peer_outbound_bytes, sum_live_peer_wire_metrics, LiveSlot, PeerSlot, ServiceState,
     StubPeer,
 };
+
+/// Map a DIG routing strategy that is neither fan-out nor unicast to its dispatch error (#1404).
+///
+/// Both [`GossipHandle::broadcast_dig`] and [`GossipHandle::send_dig`] fall through to this once
+/// they have ruled out the shape they own, so the introducer / no-live-producer decision lives in
+/// exactly one place. Introducer strategies steer the caller to the dedicated introducer socket;
+/// every other strategy has no live producer yet and fails safe rather than guessing a wire shape.
+///
+/// # Panics
+///
+/// Never for a real call: the two fan-out and two unicast strategies are handled by the callers
+/// before they reach here. The `unreachable!` documents that invariant for future strategies.
+fn deferred_dispatch_error(strategy: RoutingStrategy, msg_type: DigMessageType) -> GossipError {
+    match strategy {
+        RoutingStrategy::UnicastToIntroducer | RoutingStrategy::UnicastFromIntroducer => {
+            GossipError::UseDedicatedIntroducerMethod
+        }
+        RoutingStrategy::ErlayReconciliation
+        | RoutingStrategy::DandelionStem
+        | RoutingStrategy::PlumtreeLazy
+        | RoutingStrategy::PlumtreeControl
+        | RoutingStrategy::PlumtreePull => GossipError::StrategyNotYetProduced {
+            strategy,
+            opcode: msg_type as u8,
+        },
+        // Fan-out + unicast are dispatched by the callers before reaching here.
+        RoutingStrategy::PlumtreeEager
+        | RoutingStrategy::BroadcastFlood
+        | RoutingStrategy::UnicastRequest
+        | RoutingStrategy::UnicastResponse => {
+            unreachable!("fan-out and unicast strategies are dispatched before this fallthrough")
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // GossipHandle — the user-facing façade
@@ -560,6 +595,87 @@ impl GossipHandle {
                 .fetch_add(wire_len, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // DIG L2 per-opcode dispatch authority (#1404)
+    // ------------------------------------------------------------------
+    //
+    // `broadcast_dig` / `send_dig` are the ONLY sanctioned way to put a DIG consensus-band
+    // opcode (200-219) on the wire. Both consult `route_dig_message` so an opcode can never be
+    // disseminated on the wrong shape — a fan-out (Plumtree eager / broadcast flood) opcode is
+    // rejected by `send_dig`, a unicast opcode is rejected by `broadcast_dig`, introducer
+    // opcodes route to the dedicated method, and a strategy with no live producer fails safe.
+
+    /// Broadcast a DIG consensus-band opcode along its **fan-out** strategy.
+    ///
+    /// Valid only for opcodes whose [`route_dig_message`] strategy is
+    /// [`PlumtreeEager`](RoutingStrategy::PlumtreeEager) (200/201/202/207) or
+    /// [`BroadcastFlood`](RoutingStrategy::BroadcastFlood) (208). The opcode is framed
+    /// ([`frame_dig_message`]) and delegated to [`broadcast`](Self::broadcast), which owns
+    /// seen-set dedup + the message-cache. Returns the fan-out delivery count.
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::WrongDispatchShape`] — the opcode is a unicast strategy (use
+    ///   [`send_dig`](Self::send_dig)).
+    /// - [`GossipError::UseDedicatedIntroducerMethod`] — an introducer opcode (218/219).
+    /// - [`GossipError::StrategyNotYetProduced`] — a strategy with no live producer yet.
+    /// - plus every error [`broadcast`](Self::broadcast) can return.
+    pub async fn broadcast_dig(
+        &self,
+        msg_type: DigMessageType,
+        body: Vec<u8>,
+    ) -> Result<usize, GossipError> {
+        self.require_running()?;
+        match route_dig_message(msg_type) {
+            // Fan-out strategies: the only ones `broadcast_dig` accepts.
+            RoutingStrategy::PlumtreeEager | RoutingStrategy::BroadcastFlood => {
+                self.broadcast(frame_dig_message(msg_type, body), None)
+                    .await
+            }
+            // Unicast strategies belong to `send_dig`.
+            RoutingStrategy::UnicastRequest | RoutingStrategy::UnicastResponse => {
+                Err(GossipError::WrongDispatchShape)
+            }
+            other => Err(deferred_dispatch_error(other, msg_type)),
+        }
+    }
+
+    /// Send a DIG consensus-band opcode to one peer along its **unicast** strategy.
+    ///
+    /// Valid only for opcodes whose [`route_dig_message`] strategy is
+    /// [`UnicastRequest`](RoutingStrategy::UnicastRequest) (203/205/209) or
+    /// [`UnicastResponse`](RoutingStrategy::UnicastResponse) (204/206/210). The opcode is framed
+    /// ([`frame_dig_message`]) and delivered via [`send_directed_message`](Self::send_directed_message)
+    /// — a directed request is intentionally NOT seen-set-deduped.
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::WrongDispatchShape`] — the opcode is a fan-out strategy (use
+    ///   [`broadcast_dig`](Self::broadcast_dig)).
+    /// - [`GossipError::UseDedicatedIntroducerMethod`] — an introducer opcode (218/219).
+    /// - [`GossipError::StrategyNotYetProduced`] — a strategy with no live producer yet.
+    /// - plus every error [`send_directed_message`](Self::send_directed_message) can return.
+    pub async fn send_dig(
+        &self,
+        peer_id: PeerId,
+        msg_type: DigMessageType,
+        body: Vec<u8>,
+    ) -> Result<(), GossipError> {
+        self.require_running()?;
+        match route_dig_message(msg_type) {
+            // Unicast strategies: the only ones `send_dig` accepts.
+            RoutingStrategy::UnicastRequest | RoutingStrategy::UnicastResponse => {
+                self.send_directed_message(peer_id, frame_dig_message(msg_type, body))
+                    .await
+            }
+            // Fan-out strategies belong to `broadcast_dig`.
+            RoutingStrategy::PlumtreeEager | RoutingStrategy::BroadcastFlood => {
+                Err(GossipError::WrongDispatchShape)
+            }
+            other => Err(deferred_dispatch_error(other, msg_type)),
+        }
     }
 
     /// Typed request/response — **stub** implements `RequestPeers → RespondPeers` via [`TypeId`];

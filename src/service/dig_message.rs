@@ -30,7 +30,7 @@
 
 use std::collections::BTreeMap;
 
-use dig_peer_protocol::{Message, ProtocolMessageTypes};
+use dig_peer_protocol::{DigMessageType, Message, ProtocolMessageTypes, Streamable};
 
 /// Wire opcode for a directed dig-message envelope.
 ///
@@ -73,6 +73,31 @@ pub fn frame_envelope(envelope: &[u8], correlation_id: Option<u16>) -> Message {
         msg_type: ProtocolMessageTypes::DigMessage,
         id: correlation_id,
         data: envelope.to_vec().into(),
+    }
+}
+
+/// Build the on-wire [`Message`] that carries a DIG **consensus-band** opcode (200-219).
+///
+/// The DIG opcodes extend Chia's namespace: the vendored [`ProtocolMessageTypes`] mirrors every
+/// [`DigMessageType`] discriminant 1:1 (#1404), so a stock [`Message`] can carry a DIG opcode in
+/// its `msg_type` field. This is the SINGLE opcode-encoding path for the consensus band — the
+/// dispatch authority ([`GossipHandle::broadcast_dig`](crate::service::gossip_handle::GossipHandle)
+/// / [`send_dig`](crate::service::gossip_handle::GossipHandle)) frames every DIG message through
+/// here so no second, drifting encoder can appear.
+///
+/// `body` is the already-serialized opcode payload; it is carried verbatim in `Message.data`.
+/// The frame has no correlation `id` — the consensus band is fire-and-forget on the overlay,
+/// unlike the directed opcode-220 envelope built by [`frame_envelope`].
+#[must_use]
+pub fn frame_dig_message(msg_type: DigMessageType, body: Vec<u8>) -> Message {
+    // Total for the whole 200-219 band: `ProtocolMessageTypes` has a variant for every
+    // `DigMessageType` discriminant (vendored, #1404), so this single-byte decode never fails.
+    let pmt = ProtocolMessageTypes::from_bytes(&[msg_type as u8])
+        .expect("every DigMessageType opcode has a mirrored ProtocolMessageTypes variant (#1404)");
+    Message {
+        msg_type: pmt,
+        id: None,
+        data: body.into(),
     }
 }
 

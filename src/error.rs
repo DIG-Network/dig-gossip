@@ -274,6 +274,55 @@ pub enum GossipError {
     /// **Produced by:** the `dig-nat` transport adapter (`crate::nat`).
     #[error("nat transport error: {0}")]
     NatError(String),
+
+    // -- DIG dispatch-authority errors (#1404) --------------------------------
+    /// A DIG opcode's [`RoutingStrategy`](crate::types::dig_messages::RoutingStrategy) has no
+    /// live producer yet, so [`broadcast_dig`](crate::service::gossip_handle::GossipHandle) /
+    /// [`send_dig`](crate::service::gossip_handle::GossipHandle) refuse to put it on the wire
+    /// rather than guess a dissemination shape.
+    ///
+    /// **When:** dispatch of an ERLAY (211/212), Dandelion stem (213), or Plumtree
+    /// lazy/control/pull (214-217) opcode — these carry STATE only; their real send leg lands
+    /// with the producer that generates them (follow-up tickets).
+    /// **Caller action:** do not send this opcode directly; it is produced internally once its
+    /// strategy is implemented. Treat as a programming error in the meantime.
+    /// **Produced by:** the DIG dispatch authority
+    /// ([`GossipHandle`](crate::service::gossip_handle::GossipHandle)).
+    #[error("routing strategy {strategy:?} (opcode {opcode}) has no live producer yet")]
+    StrategyNotYetProduced {
+        /// The strategy [`route_dig_message`](crate::types::dig_messages::route_dig_message)
+        /// assigned the opcode.
+        strategy: crate::types::dig_messages::RoutingStrategy,
+        /// The DIG wire opcode (200-219) that was dispatched.
+        opcode: u8,
+    },
+
+    /// An introducer-registration opcode (218 `RegisterPeer` / 219 `RegisterAck`) was dispatched
+    /// through the general per-opcode path.
+    ///
+    /// **When:** [`broadcast_dig`](crate::service::gossip_handle::GossipHandle) or
+    /// [`send_dig`](crate::service::gossip_handle::GossipHandle) is called with an introducer
+    /// opcode. Introducer traffic uses the bespoke `IntroducerClient` socket, not the peer map.
+    /// **Caller action:** use
+    /// [`register_with_introducer`](crate::service::gossip_handle::GossipHandle) (and its
+    /// `RegisterAck` response) instead.
+    /// **Produced by:** the DIG dispatch authority.
+    #[error(
+        "introducer opcodes must use the dedicated introducer method, not per-opcode dispatch"
+    )]
+    UseDedicatedIntroducerMethod,
+
+    /// A DIG opcode was dispatched through the entry point for the wrong dissemination shape.
+    ///
+    /// **When:** a fan-out opcode (Plumtree eager / broadcast flood) is passed to
+    /// [`send_dig`](crate::service::gossip_handle::GossipHandle), or a unicast opcode is passed
+    /// to [`broadcast_dig`](crate::service::gossip_handle::GossipHandle).
+    /// **Caller action:** use `broadcast_dig` for fan-out strategies and `send_dig` for unicast
+    /// strategies, per
+    /// [`route_dig_message`](crate::types::dig_messages::route_dig_message).
+    /// **Produced by:** the DIG dispatch authority.
+    #[error("wrong dispatch shape for this opcode's routing strategy")]
+    WrongDispatchShape,
 }
 
 /// Manual [`From`] implementation because the `ClientError` variant stores an [`Arc`],
