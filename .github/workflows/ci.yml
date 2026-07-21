@@ -59,6 +59,37 @@ jobs:
       - name: Check documentation
         run: cargo doc --no-deps --all-features
 
+  rustls-tests:
+    name: rustls inbound tests (Linux, #1371)
+    # The coverage job above measures the native-tls default feature set; the rustls inbound
+    # acceptor (#1371) is cfg-gated out of it. This job runs the rustls-feature test suite on Linux
+    # so the OpenSSL/Linux inbound cert-capture regression test actually executes on every PR.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run rustls-feature library tests
+        # `--lib` only: the integration-test binaries under `tests/` (con_001/con_002/…) are
+        # `required-features = ["native-tls"]` and are covered by the native-tls coverage job. The
+        # rustls inbound acceptor's regression test (#1371) lives in `src/connection/rustls_inbound.rs`
+        # and runs here so the OpenSSL/Linux cert-capture path is exercised on every PR.
+        run: >-
+          cargo test
+          --no-default-features
+          --features rustls,relay,erlay,compact-blocks,dandelion
+          --lib
+          --
+          --test-threads=1
+
   coverage:
     name: Test Suite + Coverage (>=80%)
     runs-on: ubuntu-latest

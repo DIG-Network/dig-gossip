@@ -31,6 +31,10 @@
 //! X.509 + PKCS#8 into rustls, so the SPKI it advertises — and thus this node's own `peer_id` — is
 //! **byte-identical** to the value the previous native-tls acceptor advertised.
 
+// Large `ClientError` payloads propagate upstream `chia_sdk_client` variants verbatim, matching the
+// rest of the connection module (see `listener.rs` / `outbound.rs`).
+#![allow(clippy::result_large_err)]
+
 use std::sync::Arc;
 
 use dig_protocol::{ChiaCertificate, ClientError};
