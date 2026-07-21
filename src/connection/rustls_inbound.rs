@@ -371,21 +371,37 @@ mod tests {
             acceptor.accept(tcp).await // Should return Err, not Ok
         });
 
-        // Client: dial WITHOUT presenting a cert. The handshake should fail.
+        // Client: dial WITHOUT presenting a cert.
+        //
+        // Under TLS 1.3 the client's `connect()` can resolve `Ok`: the client's Finished is its
+        // last handshake flight, so tokio-rustls treats the handshake as complete BEFORE the
+        // server processes the (absent) client certificate and emits its rejection alert — the
+        // rejection then only surfaces on the next read. Under TLS 1.2 the alert arrives during
+        // the handshake and `connect()` returns `Err`. Either way, a certless client must never
+        // obtain a USABLE channel, so we assert on channel usability rather than on `connect()`.
         let tcp = TcpStream::connect(addr).await.expect("connect");
         let domain = rustls::pki_types::ServerName::try_from("dig.local").expect("server name");
-        let result = connector.connect(domain, tcp).await;
-
-        // Both client and server handshakes should fail.
+        let client_channel_usable = match connector.connect(domain, tcp).await {
+            Err(_) => false, // rejected during the handshake (TLS 1.2 path)
+            Ok(mut tls) => {
+                // Handshake optimistically completed client-side (TLS 1.3): a read must now fail
+                // or hit EOF because the server rejected the certless peer and closed the channel.
+                let mut buf = [0u8; 1];
+                matches!(tls.read(&mut buf).await, Ok(n) if n > 0)
+            }
+        };
         assert!(
-            result.is_err(),
-            "client-side: rustls must reject handshake when client presents no certificate"
+            !client_channel_usable,
+            "client-side: a certless client must not obtain a usable channel"
         );
 
+        // The load-bearing security property: our acceptor MUST reject the certless peer at the
+        // TLS layer (`client_auth_mandatory()=true`) — it never derives a peer_id or processes the
+        // connection. If the acceptor wrongly accepted anonymous clients, this assertion fails.
         let server_result = server.await.expect("server task panicked");
         assert!(
             server_result.is_err(),
-            "server-side: rustls must reject handshake when client presents no certificate"
+            "server-side: rustls acceptor MUST reject a client that presents no certificate"
         );
     }
 }
