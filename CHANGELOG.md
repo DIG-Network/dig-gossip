@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.11.0] - 2026-07-21
+
+### Features
+- **dig-gossip:** Route_dig_message per-opcode dispatch authority (#1404) (#18)
+
 ## [0.10.0] - 2026-07-21
 
 ### Features
