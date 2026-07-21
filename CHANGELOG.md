@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.10.0] - 2026-07-21
+
+### Features
+- **deps:** Dig-peer-protocol 0.2 + dig-nat 0.8 migration + per-opcode routing map (v0.10.0) (#17)
+
 ## [0.9.0] - 2026-07-21
 
 ### Bug Fixes
