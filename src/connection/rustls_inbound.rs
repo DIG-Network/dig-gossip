@@ -333,4 +333,59 @@ mod tests {
             "rustls-captured inbound peer_id must be byte-identical to SHA-256(client SPKI DER)"
         );
     }
+
+    /// Build a rustls client config that does NOT present a client certificate (no client auth).
+    fn client_config_no_auth() -> rustls::ClientConfig {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .expect("client protocol versions")
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert(provider)))
+            .with_no_client_auth()
+    }
+
+    /// #1371 hardening: inbound rustls acceptor REQUIRES a client certificate via
+    /// `client_auth_mandatory()=true`. A client dialing without a certificate MUST be
+    /// rejected at the TLS handshake layer (rustls error, not a downstream DIG layer).
+    ///
+    /// Proves that `CaptureAnyClientCert` enforces the mandatory requirement.
+    #[tokio::test]
+    async fn issue_1371_certless_inbound_client_is_rejected() {
+        let server_cert = ChiaCertificate::generate().expect("server cert");
+
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
+            rustls_server_config(&server_cert).expect("server config"),
+        ));
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config_no_auth()));
+
+        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        // Server task: attempt to accept the mTLS handshake; it should FAIL because the client
+        // presents no certificate and the acceptor requires one.
+        let server = tokio::spawn(async move {
+            let (tcp, _peer) = listener.accept().await.expect("accept tcp");
+            acceptor.accept(tcp).await // Should return Err, not Ok
+        });
+
+        // Client: dial WITHOUT presenting a cert. The handshake should fail.
+        let tcp = TcpStream::connect(addr).await.expect("connect");
+        let domain = rustls::pki_types::ServerName::try_from("dig.local").expect("server name");
+        let result = connector.connect(domain, tcp).await;
+
+        // Both client and server handshakes should fail.
+        assert!(
+            result.is_err(),
+            "client-side: rustls must reject handshake when client presents no certificate"
+        );
+
+        let server_result = server.await.expect("server task panicked");
+        assert!(
+            server_result.is_err(),
+            "server-side: rustls must reject handshake when client presents no certificate"
+        );
+    }
 }
