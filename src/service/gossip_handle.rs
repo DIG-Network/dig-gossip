@@ -1355,6 +1355,16 @@ impl GossipHandle {
             })
             .collect()
     }
+    /// #1517 defect-2 test hook: the [`dig_nat::NatRuntime`] the pool auto-dial composes its full
+    /// ladder from ([`Self::pool_dial_runtime`]). Exposed so a unit test can prove the relay circuit
+    /// is ACTUALLY wired — a runtime built with a relay reservation attached composes the Relayed
+    /// tier, whereas the default relay-less runtime composes it away — WITHOUT a live relay. Never a
+    /// public contract.
+    #[doc(hidden)]
+    pub fn __pool_dial_runtime_for_tests(&self) -> dig_nat::NatRuntime {
+        self.pool_dial_runtime()
+    }
+
     /// IPv6-first / intersection test hook: run [`Self::gather_pool_candidates`] against an EXPLICIT
     /// local stack (`has_v6`, `has_v4`), so a test can assert the local∩candidate intersection
     /// (drop-a-family-the-host-lacks) deterministically regardless of the CI runner's real stack.

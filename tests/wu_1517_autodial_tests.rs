@@ -20,10 +20,13 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
-use dig_gossip::{GossipHandle, GossipService, PeerPoolConfig};
+use dig_gossip::nat::nat_connect_with_runtime;
+use dig_gossip::{GossipHandle, GossipService, NatError, NatPeerId, PeerPoolConfig};
+use dig_nat::relay::RelayStatus;
 use dig_nat::wire::RelayPeerInfo;
-use dig_nat::TraversalKind;
+use dig_nat::{NatConfig, PeerTarget, TraversalKind};
 
 fn addr(s: &str) -> SocketAddr {
     s.parse().unwrap()
@@ -105,4 +108,63 @@ fn pool_auto_dial_ladder_includes_the_relay_circuit() {
         "defect 2: the ladder MUST also include the relay circuit as the last-resort fallback, \
          not stop at Direct"
     );
+}
+
+/// The static ladder (above) listing `Relayed` is necessary but NOT sufficient: the real root cause
+/// of defect 2 was that the pool dial ran over the DEFAULT `NatRuntime`, which carries no relay
+/// dialer, so dig-nat silently composed the Relayed tier AWAY. The fix is that
+/// [`GossipHandle::pool_dial_runtime`] builds a `NatRuntime` from the held [`RelayStatus`] with a
+/// `ReservationRelayedTransport` (a `RelayedDialer`) wired in.
+///
+/// This asserts that wiring WITHOUT a live relay, using dig-nat's own composition rule: a
+/// Relayed-ONLY dial over the pool runtime returns [`NatError::NoMethodsEnabled`] iff the Relayed
+/// tier was composed away (no dialer wired), and is actually ATTEMPTED (→ [`NatError::AllMethodsFailed`])
+/// iff the dialer is present. So a default relay-less runtime and a reservation-wired one are
+/// distinguishable by the error alone — no relay server required. The test FAILS against the old
+/// relay-less-runtime behaviour (the wired case would return `NoMethodsEnabled`).
+#[tokio::test]
+async fn pool_dial_runtime_wires_the_relay_circuit_only_when_a_reservation_is_attached() {
+    // A Relayed-only dial to a relay-only target: dig-nat composes the ladder from the runtime, so
+    // whether the Relayed tier exists is decided purely by `runtime.relayed`.
+    let relayed_only = NatConfig::builder()
+        .enabled_methods(vec![TraversalKind::Relayed])
+        .per_method_timeout(Duration::from_millis(200))
+        .build();
+    let target = PeerTarget::relay_only(NatPeerId::from_bytes([0x70u8; 32]), "DIG_MAINNET");
+
+    // --- Baseline: NO reservation attached → the old relay-less runtime. Relayed composed away.
+    let (svc, handle, _dir) = running_handle().await;
+    let identity = handle.nat_identity().expect("nat identity");
+    let runtime = handle.__pool_dial_runtime_for_tests();
+    let err = nat_connect_with_runtime(&target, &identity, &relayed_only, &runtime)
+        .await
+        .expect_err("a Relayed-only dial with no relay dialer wired cannot succeed");
+    assert!(
+        matches!(err, NatError::NoMethodsEnabled),
+        "without a relay reservation the pool runtime must NOT compose the Relayed tier \
+         (got {err:?}) — this is the pre-fix relay-less behaviour"
+    );
+    svc.stop().await.expect("stop");
+
+    // --- Fixed: a reservation attached → pool_dial_runtime wires the ReservationRelayedTransport,
+    // so the Relayed tier is genuinely composed + attempted (and fails only because no relay is up).
+    let (svc, handle, _dir) = running_handle().await;
+    handle.attach_relay_status(RelayStatus::new());
+    let identity = handle.nat_identity().expect("nat identity");
+    let runtime = handle.__pool_dial_runtime_for_tests();
+    let err = nat_connect_with_runtime(&target, &identity, &relayed_only, &runtime)
+        .await
+        .expect_err("no live relay is running, so the composed Relayed tier still fails to connect");
+    assert!(
+        !matches!(err, NatError::NoMethodsEnabled),
+        "with a relay reservation attached the pool runtime MUST compose + ATTEMPT the Relayed tier \
+         (the ReservationRelayedTransport is wired), not drop it (got {err:?}) — this is the \
+         runtime-wiring half of defect 2 that e2e #1062 previously covered alone"
+    );
+    assert!(
+        matches!(err, NatError::AllMethodsFailed(_)),
+        "the wired Relayed tier is attempted and fails cleanly (no live relay), not composed away \
+         (got {err:?})"
+    );
+    svc.stop().await.expect("stop");
 }
