@@ -9,17 +9,33 @@
 //! dig-dht's holder set, so a malicious peer cannot forge holdings or poison the DHT.
 //! This module is the decider-locked wire (spec #1394, epic #1428): the opcode
 //! constant, the [`HoldingsAnnounce`] payload with byte-exact encode/decode, the
-//! domain-separated digest, the pluggable [`HoldingsSigner`] / [`HoldingsVerifier`]
-//! abstractions, the fail-closed [`verify_holdings_announce`] gate, and the framing.
+//! domain-separated digest, the [`HoldingsSigner`] builder abstraction, the fail-closed
+//! [`verify_holdings_announce`] gate, and the framing.
+//!
+//! # The inline leaf-cert wire (decider-locked, #1428)
+//!
+//! An announcement carries the provider's **full mTLS leaf certificate DER**
+//! ([`HoldingsAnnounce::provider_cert`]), NOT a bare public key. That single cert is the
+//! self-contained root of trust for the whole message:
+//!
+//! - Its **SPKI** yields the §5.2 `peer_id` (`SHA-256(SPKI DER)`), which MUST equal the
+//!   carried [`provider_peer_id`](HoldingsAnnounce::provider_peer_id) — the peer_id is
+//!   VERIFIED against the cert, never trusted.
+//! - Its **#1204 BLS-G1 binding extension** (OID `1.3.6.1.4.1.58968.1.1`) supplies the
+//!   BLS verify key that the signature is checked under. The binding is MANDATORY here
+//!   (the sig key comes from it), so an absent or invalid binding is a hard reject.
+//!
+//! Because the cert is self-contained, dig-dht (#1424) and dig-warden (#1449) can
+//! re-verify an announcement standalone, with no side channel to fetch a provider key.
 //!
 //! # It is a PUBLIC broadcast — §5.4-EXEMPT (NOT recipient-sealed)
 //!
 //! A holdings announcement is public discovery data, addressed to *everyone* (exactly
-//! like L2 consensus gossip: blocks/txs/attestations). It is **mTLS-authenticated +
-//! signed**, NOT end-to-end recipient-sealed — it carries no recipient-specific
-//! content, so §5.4's "every directed message is e2e-encrypted to the recipient" does
-//! not apply. This is the same deliberate carve-out the normative contract (NC-1)
-//! grants public all-peers broadcasts, not a gap.
+//! like L2 consensus gossip: blocks/txs/attestations) and flooded, never unicast to one
+//! recipient. It is **mTLS-authenticated + signed**, NOT end-to-end recipient-sealed — it
+//! carries no recipient-specific content, so §5.4's "every directed message is e2e-encrypted
+//! to the recipient" does not apply. This is the same deliberate carve-out the normative
+//! contract (NC-1) grants public all-peers broadcasts, not a gap.
 //!
 //! # The signature is the DHT-poisoning gate
 //!
@@ -27,21 +43,13 @@
 //! signature IS load-bearing: it binds the batch of `(content_key, addresses)` deltas to
 //! the provider identity so no third party can advertise content on the provider's
 //! behalf or point resolvers at attacker-controlled addresses. [`verify_holdings_announce`]
-//! therefore checks the signature over the exact digest, the `SHA-256(pubkey) == peer_id`
-//! binding, and the change-count cap — fail-closed on any mismatch.
-//!
-//! # Pluggable signer (unblocked from dig-tls #1422)
-//!
-//! Signing is abstracted behind [`HoldingsSigner`] so this wire does not block on the
-//! holder-TLS-key export hook (#1422). The v1 pinned signature scheme is BLS-G1 (the
-//! node's non-fund-moving identity key — the same primitive `store_melted` uses),
-//! provided by [`BlsHoldingsSigner`] / [`BlsHoldingsVerifier`]; the eventual TLS-key
-//! signer plugs in via the same trait without any wire change. `provider_pubkey` is the
-//! signer's published key material and `provider_peer_id == hex(SHA-256(provider_pubkey))`
-//! regardless of key type.
+//! therefore checks the cert→peer_id binding, the cert's BLS binding, the signature over
+//! the exact digest, and the change-count cap — fail-closed on any mismatch.
 
 use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes};
-use dig_tls::bls::{public_key_bytes, sign_message, verify_signature, SecretKey};
+use dig_tls::binding::{verify_binding_from_leaf_cert, BindingOutcome};
+use dig_tls::bls::{sign_message, verify_signature, SecretKey};
+use dig_tls::peer_id_from_leaf_cert_der;
 use sha2::{Digest, Sha256};
 
 /// Wire opcode for a `holdings-announce` broadcast.
@@ -111,22 +119,30 @@ pub enum HoldingsDelta {
 /// A signed, batched announcement of the content a provider holds.
 ///
 /// Flooded to all peers; each receiver MUST [`verify_holdings_announce`] before feeding
-/// the deltas into its DHT holder set. See the module docs for the §5.4 exemption and the
-/// signature's role as the DHT-poisoning gate.
+/// the deltas into its DHT holder set. See the module docs for the inline leaf-cert model,
+/// the §5.4 exemption, and the signature's role as the DHT-poisoning gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoldingsAnnounce {
-    /// The provider's `peer_id` as 64 lowercase hex chars (`SHA-256(provider_pubkey)`).
+    /// The provider's `peer_id` as 64 lowercase hex chars.
+    ///
+    /// Its value equals `SHA-256(SPKI DER of provider_cert)` (the §5.2 peer_id). It is
+    /// VERIFIED against [`provider_cert`](Self::provider_cert) on the receive path, never
+    /// trusted — see [`verify_holdings_announce`].
     pub provider_peer_id: String,
-    /// The provider's published key material (holder TLS SPKI DER, or the v1 BLS-G1
-    /// identity key). Invariant: `SHA-256(provider_pubkey) == provider_peer_id` (32 bytes).
-    pub provider_pubkey: Vec<u8>,
+    /// The provider's FULL mTLS leaf certificate DER.
+    ///
+    /// Carries the SPKI (→ [`provider_peer_id`](Self::provider_peer_id)) and the #1204
+    /// BLS-G1 binding extension (OID `1.3.6.1.4.1.58968.1.1`). The BLS verify key is NOT a
+    /// separate wire field — it is obtained from this cert's binding. A leaf cert is
+    /// ~600-900 bytes, far under the 64 KiB length-prefix limit.
+    pub provider_cert: Vec<u8>,
     /// Monotonic sequence number — a later announcement supersedes an earlier one.
     pub seq: u64,
     /// Unix-seconds timestamp the announcement was produced.
     pub announced_at: u64,
     /// The batch of add/remove deltas (at most [`MAX_CHANGES`]).
     pub changes: Vec<HoldingsDelta>,
-    /// The provider's signature over [`digest`](Self::digest).
+    /// The provider's 96-byte BLS-G2 AugScheme signature over [`digest`](Self::digest).
     pub signature: Vec<u8>,
 }
 
@@ -141,8 +157,14 @@ pub enum HoldingsError {
     },
     /// `provider_peer_id` was not 64 lowercase hex characters.
     BadPeerIdHex,
-    /// `SHA-256(provider_pubkey)` did not equal `provider_peer_id`.
+    /// `provider_cert` could not be parsed as an X.509 leaf, so no peer_id was derivable.
+    BadCert,
+    /// `SHA-256(SPKI of provider_cert)` did not equal `provider_peer_id`.
     PeerIdMismatch,
+    /// `provider_cert` carries no #1204 BLS-G1 binding extension (required here).
+    BindingAbsent,
+    /// `provider_cert`'s binding extension is present but did not verify.
+    BindingInvalid(&'static str),
     /// The signature did not verify over the digest (or was malformed).
     InvalidSignature,
 }
@@ -157,7 +179,16 @@ impl std::fmt::Display for HoldingsError {
                 )
             }
             Self::BadPeerIdHex => write!(f, "provider_peer_id is not 64 hex chars"),
-            Self::PeerIdMismatch => write!(f, "SHA-256(provider_pubkey) != provider_peer_id"),
+            Self::BadCert => write!(f, "provider_cert is not a parseable X.509 leaf"),
+            Self::PeerIdMismatch => {
+                write!(f, "SHA-256(SPKI of provider_cert) != provider_peer_id")
+            }
+            Self::BindingAbsent => {
+                write!(f, "provider_cert carries no BLS-G1 binding extension")
+            }
+            Self::BindingInvalid(reason) => {
+                write!(f, "provider_cert BLS-G1 binding is invalid: {reason}")
+            }
             Self::InvalidSignature => write!(f, "holdings announce signature did not verify"),
         }
     }
@@ -165,69 +196,48 @@ impl std::fmt::Display for HoldingsError {
 
 impl std::error::Error for HoldingsError {}
 
-/// Signs a `holdings-announce` digest with a provider identity key.
+/// Supplies the provider's leaf cert and BLS signature to [`HoldingsAnnounce::new_signed`].
 ///
-/// Abstracted so the wire does not depend on the dig-tls holder-key export hook (#1422):
-/// the v1 scheme is [`BlsHoldingsSigner`] today; a TLS-key signer plugs in later via this
-/// same trait. [`public_key`](Self::public_key) returns the material carried in
-/// [`HoldingsAnnounce::provider_pubkey`], whose SHA-256 is the `provider_peer_id`.
+/// The signing key source is fixed by the wire (the leaf cert's #1204 binding), so this
+/// trait exposes the cert and a raw signer rather than a pluggable scheme. The v1 concrete
+/// implementation is [`BlsHoldingsSigner`]; dig-node (#1429) constructs one from its
+/// `NodeCert` + node BLS secret key.
 pub trait HoldingsSigner {
-    /// Sign the 32-byte announcement digest, returning the raw signature bytes.
+    /// Sign the 32-byte announcement digest, returning the 96-byte BLS-G2 AugScheme sig.
     fn sign(&self, digest: &[u8; 32]) -> Vec<u8>;
-    /// The signer's published public key material.
-    fn public_key(&self) -> Vec<u8>;
+    /// The provider's bound mTLS leaf certificate DER (carried as `provider_cert`).
+    fn leaf_cert_der(&self) -> Vec<u8>;
 }
 
-/// Verifies a `holdings-announce` signature. The companion of [`HoldingsSigner`]; the
-/// scheme MUST match the signer that produced the signature.
-pub trait HoldingsVerifier {
-    /// Return `true` iff `signature` is a valid signature by `public_key` over `digest`.
-    /// MUST be fail-closed: any malformed key/signature returns `false`, never panics.
-    fn verify(&self, public_key: &[u8], digest: &[u8; 32], signature: &[u8]) -> bool;
-}
-
-/// The v1 pinned signer: a BLS-G1 identity key (the node's non-fund-moving key).
+/// The v1 signer: a BLS-G1 identity key paired with its bound mTLS leaf certificate.
 ///
-/// Produces a 96-byte AugScheme signature and publishes the 48-byte compressed G1 key as
-/// `provider_pubkey`. Uses the crate's existing `dig_tls::bls` primitive; no new
-/// cryptography is introduced.
+/// Produces a 96-byte AugScheme signature under `bls_sk` and carries `cert_der`, whose
+/// #1204 binding extension binds the cert's peer_id to `bls_sk`'s public key. Uses the
+/// crate's existing `dig_tls::bls` primitive; no new cryptography is introduced.
 pub struct BlsHoldingsSigner {
-    sk: SecretKey,
+    bls_sk: SecretKey,
+    cert_der: Vec<u8>,
 }
 
 impl BlsHoldingsSigner {
-    /// Wrap a BLS secret key as a holdings signer.
+    /// Wrap a BLS secret key and its bound leaf certificate DER as a holdings signer.
+    ///
+    /// `cert_der`'s #1204 binding MUST be for `bls_sk` (i.e. the cert was generated via
+    /// [`NodeCert::generate_signed`](dig_tls::NodeCert::generate_signed)`(&bls_sk)`), or the
+    /// resulting announcement will fail [`verify_holdings_announce`].
     #[must_use]
-    pub fn new(sk: SecretKey) -> Self {
-        Self { sk }
+    pub fn new(bls_sk: SecretKey, cert_der: Vec<u8>) -> Self {
+        Self { bls_sk, cert_der }
     }
 }
 
 impl HoldingsSigner for BlsHoldingsSigner {
     fn sign(&self, digest: &[u8; 32]) -> Vec<u8> {
-        sign_message(&self.sk, digest).to_vec()
+        sign_message(&self.bls_sk, digest).to_vec()
     }
 
-    fn public_key(&self) -> Vec<u8> {
-        public_key_bytes(&self.sk).to_vec()
-    }
-}
-
-/// The v1 pinned verifier: BLS-G1 AugScheme (companion of [`BlsHoldingsSigner`]).
-///
-/// The default verifier used by [`verify_holdings_announce`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BlsHoldingsVerifier;
-
-impl HoldingsVerifier for BlsHoldingsVerifier {
-    fn verify(&self, public_key: &[u8], digest: &[u8; 32], signature: &[u8]) -> bool {
-        let Ok(pk) = <[u8; 48]>::try_from(public_key) else {
-            return false;
-        };
-        let Ok(sig) = <[u8; 96]>::try_from(signature) else {
-            return false;
-        };
-        verify_signature(&pk, digest, &sig)
+    fn leaf_cert_der(&self) -> Vec<u8> {
+        self.cert_der.clone()
     }
 }
 
@@ -277,7 +287,8 @@ pub fn canonical_encode(changes: &[HoldingsDelta]) -> Vec<u8> {
 /// The 32-byte digest a `holdings-announce` signature is computed over.
 ///
 /// `SHA-256( SIG_DOMAIN_TAG ‖ provider_peer_id(32B) ‖ seq_be ‖ announced_at_be ‖ canonical_encode(changes) )`,
-/// all `u64`s big-endian. Both signer and verifier derive it identically so the signature
+/// all `u64`s big-endian. The `provider_peer_id` here is the raw 32-byte peer id
+/// (`SHA-256(SPKI DER)`). Both signer and verifier derive it identically so the signature
 /// binds the peer id, sequence, timestamp, and every delta (including Add addresses).
 #[must_use]
 pub fn digest(
@@ -312,13 +323,14 @@ fn decode_peer_id(hex_id: &str) -> Result<[u8; 32], HoldingsError> {
 impl HoldingsAnnounce {
     /// Build a signed announcement from a batch of changes.
     ///
-    /// Derives `provider_pubkey` and `provider_peer_id` from `signer`, computes the digest
-    /// over `(peer_id, seq, announced_at, changes)`, and signs it.
+    /// Takes the leaf cert from `signer`, derives `provider_peer_id` from its SPKI, computes
+    /// the digest over `(peer_id, seq, announced_at, changes)`, and signs it.
     ///
     /// # Errors
     ///
-    /// [`HoldingsError::TooManyChanges`] if `changes.len() > `[`MAX_CHANGES`] — the batch
-    /// is refused rather than truncated, so a caller cannot silently drop deltas.
+    /// - [`HoldingsError::TooManyChanges`] if `changes.len() > `[`MAX_CHANGES`] — the batch
+    ///   is refused rather than truncated, so a caller cannot silently drop deltas.
+    /// - [`HoldingsError::BadCert`] if the signer's leaf cert DER is not parseable as X.509.
     pub fn new_signed<S: HoldingsSigner + ?Sized>(
         signer: &S,
         seq: u64,
@@ -330,12 +342,13 @@ impl HoldingsAnnounce {
                 count: changes.len(),
             });
         }
-        let provider_pubkey = signer.public_key();
-        let peer_id: [u8; 32] = Sha256::digest(&provider_pubkey).into();
-        let signature = signer.sign(&digest(&peer_id, seq, announced_at, &changes));
+        let provider_cert = signer.leaf_cert_der();
+        let peer_id = peer_id_from_leaf_cert_der(&provider_cert).ok_or(HoldingsError::BadCert)?;
+        let peer_id_bytes = *peer_id.as_bytes();
+        let signature = signer.sign(&digest(&peer_id_bytes, seq, announced_at, &changes));
         Ok(Self {
-            provider_peer_id: peer_id_hex(&peer_id),
-            provider_pubkey,
+            provider_peer_id: peer_id_hex(&peer_id_bytes),
+            provider_cert,
             seq,
             announced_at,
             changes,
@@ -354,51 +367,60 @@ impl HoldingsAnnounce {
     }
 }
 
-/// Verify an announcement with the default v1 verifier ([`BlsHoldingsVerifier`]).
+/// Verify an announcement, fail-closed — the gate dig-node calls before dig-dht ingest.
 ///
-/// The gate dig-node calls before dig-dht ingest. Checks, fail-closed: (1) the change
-/// count is `<= `[`MAX_CHANGES`], (2) `SHA-256(provider_pubkey) == provider_peer_id`, and
-/// (3) the signature verifies over [`digest`](HoldingsAnnounce::digest). Any mismatch
-/// returns `Err` and the deltas MUST NOT be ingested.
+/// The six checks, in order (the first failure is returned):
+/// 1. `changes.len() <= `[`MAX_CHANGES`] — else [`HoldingsError::TooManyChanges`].
+/// 2. `provider_peer_id` decodes as 64-hex → `[u8; 32]` — else [`HoldingsError::BadPeerIdHex`].
+/// 3. `peer_id_from_leaf_cert_der(provider_cert)` succeeds ([`HoldingsError::BadCert`] else)
+///    AND equals the carried peer id ([`HoldingsError::PeerIdMismatch`] else) — the peer id
+///    is verified against the cert SPKI, never trusted.
+/// 4. the cert's #1204 BLS-G1 binding is [`Bound`](BindingOutcome::Bound)
+///    ([`HoldingsError::BindingAbsent`] / [`HoldingsError::BindingInvalid`] otherwise) — the
+///    binding is MANDATORY (the signature key comes from it).
+/// 5. the 96-byte signature verifies over [`digest`](HoldingsAnnounce::digest) under the
+///    bound key — else [`HoldingsError::InvalidSignature`].
+/// 6. `Ok(())`.
+///
+/// Any `Err` means the deltas MUST NOT be ingested.
 ///
 /// # Errors
 ///
 /// [`HoldingsError`] describing the first failing check.
 pub fn verify_holdings_announce(announce: &HoldingsAnnounce) -> Result<(), HoldingsError> {
-    verify_holdings_announce_with(announce, &BlsHoldingsVerifier)
-}
-
-/// Verify an announcement with an explicit [`HoldingsVerifier`] (pluggable scheme).
-///
-/// Same checks and fail-closed contract as [`verify_holdings_announce`]; used when the
-/// signature scheme is not the v1 BLS default (e.g. a future holder-TLS-key signer).
-///
-/// # Errors
-///
-/// [`HoldingsError`] describing the first failing check.
-pub fn verify_holdings_announce_with<V: HoldingsVerifier + ?Sized>(
-    announce: &HoldingsAnnounce,
-    verifier: &V,
-) -> Result<(), HoldingsError> {
+    // 1. change-count cap.
     if announce.changes.len() > MAX_CHANGES {
         return Err(HoldingsError::TooManyChanges {
             count: announce.changes.len(),
         });
     }
+    // 2. peer_id hex → 32 bytes.
     let peer_id = decode_peer_id(&announce.provider_peer_id)?;
-    let derived: [u8; 32] = Sha256::digest(&announce.provider_pubkey).into();
-    if derived != peer_id {
+    // 3. cert → peer_id, VERIFIED against the carried value.
+    let cert_peer_id =
+        peer_id_from_leaf_cert_der(&announce.provider_cert).ok_or(HoldingsError::BadCert)?;
+    if cert_peer_id.as_bytes() != &peer_id {
         return Err(HoldingsError::PeerIdMismatch);
     }
+    // 4. mandatory #1204 BLS-G1 binding — the signature key source.
+    let bls_pub = match verify_binding_from_leaf_cert(&announce.provider_cert) {
+        BindingOutcome::Bound { bls_pub } => bls_pub,
+        BindingOutcome::Absent => return Err(HoldingsError::BindingAbsent),
+        BindingOutcome::Invalid(reason) => return Err(HoldingsError::BindingInvalid(reason)),
+    };
+    // 5. signature over the digest under the bound key.
+    let sig96 = <[u8; 96]>::try_from(announce.signature.as_slice())
+        .map_err(|_| HoldingsError::InvalidSignature)?;
     let digest = digest(
         &peer_id,
         announce.seq,
         announce.announced_at,
         &announce.changes,
     );
-    if !verifier.verify(&announce.provider_pubkey, &digest, &announce.signature) {
+    if !verify_signature(&bls_pub, &digest, &sig96) {
         return Err(HoldingsError::InvalidSignature);
     }
+    // 6. all checks passed.
     Ok(())
 }
 
@@ -445,7 +467,7 @@ fn take_32(bytes: &[u8], pos: &mut usize) -> Option<[u8; 32]> {
 impl HoldingsAnnounce {
     /// Encode to the variable-length wire bytes.
     ///
-    /// Layout, all integers big-endian: `peer_id(len-prefixed) ‖ pubkey(len-prefixed) ‖
+    /// Layout, all integers big-endian: `peer_id(len-prefixed) ‖ cert(len-prefixed) ‖
     /// seq(u64) ‖ announced_at(u64) ‖ change_count(u16) ‖ canonical_encode(changes) ‖
     /// signature(len-prefixed)`. The changes are encoded identically to
     /// [`canonical_encode`] so the signed bytes and the wire bytes never diverge.
@@ -453,7 +475,7 @@ impl HoldingsAnnounce {
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_bytes(&mut buf, self.provider_peer_id.as_bytes());
-        put_bytes(&mut buf, &self.provider_pubkey);
+        put_bytes(&mut buf, &self.provider_cert);
         buf.extend_from_slice(&self.seq.to_be_bytes());
         buf.extend_from_slice(&self.announced_at.to_be_bytes());
         buf.extend_from_slice(&(self.changes.len() as u16).to_be_bytes());
@@ -470,7 +492,7 @@ impl HoldingsAnnounce {
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let mut pos = 0usize;
         let provider_peer_id = String::from_utf8(take_bytes(bytes, &mut pos)?.to_vec()).ok()?;
-        let provider_pubkey = take_bytes(bytes, &mut pos)?.to_vec();
+        let provider_cert = take_bytes(bytes, &mut pos)?.to_vec();
         let seq = take_u64(bytes, &mut pos)?;
         let announced_at = take_u64(bytes, &mut pos)?;
         let change_count = take_u16(bytes, &mut pos)? as usize;
@@ -487,7 +509,7 @@ impl HoldingsAnnounce {
         }
         Some(Self {
             provider_peer_id,
-            provider_pubkey,
+            provider_cert,
             seq,
             announced_at,
             changes,
@@ -557,13 +579,23 @@ pub fn frame_holdings_announce(announce: &HoldingsAnnounce) -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dig_tls::NodeCert;
 
-    /// A deterministic test identity key derived from a label — never a hard-coded
-    /// literal, so a second implementation reproduces the same vector and CodeQL does not
-    /// flag a hard-coded cryptographic value (see #917/#950).
-    fn signer(label: &str) -> BlsHoldingsSigner {
+    /// A deterministic BLS identity key derived from a label — never a hard-coded literal,
+    /// so a second implementation reproduces the same vector and CodeQL does not flag a
+    /// hard-coded cryptographic value (see #917/#950).
+    fn bls_sk(label: &str) -> SecretKey {
         let seed: [u8; 32] = Sha256::digest(label.as_bytes()).into();
-        BlsHoldingsSigner::new(SecretKey::from_seed(&seed))
+        SecretKey::from_seed(&seed)
+    }
+
+    /// A deterministic bound signer: a fresh CA-signed leaf whose #1204 binding is for the
+    /// derived key. The leaf DER is NOT byte-stable across runs (fresh serial/validity), so
+    /// only behavioural (not hex-pinned) assertions use it.
+    fn signer(label: &str) -> BlsHoldingsSigner {
+        let sk = bls_sk(label);
+        let node = NodeCert::generate_signed(&sk).expect("generate bound leaf");
+        BlsHoldingsSigner::new(sk, node.cert_der().to_vec())
     }
 
     /// A deterministic 32-byte content key derived from a label.
@@ -611,10 +643,17 @@ mod tests {
     }
 
     #[test]
-    fn peer_id_binds_to_pubkey() {
-        let a = sample();
-        let derived: [u8; 32] = Sha256::digest(&a.provider_pubkey).into();
-        assert_eq!(a.provider_peer_id, hex::encode(derived));
+    fn peer_id_binds_to_cert_spki() {
+        let sk = bls_sk("holdings/provider2");
+        let node = NodeCert::generate_signed(&sk).expect("leaf");
+        let a = HoldingsAnnounce::new_signed(
+            &BlsHoldingsSigner::new(sk, node.cert_der().to_vec()),
+            1,
+            2,
+            sample_changes(),
+        )
+        .expect("within cap");
+        assert_eq!(a.provider_peer_id, node.peer_id().to_hex());
         assert_eq!(a.provider_peer_id.len(), 64);
     }
 
@@ -643,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_bad_signature() {
+    fn verify_rejects_forged_signature() {
         let mut a = sample();
         a.signature = vec![0xFF; 96];
         assert_eq!(
@@ -653,14 +692,48 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_peer_id_not_hash_of_pubkey() {
+    fn verify_rejects_wrong_peer_id() {
         let mut a = sample();
-        // A different (valid) pubkey whose hash no longer matches provider_peer_id.
-        a.provider_pubkey = signer("holdings/other").public_key();
+        // A different (valid 64-hex) peer id that no longer matches the cert SPKI.
+        a.provider_peer_id = hex::encode([0xAB; 32]);
         assert_eq!(
             verify_holdings_announce(&a),
             Err(HoldingsError::PeerIdMismatch)
         );
+    }
+
+    #[test]
+    fn verify_rejects_binding_absent() {
+        // A plain self-signed leaf with NO #1204 binding extension.
+        let cert = rcgen::generate_simple_self_signed(vec!["peer.dig".to_string()])
+            .expect("self-signed")
+            .cert
+            .der()
+            .to_vec();
+        // Sign with a key + point provider_peer_id at THIS cert's SPKI so we reach the
+        // binding check (not PeerIdMismatch first).
+        let peer_id = peer_id_from_leaf_cert_der(&cert).expect("parseable leaf");
+        let sk = bls_sk("holdings/nobinding");
+        let dig = digest(peer_id.as_bytes(), 1, 2, &sample_changes());
+        let a = HoldingsAnnounce {
+            provider_peer_id: peer_id.to_hex(),
+            provider_cert: cert,
+            seq: 1,
+            announced_at: 2,
+            changes: sample_changes(),
+            signature: sign_message(&sk, &dig).to_vec(),
+        };
+        assert_eq!(
+            verify_holdings_announce(&a),
+            Err(HoldingsError::BindingAbsent)
+        );
+    }
+
+    #[test]
+    fn verify_rejects_unparseable_cert() {
+        let mut a = sample();
+        a.provider_cert = vec![1, 2, 3];
+        assert_eq!(verify_holdings_announce(&a), Err(HoldingsError::BadCert));
     }
 
     #[test]
@@ -676,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_tampered_change() {
+    fn verify_rejects_tampered_expires() {
         let mut a = sample();
         if let HoldingsDelta::Add { expires_at, .. } = &mut a.changes[0] {
             *expires_at += 1;
@@ -790,16 +863,17 @@ mod tests {
 
     // ---- KAT golden vectors (CI-fail-on-drift) --------------------------------
     //
-    // Fixed inputs → fixed digest + fixed signature under the deterministic test key
-    // `signer("kat/holder")`. Pinned on first run; any digest/encoding/scheme drift in
-    // this cross-repo wire+crypto contract FAILS the build. To regenerate intentionally
-    // (a deliberate v2), print the hex below and update both constants in the same commit.
+    // Cert-INDEPENDENT vectors: a leaf cert DER is not byte-stable across runs, so we pin
+    // the digest + BLS signature (which depend only on a fixed literal peer_id + fixed
+    // changes + a deterministic key) rather than any full-announce bytes. Any drift in the
+    // domain tag, canonical_encode byte layout, or BLS scheme FAILS the build. To regenerate
+    // intentionally (a deliberate v2), print the hex below and update the constant.
 
-    /// Deterministic KAT inputs: one Add (two addresses) + one Remove, fixed seq/time.
-    fn kat_announce() -> HoldingsAnnounce {
-        let changes = vec![
+    /// Deterministic KAT changes: one Add (one address) + one Remove, fixed content/expiry.
+    fn kat_changes() -> Vec<HoldingsDelta> {
+        vec![
             HoldingsDelta::Add {
-                content_key: [0x11; 32],
+                content_key: [0x33; 32],
                 addresses: vec![CandidateAddr {
                     host: "2001:db8::dig".to_string(),
                     port: 9256,
@@ -807,31 +881,43 @@ mod tests {
                 expires_at: 0x0000_0000_5000_0000,
             },
             HoldingsDelta::Remove {
-                content_key: [0x22; 32],
+                content_key: [0x44; 32],
             },
-        ];
-        HoldingsAnnounce::new_signed(&signer("kat/holder"), 0x0102_0304, 0x0A0B_0C0D, changes)
-            .expect("within cap")
+        ]
     }
+
+    const KAT_SEQ: u64 = 0x0102_0304;
+    const KAT_ANNOUNCED_AT: u64 = 0x0A0B_0C0D;
+    /// A fixed, PUBLIC peer id literal — an identifier, NOT a secret (CodeQL-safe).
+    const KAT_PEER_ID: [u8; 32] = [0x11; 32];
 
     #[test]
     fn kat_digest_is_pinned() {
-        let a = kat_announce();
-        // Pinned digest — recompute-and-compare guards the domain tag + byte layout.
+        // Recompute-and-compare guards the domain tag + canonical_encode + digest layout.
         const KAT_DIGEST_HEX: &str =
-            "89858fb24c708510786cf43308387d467dcd537c9373f7529a014c97f259180c";
-        let got = hex::encode(a.digest().expect("hex peer id"));
-        assert_eq!(got, KAT_DIGEST_HEX);
+            "c129496af9ec982d11b366901f4fc64f1bfac2991295dbb69f18edbd18bb8164";
+        let got = hex::encode(digest(
+            &KAT_PEER_ID,
+            KAT_SEQ,
+            KAT_ANNOUNCED_AT,
+            &kat_changes(),
+        ));
+        assert_eq!(got, KAT_DIGEST_HEX, "KAT_DIGEST_HEX drift: got {got}");
     }
 
     #[test]
-    fn kat_signature_verifies_and_is_pinned() {
-        let a = kat_announce();
-        // The KAT must verify under the v1 BLS scheme.
-        assert_eq!(verify_holdings_announce(&a), Ok(()));
-        // Pinned signature (deterministic BLS AugScheme over the pinned digest).
-        const KAT_SIG_HEX: &str = "a8aa90c16b6e55c9359ccab1b9201d9c1d75714e65ec32ee432a588b75b1694ea81328056c7aad7762a84c835347433c12dc33705baf52733f46ae5ba839edc355ba6985b963d4f1cd392d5732eeb97112614aff5e28cdb570fd596c81743f20";
-        let got = hex::encode(&a.signature);
-        assert_eq!(got, KAT_SIG_HEX);
+    fn kat_bls_signature_is_pinned() {
+        let dig = digest(&KAT_PEER_ID, KAT_SEQ, KAT_ANNOUNCED_AT, &kat_changes());
+        let sk = bls_sk("kat/holder");
+        let sig = sign_message(&sk, &dig);
+        let pubkey = dig_tls::bls::public_key_bytes(&sk);
+        // Cert-independent: signs the pinned digest under a deterministic key.
+        const KAT_SIG_HEX: &str = "83c932836ebf9d2acbdf9833f8efec711df8e99a2208fb5eef3b8a02b75f8e3fd08a72a8501a21ab1716f0662f1e14fc0e9378e77eb88a3b8ff939295f73fab4452c364fa6e4fb96a2a1db30d7b366fb390eecb6917b2ee7584df20b37063483";
+        let got = hex::encode(sig);
+        assert!(
+            verify_signature(&pubkey, &dig, &sig),
+            "KAT signature must verify under its own key"
+        );
+        assert_eq!(got, KAT_SIG_HEX, "KAT_SIG_HEX drift: got {got}");
     }
 }

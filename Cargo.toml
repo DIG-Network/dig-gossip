@@ -57,12 +57,15 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # removed. `0.8` (#1385) is additive too — it adds §5.2 STUN happy-eyeballs reflexive discovery on top
 # of the same L7 `connect()` ladder / `PeerConnection` / relay-client / streaming control surface, so
 # this is a mechanical re-pin (no API removed).
-dig-nat = "0.8"
+# `0.10` (#1428) re-pins dig-tls ^0.3 so exactly ONE dig-tls resolves across the peer stack (no
+# two-version clash on the re-exported NodeCert/PeerId), and carries the inline leaf-cert holdings
+# wire's cert/binding surface (`peer_id_from_leaf_cert_der`, `binding::verify_binding_from_leaf_cert`).
+dig-nat = "0.10"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
 # reference-DOWN edge; consumed from crates.io (no git dep).
-dig-tls = "0.1"
+dig-tls = "0.3"
 # Canonical relay endpoint (`DIG_RELAY_URL`) — consumed from crates.io (#1214). The `>=0.2, <0.5` req
 # matches dig-nat 0.5's own dig-constants req, so both resolve to ONE crates.io `dig-constants` (0.4.x)
 # and stay in lockstep. `<0.5` guards a future breaking 0.5.
