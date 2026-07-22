@@ -1456,6 +1456,7 @@ dependencies = [
  "native-tls",
  "rand 0.8.6",
  "rcgen",
+ "ring",
  "rustls",
  "rustls-pemfile",
  "serde",

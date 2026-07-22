@@ -110,10 +110,11 @@ pub use service::dig_message::{
 pub use service::gossip_handle::GossipHandle;
 pub use service::gossip_service::GossipService;
 pub use service::holdings_announce::{
-    canonical_encode as holdings_canonical_encode, digest as holdings_digest,
-    frame_holdings_announce, holdings_announce_payload, is_holdings_announce,
-    verify_holdings_announce, BlsHoldingsSigner, CandidateAddr, HoldingsAnnounce, HoldingsDelta,
-    HoldingsError, HoldingsSigner, HOLDINGS_ANNOUNCE, MAX_CHANGES as HOLDINGS_MAX_CHANGES,
+    canonical_encode as holdings_canonical_encode, frame_holdings_announce,
+    holdings_announce_payload, holdings_signing_message, is_holdings_announce,
+    signing_message_digest as holdings_signing_message_digest, verify_holdings_announce,
+    CandidateAddr, EcdsaHoldingsSigner, HoldingsAnnounce, HoldingsDelta, HoldingsError,
+    HoldingsSigner, HOLDINGS_ANNOUNCE, MAX_CHANGES as HOLDINGS_MAX_CHANGES,
     SIG_DOMAIN_TAG as HOLDINGS_SIG_DOMAIN_TAG,
 };
 pub use service::store_melted::{

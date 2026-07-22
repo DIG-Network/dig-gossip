@@ -58,8 +58,7 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # of the same L7 `connect()` ladder / `PeerConnection` / relay-client / streaming control surface, so
 # this is a mechanical re-pin (no API removed).
 # `0.10` (#1428) re-pins dig-tls ^0.3 so exactly ONE dig-tls resolves across the peer stack (no
-# two-version clash on the re-exported NodeCert/PeerId), and carries the inline leaf-cert holdings
-# wire's cert/binding surface (`peer_id_from_leaf_cert_der`, `binding::verify_binding_from_leaf_cert`).
+# two-version clash on the re-exported NodeCert/PeerId).
 dig-nat = "0.10"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
@@ -88,7 +87,14 @@ sha2 = "0.10"
 # HOL-001 (#1428): hex-encode/decode the 64-char `provider_peer_id` in a `HoldingsAnnounce`.
 hex = "0.4"
 # Parse peer X.509 after outbound TLS (CON-001) — extract SPKI DER for [`peer_id_from_tls_spki_der`].
+# Also parses the `provider_spki` SubjectPublicKeyInfo in a HoldingsAnnounce (#1428) to recover the
+# P-256 EC point + confirm the id-ecPublicKey/prime256v1 algorithm before the ECDSA verify.
 x509-parser = "0.16"
+# HOL-001 (#1428): ECDSA-P256 sign/verify for the holdings-announce leaf-key signature. The provider
+# signs the `dig:holdings:v1` message with its TLS leaf key (whose SPKI == `provider_spki`, whose hash
+# == the peer_id), so only the leaf-key holder can produce a valid announce — sound standalone with no
+# handshake/PoP. Pinned to the version already resolved transitively in Cargo.lock.
+ring = "0.17"
 # CON-002 dual-stack bind: clear `IPV6_V6ONLY` on the `[::]` listening socket before `listen()` so
 # IPv4-mapped connections are accepted alongside native IPv6 on the SAME socket (IPv6-first /
 # IPv4-fallback hard rule). `tokio::net::TcpSocket` has no `set_only_v6`, so we build the raw
