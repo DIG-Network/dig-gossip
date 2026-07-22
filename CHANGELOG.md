@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.13.0] - 2026-07-22
+
+### Bug Fixes
+- **dig-gossip:** Pool auto-dial pins discovered peer_id + tries the relay circuit (#1517) (#20)
+
 ## [0.12.0] - 2026-07-22
 
 ### Features
