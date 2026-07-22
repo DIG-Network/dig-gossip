@@ -154,7 +154,9 @@ async fn pool_dial_runtime_wires_the_relay_circuit_only_when_a_reservation_is_at
     let runtime = handle.__pool_dial_runtime_for_tests();
     let err = nat_connect_with_runtime(&target, &identity, &relayed_only, &runtime)
         .await
-        .expect_err("no live relay is running, so the composed Relayed tier still fails to connect");
+        .expect_err(
+            "no live relay is running, so the composed Relayed tier still fails to connect",
+        );
     assert!(
         !matches!(err, NatError::NoMethodsEnabled),
         "with a relay reservation attached the pool runtime MUST compose + ATTEMPT the Relayed tier \
