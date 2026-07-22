@@ -244,6 +244,25 @@ pub(crate) fn normalize_peer_id_hex(id: &str) -> String {
     id.strip_prefix("0x").unwrap_or(id).to_ascii_lowercase()
 }
 
+/// Parse a 64-hex `peer_id` (optional `0x` prefix, any case) into a [`PeerId`] (#1517), or `None`
+/// when it is not exactly 32 bytes of valid hex. Used to thread a relay-discovered id into the pool
+/// auto-dial SPKI pin — a malformed id is dropped (the candidate stays address-only) rather than
+/// pinned to a wrong value.
+pub(crate) fn peer_id_from_hex(id: &str) -> Option<PeerId> {
+    let s = id.strip_prefix("0x").unwrap_or(id);
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = [0u8; 32];
+    for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+        let hi = (chunk[0] as char).to_digit(16)?;
+        let lo = (chunk[1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    Some(PeerId::from(out))
+}
+
 /// A slot in the peer map: a lightweight **test-only stub**, a **real** TLS peer, or a
 /// **`dig-nat`-dialed pool member** (POOL-*).
 ///
@@ -510,6 +529,17 @@ pub struct ServiceState {
     /// fold is a testable seam and the count is stable between passes; replaced wholesale each pass
     /// so a relay `PeerDisconnected` (already reflected by dig-nat) drops the peer here too.
     pub(crate) relay_reachable: Mutex<std::collections::HashSet<String>>,
+
+    /// **#1517** — address → verified `peer_id` for peers discovered WITH an identity. The relay
+    /// introducer / `dig-nat` reservation resolves a peer's reflexive candidate ADDRESS and its
+    /// `peer_id` together (RLY-005), but the Chia address book stores only `host:port` (node
+    /// peer-exchange never carries an id), so the discovered id would otherwise be DROPPED and the
+    /// pool would dial with an all-zeros pin the mTLS verifier (correctly) rejects. This side map lets
+    /// the pool auto-dialer PIN the SPKI to the discovered id. Populated by
+    /// [`GossipHandle::fold_relay_known_peers`](super::gossip_handle::GossipHandle::fold_relay_known_peers);
+    /// read when gathering pool candidates. Best-effort — an address with no recorded id yields an
+    /// address-only candidate.
+    pub(crate) discovered_peer_ids: Mutex<HashMap<SocketAddr, PeerId>>,
 }
 
 /// Derive a deterministic [`PeerId`] from a [`SocketAddr`].
@@ -594,6 +624,7 @@ impl ServiceState {
             inflight_handshakes,
             relay_status: Mutex::new(None),
             relay_reachable: Mutex::new(std::collections::HashSet::new()),
+            discovered_peer_ids: Mutex::new(HashMap::new()),
         })
     }
 
@@ -652,6 +683,23 @@ impl ServiceState {
     /// is poisoned (a degraded read is safer than a panic in the pool loop).
     pub(crate) fn relay_reachable_count(&self) -> usize {
         self.relay_reachable.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// **#1517** — record the verified `peer_id` discovery resolved for `addr`, so the pool
+    /// auto-dialer pins the mTLS SPKI to it instead of the all-zeros pin the verifier rejects. A
+    /// poisoned lock is a silent no-op (the candidate simply stays address-only).
+    pub(crate) fn record_discovered_peer_id(&self, addr: SocketAddr, peer_id: PeerId) {
+        if let Ok(mut m) = self.discovered_peer_ids.lock() {
+            m.insert(addr, peer_id);
+        }
+    }
+
+    /// **#1517** — the verified `peer_id` discovery resolved for `addr`, if any.
+    pub(crate) fn discovered_peer_id(&self, addr: &SocketAddr) -> Option<PeerId> {
+        self.discovered_peer_ids
+            .lock()
+            .ok()
+            .and_then(|m| m.get(addr).copied())
     }
 
     /// **RLY-* / #870 (finding 1)** — the number of relay-reachable peers that are NOT already in the

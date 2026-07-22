@@ -2,6 +2,36 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## Pool auto-dial dropped the discovered `peer_id` and never tried the relay circuit (#1517)
+
+- **The two #1062 Leg-B blockers after #1422's SPKI dialer landed both lived HERE, in dig-gossip's
+  pool auto-dial — NOT in dig-nat or dig-node.** dig-nat's `PeerTarget`/strategy API already accepts a
+  pin and ranks the relay tier last; dig-node's DHT path threads `peer_id` correctly. The auto-dial
+  that fed the pool (`HandleDialer` in `gossip_handle.rs`) was the drop point.
+- **Defect 1 — all-zeros SPKI pin.** The relay introducer / dig-nat reservation resolves a peer's
+  reflexive candidate ADDRESS *and* its `peer_id` together (RLY-005), and the `Via::Direct` fold
+  (#924 B1) placed the address in the Chia address book. But the address book stores ONLY `host:port`
+  (`TimestampedPeerInfo` has no id — node peer-exchange never carries one), so `gather_pool_candidates`
+  rebuilt every candidate with `PoolCandidate::from_addr` → `peer_id: None`, and `HandleDialer` dialed
+  with `PeerId::from([0u8; 32])`. The (now-working, #1422) mTLS verifier correctly rejected
+  `expected 0000… got <real>`. **Fix:** a side map (address → `peer_id`) folded alongside the dialable
+  record in `fold_relay_known_peers`, threaded into `PoolCandidate::with_id`. An address-only candidate
+  (no discovered id) is now SKIPPED rather than dialed with a guaranteed-reject zero pin.
+- **Defect 2 — no relay-circuit fallback.** `HandleDialer` enabled `&[TraversalKind::Direct]` and dialed
+  via `dig_nat::connect` (a DEFAULT `NatRuntime` with no relay dialer), so even had Relayed been enabled
+  the tier would be composed-away. After Direct failed the strategy logged `falling through kind=Direct`
+  and stopped. **Fix:** dial the full ladder (`pool_auto_dial_traversal_methods`) via
+  `connect_with_runtime` over a `NatRuntime` built from the attached reservation `RelayStatus`
+  (`ReservationRelayedTransport`) + local port, so the relay circuit is actually attempted.
+- **Cascade note.** No dig-nat change was needed. Bumping the dig-nat dep 0.8→0.10 (to get #1422's SPKI
+  dialer + the runtime/relay API) also required bumping the dig-tls dep 0.1→0.3 — dig-nat 0.10 exposes
+  `dig_nat::NodeCert = dig_tls 0.3 NodeCert`, so a stale dig-tls 0.1 pin caused a "multiple versions of
+  dig_tls" type mismatch on `nat_node_cert()`.
+- **Local build gotcha (Windows).** dig-nat pulls rustls → aws-lc-sys, whose CMake build fails under
+  MSBuild's file-tracker (MSB6003) in a bare shell. Build with a VS dev env + `CMAKE_GENERATOR=Ninja`
+  (delete a stale `target/debug/build/aws-lc-sys-*` CMakeCache first, since it records the prior
+  generator) and NASM on PATH.
+
 ## Inbound mTLS: `[patch.crates-io]` does not cross a git dependency (#1371)
 
 - **Root cause of "strangers cannot connect on Linux" (#1062).** dig-gossip's inbound acceptor used

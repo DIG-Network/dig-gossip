@@ -1516,6 +1516,22 @@ merge (§7.0.1 caps still apply) — the pool then direct-dials the peer over th
 a successful handshake lands it in the DIRECT pool (`connected_peers`). An empty `addresses` keeps the
 identity-only `Via::Relay` behavior above (legacy peers).
 
+**Auto-dial pins the discovered `peer_id` (#1517).** When discovery resolves a peer's dialable
+candidate ADDRESS and its `peer_id` together (the relay introducer / `dig-nat` reservation, `Via::Direct`
+fold above), the pool auto-dialer MUST pin the mTLS SPKI to that discovered `peer_id` — never a zero /
+placeholder pin. The Chia address book stores only `host:port`, so the discovered id is retained in a
+side map (address → `peer_id`) folded alongside the dialable record and threaded into the
+`PoolCandidate` (`with_id`). A candidate with NO discovered id (node peer-exchange, which never carries
+an id) is NOT dialed over the `dig-nat` ladder — the SPKI verifier would reject any pin — rather than
+dialed with an all-zeros pin that always fails.
+
+**Auto-dial attempts the FULL ladder, relay circuit included (#1517).** The pool auto-dialer MUST enable
+the full traversal ladder — Direct → UPnP → NAT-PMP → PCP → hole-punch → **Relayed** — over a
+`NatRuntime` carrying the relay dialer (built from the attached reservation `RelayStatus`), so a peer
+that fails every direct / port-mapping / hole-punch tier is still reached over the SPKI-pinned relay
+circuit. Enabling only `Direct` (so the strategy stops after Direct fails and never exercises the relay
+transport) is a defect.
+
 **Self-filter.** The relay-reachable set MUST exclude this node's own `peer_id` if the relay echoes it
 back. The comparison is done in NORMALIZED form (a stripped optional `0x` prefix + lowercase) on both
 sides, so a relay that echoes the id in a different spelling than the node renders it does not inflate

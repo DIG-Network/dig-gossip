@@ -1035,6 +1035,71 @@ impl GossipHandle {
             .map_err(|e| GossipError::NatError(e.to_string()))
     }
 
+    /// Establish a pool auto-dial over the **FULL** `dig-nat` traversal ladder (#1517 defect 2).
+    ///
+    /// Unlike [`Self::connect_via_nat`] (which enables a caller-chosen tier set over a default
+    /// runtime), this enables [`pool_auto_dial_traversal_methods`] — Direct … Relayed — AND supplies a
+    /// [`Self::pool_dial_runtime`] carrying the relay dialer, so after every direct / port-mapping /
+    /// hole-punch tier fails the strategy still reaches the peer over the SPKI-pinned relay circuit
+    /// rather than stopping at Direct. `peer_id` pins the mTLS SPKI (defect 1); `direct_addr` seeds the
+    /// direct/mapping tiers (a relay-only peer passes `None`).
+    async fn connect_via_nat_full_ladder(
+        &self,
+        peer_id: PeerId,
+        direct_addr: Option<std::net::SocketAddr>,
+        per_method_timeout: Duration,
+    ) -> Result<crate::nat::NatPeerConnection, GossipError> {
+        self.require_running()?;
+        let identity = self.nat_identity()?;
+        let network_id =
+            crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
+        let target = crate::nat::peer_target_for(peer_id, direct_addr, network_id);
+        let config = dig_nat::NatConfig::builder()
+            .enabled_methods(pool_auto_dial_traversal_methods())
+            .per_method_timeout(per_method_timeout)
+            .build();
+        let runtime = self.pool_dial_runtime();
+        crate::nat::nat_connect_with_runtime(&target, &identity, &config, &runtime)
+            .await
+            .map_err(|e| GossipError::NatError(e.to_string()))
+    }
+
+    /// Build the [`dig_nat::NatRuntime`] the pool auto-dial composes the full ladder from (#1517
+    /// defect 2): the local listen port (enables the UPnP mapping tier) and — when a live relay
+    /// reservation is attached ([`Self::attach_relay_status`]) — a
+    /// [`ReservationRelayedTransport`](dig_nat::ReservationRelayedTransport) relay dialer, so the
+    /// Relayed tier can actually COMPOSE (dig-nat silently drops the relay tier when no relay dialer is
+    /// present, which is why the old default-runtime dial never exercised it). Tiers whose runtime
+    /// inputs are absent are skipped by dig-nat — the composition stays honest.
+    fn pool_dial_runtime(&self) -> dig_nat::NatRuntime {
+        let mut builder = dig_nat::NatRuntime::builder();
+        if let Some(port) = self
+            .inner
+            .listen_bound_addr
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .map(|a| a.port())
+        {
+            builder = builder.local_port(port);
+        }
+        #[cfg(feature = "relay")]
+        {
+            if let Some(status) = self.inner.relay_status.lock().ok().and_then(|g| g.clone()) {
+                // The endpoint is observability-only for the relayed tier (the byte path is the held
+                // reservation's WebSocket, reached via `status.open_tunnel`), so an unspecified addr is
+                // sufficient here.
+                let relay_endpoint =
+                    std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0));
+                let dialer: std::sync::Arc<dyn dig_nat::RelayedDialer> = std::sync::Arc::new(
+                    dig_nat::ReservationRelayedTransport::new(status, relay_endpoint),
+                );
+                builder = builder.relayed(dialer);
+            }
+        }
+        builder.build()
+    }
+
     // ------------------------------------------------------------------
     // Connected peer POOL (POOL-*) — the maintained set of ready, CONNECTED
     // peers dig-node's peer-RPC + downloads consume. See `crate::service::peer_pool`.
@@ -1278,11 +1343,28 @@ impl GossipHandle {
             seen.insert(addr);
             out.push(addr);
         }
+        // #1517 defect 1: when discovery resolved this address's `peer_id` (relay introducer /
+        // dig-nat reservation), pin it into the candidate so the auto-dialer authenticates the SPKI
+        // against the real id — never the all-zeros pin. An address-only candidate (peer-exchange)
+        // keeps `peer_id: None`.
         crate::util::ip_address::order_by_local_stack(local, &out)
             .into_iter()
-            .map(PoolCandidate::from_addr)
+            .map(|addr| match self.inner.discovered_peer_id(&addr) {
+                Some(pid) => PoolCandidate::with_id(pid, addr),
+                None => PoolCandidate::from_addr(addr),
+            })
             .collect()
     }
+    /// #1517 defect-2 test hook: the [`dig_nat::NatRuntime`] the pool auto-dial composes its full
+    /// ladder from ([`Self::pool_dial_runtime`]). Exposed so a unit test can prove the relay circuit
+    /// is ACTUALLY wired — a runtime built with a relay reservation attached composes the Relayed
+    /// tier, whereas the default relay-less runtime composes it away — WITHOUT a live relay. Never a
+    /// public contract.
+    #[doc(hidden)]
+    pub fn __pool_dial_runtime_for_tests(&self) -> dig_nat::NatRuntime {
+        self.pool_dial_runtime()
+    }
+
     /// IPv6-first / intersection test hook: run [`Self::gather_pool_candidates`] against an EXPLICIT
     /// local stack (`has_v6`, `has_v4`), so a test can assert the local∩candidate intersection
     /// (drop-a-family-the-host-lacks) deterministically regardless of the CI runner's real stack.
@@ -1468,6 +1550,26 @@ impl GossipHandle {
             .iter()
             .map(crate::nat::peer_record::PeerRecord::from_nat_relay_peer_info)
             .collect();
+        // #1517 defect 1: the address book stores only `host:port`, so remember each dialable
+        // candidate's discovered `peer_id` here — the pool auto-dialer reads it back to PIN the mTLS
+        // SPKI instead of dialing the all-zeros pin the verifier (correctly) rejects.
+        for rec in &records {
+            if rec.peer_id.is_empty() {
+                continue;
+            }
+            let Some(pid) = crate::service::state::peer_id_from_hex(&rec.peer_id) else {
+                continue;
+            };
+            for a in &rec.addresses {
+                if !a.kind.is_dialable() {
+                    continue;
+                }
+                if let Ok(ip) = a.host.parse::<std::net::IpAddr>() {
+                    self.inner
+                        .record_discovered_peer_id(std::net::SocketAddr::new(ip, a.port), pid);
+                }
+            }
+        }
         let bound = self
             .inner
             .listen_bound_addr
@@ -2058,25 +2160,21 @@ impl crate::service::peer_pool::Dialer for HandleDialer {
         &self,
         candidate: &crate::service::peer_pool::PoolCandidate,
     ) -> Result<PeerId, String> {
-        // A candidate must carry an address for the pool's direct/mapping dial; a relay-only candidate
-        // (peer_id, no address) is reached over the relay tier — reserved for the dig-node phase that
-        // holds the relay coordinator context, so the pool loop skips it here.
-        let addr = candidate
-            .addr
-            .ok_or_else(|| "relay-only candidate; no direct address to dial".to_string())?;
-        // Address-only candidate: we do not yet know its peer_id, so use a placeholder target. The
-        // mTLS handshake still authenticates whoever answers; a future refinement can pin the id
-        // learned from discovery. When the id IS known (relay introducer path) we pin it.
-        let target_peer_id = candidate.peer_id.unwrap_or_else(|| PeerId::from([0u8; 32]));
+        // #1517 defect 1: the mTLS SPKI pin MUST be the discovered `peer_id`. An address-only
+        // candidate (node peer-exchange never carries an id) cannot be pinned — the dig-nat verifier
+        // would reject ANY pin — so it is skipped here rather than dialed with the all-zeros pin the
+        // verifier (correctly) rejected (`expected 0000… got <real>`, the #1062 Leg B failure).
+        let target_peer_id = candidate.peer_id.ok_or_else(|| {
+            "candidate has no discovered peer_id to pin the mTLS SPKI; skipping".to_string()
+        })?;
         let per_method = Duration::from_secs(5);
+        // #1517 defect 2: dial the FULL ladder (Direct … Relayed) over a runtime carrying the relay
+        // dialer, so a peer unreachable by every direct tier is still reached over the relay circuit
+        // rather than the strategy stopping at Direct. `candidate.addr` seeds the direct/mapping tiers;
+        // a relay-only candidate (no address) still reaches the relay tier.
         let conn = self
             .handle
-            .connect_via_nat(
-                target_peer_id,
-                Some(addr),
-                &[dig_nat::TraversalKind::Direct],
-                per_method,
-            )
+            .connect_via_nat_full_ladder(target_peer_id, candidate.addr, per_method)
             .await
             .map_err(|e| e.to_string())?;
         self.handle
@@ -2084,6 +2182,18 @@ impl crate::service::peer_pool::Dialer for HandleDialer {
             .await
             .map_err(|e| e.to_string())
     }
+}
+
+/// The traversal ladder the pool auto-dialer enables (#1517 defect 2): the FULL ladder —
+/// Direct → UPnP → NAT-PMP → PCP → hole-punch → **Relayed** — so a peer that fails every direct /
+/// port-mapping / hole-punch tier is still reached over the SPKI-pinned relay circuit. The dig-nat
+/// strategy ranks these direct-first, relay-last regardless of order, and silently omits any tier
+/// whose runtime inputs are absent. Previously the pool dialer enabled only
+/// [`Direct`](dig_nat::TraversalKind::Direct), so after Direct failed the strategy stopped and the
+/// relay transport was never exercised (the #1062 Leg B `falling through kind=Direct` dead-end).
+pub fn pool_auto_dial_traversal_methods() -> Vec<dig_nat::TraversalKind> {
+    use dig_nat::TraversalKind::{Direct, HolePunch, NatPmp, Pcp, Relayed, Upnp};
+    vec![Direct, Upnp, NatPmp, Pcp, HolePunch, Relayed]
 }
 
 fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Message, GossipError> {

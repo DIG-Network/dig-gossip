@@ -107,7 +107,7 @@ pub use service::dig_message::{
     dig_message_payload, frame_dig_message, frame_envelope, is_dig_message, ReassembleError,
     StreamFrame, StreamReassembler, DIG_MESSAGE, MAX_BUFFERED_BYTES, MAX_BUFFERED_CHUNKS,
 };
-pub use service::gossip_handle::GossipHandle;
+pub use service::gossip_handle::{pool_auto_dial_traversal_methods, GossipHandle};
 pub use service::gossip_service::GossipService;
 pub use service::holdings_announce::{
     canonical_encode as holdings_canonical_encode, frame_holdings_announce,
