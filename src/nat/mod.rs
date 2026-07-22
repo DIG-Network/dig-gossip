@@ -46,7 +46,7 @@ pub use discovery::{
 #[cfg(feature = "relay")]
 pub use discovery::{relay_get_peers, unified_discover, UnifiedDiscoveryConfig};
 pub use peer_record::{AddressKind, PeerAddress, PeerRecord, Via};
-pub use transport::{nat_connect, peer_target_for, NatPeerConnection};
+pub use transport::{nat_connect, nat_connect_with_runtime, peer_target_for, NatPeerConnection};
 
 // Re-export the dig-nat surface a caller (e.g. `dig-node`, the next integration phase) needs so it
 // can drive the transport without also depending on `dig-nat` directly. `NatLocalIdentity` is the

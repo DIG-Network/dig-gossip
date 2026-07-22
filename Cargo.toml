@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -58,7 +58,8 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # of the same L7 `connect()` ladder / `PeerConnection` / relay-client / streaming control surface, so
 # this is a mechanical re-pin (no API removed).
 # `0.10` (#1428) re-pins dig-tls ^0.3 so exactly ONE dig-tls resolves across the peer stack (no
-# two-version clash on the re-exported NodeCert/PeerId).
+# two-version clash on the re-exported NodeCert/PeerId). `#1517` consumes 0.10's SPKI-pinned dialer +
+# `connect_with_runtime`/`NatRuntime` relay-runtime API for pool auto-dial peer_id pinning + relay fallback.
 dig-nat = "0.10"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the

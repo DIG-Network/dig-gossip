@@ -132,3 +132,19 @@ pub async fn nat_connect(
     let conn = dig_nat::connect(target, node, config).await?;
     Ok(NatPeerConnection::new(conn))
 }
+
+/// [`nat_connect`] over an explicit [`dig_nat::NatRuntime`] so the FULL ladder — including the relay
+/// circuit — can compose (#1517 defect 2). `dig_nat::connect` uses a DEFAULT runtime that carries no
+/// relay dialer, so the relayed tier is silently dropped; the pool auto-dial passes a runtime built
+/// from the node's live relay reservation + local port here, so the relay tier is actually attempted
+/// after the direct tiers fail. The mTLS handshake + `peer_id` pin are performed by dig-nat exactly as
+/// in [`nat_connect`].
+pub async fn nat_connect_with_runtime(
+    target: &PeerTarget,
+    node: &Arc<NodeCert>,
+    config: &NatConfig,
+    runtime: &dig_nat::NatRuntime,
+) -> Result<NatPeerConnection, NatError> {
+    let conn = dig_nat::connect_with_runtime(target, node, config, runtime).await?;
+    Ok(NatPeerConnection::new(conn))
+}
