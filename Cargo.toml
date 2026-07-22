@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -57,12 +57,14 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # removed. `0.8` (#1385) is additive too — it adds §5.2 STUN happy-eyeballs reflexive discovery on top
 # of the same L7 `connect()` ladder / `PeerConnection` / relay-client / streaming control surface, so
 # this is a mechanical re-pin (no API removed).
-dig-nat = "0.8"
+# `0.10` (#1428) re-pins dig-tls ^0.3 so exactly ONE dig-tls resolves across the peer stack (no
+# two-version clash on the re-exported NodeCert/PeerId).
+dig-nat = "0.10"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
 # reference-DOWN edge; consumed from crates.io (no git dep).
-dig-tls = "0.1"
+dig-tls = "0.3"
 # Canonical relay endpoint (`DIG_RELAY_URL`) — consumed from crates.io (#1214). The `>=0.2, <0.5` req
 # matches dig-nat 0.5's own dig-constants req, so both resolve to ONE crates.io `dig-constants` (0.4.x)
 # and stay in lockstep. `<0.5` guards a future breaking 0.5.
@@ -82,8 +84,17 @@ chia-traits = "0.26"
 chia-sha2 = "0.26"
 # SHA256(peer TLS SubjectPublicKeyInfo DER) — API-005 / CON-001 peer_id derivation (NIST SHA-256).
 sha2 = "0.10"
+# HOL-001 (#1428): hex-encode/decode the 64-char `provider_peer_id` in a `HoldingsAnnounce`.
+hex = "0.4"
 # Parse peer X.509 after outbound TLS (CON-001) — extract SPKI DER for [`peer_id_from_tls_spki_der`].
+# Also parses the `provider_spki` SubjectPublicKeyInfo in a HoldingsAnnounce (#1428) to recover the
+# P-256 EC point + confirm the id-ecPublicKey/prime256v1 algorithm before the ECDSA verify.
 x509-parser = "0.16"
+# HOL-001 (#1428): ECDSA-P256 sign/verify for the holdings-announce leaf-key signature. The provider
+# signs the `dig:holdings:v1` message with its TLS leaf key (whose SPKI == `provider_spki`, whose hash
+# == the peer_id), so only the leaf-key holder can produce a valid announce — sound standalone with no
+# handshake/PoP. Pinned to the version already resolved transitively in Cargo.lock.
+ring = "0.17"
 # CON-002 dual-stack bind: clear `IPV6_V6ONLY` on the `[::]` listening socket before `listen()` so
 # IPv4-mapped connections are accepted alongside native IPv6 on the SAME socket (IPv6-first /
 # IPv4-fallback hard rule). `tokio::net::TcpSocket` has no `set_only_v6`, so we build the raw

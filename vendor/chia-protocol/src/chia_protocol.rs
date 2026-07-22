@@ -199,6 +199,18 @@ pub enum ProtocolMessageTypes {
     // 220-255 "free" band, after `DigMessage = 220`.
     // -------------------------------------------------------------------------
     StoreMelted = 221,
+
+    // -------------------------------------------------------------------------
+    // DIG holdings-announce broadcast (#1428, decider-locked spec #1394).
+    // Opcode 222 announces a batch of signed holdings add/remove deltas so peers learn
+    // which content a provider holds (feeds dig-dht's holder set). A PUBLIC all-peers
+    // flood broadcast (public discovery, addressed to everyone), signed + mTLS-
+    // authenticated, NOT recipient-sealed (§5.4-EXEMPT, same carve-out as L2 consensus
+    // gossip). The payload is `HoldingsAnnounce` (`crate::service::holdings_announce`);
+    // the canonical constant is `crate::service::holdings_announce::HOLDINGS_ANNOUNCE`.
+    // Third opcode of the 220-255 "free" band, after `StoreMelted = 221`.
+    // -------------------------------------------------------------------------
+    HoldingsAnnounce = 222,
 }
 
 #[cfg(feature = "py-bindings")]

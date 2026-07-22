@@ -61,7 +61,10 @@ impl MessagePriority {
             | RespondPeersIntroducer
             // StoreMelted (opcode 221): a small, infrequent public broadcast — never
             // consensus-critical, so it rides the bulk lane (#1316).
-            | StoreMelted => Self::Bulk,
+            | StoreMelted
+            // HoldingsAnnounce (opcode 222): a small, periodic public discovery broadcast —
+            // never consensus-critical, so it rides the bulk lane (#1428).
+            | HoldingsAnnounce => Self::Bulk,
 
             // Default for any unclassified type
             _ => Self::Normal,
@@ -83,6 +86,10 @@ impl MessagePriority {
             // Kept in agreement with `from_chia_type` (221 is a `ProtocolMessageTypes`
             // variant) so both classification paths route store-melted to the bulk lane.
             crate::service::store_melted::STORE_MELTED => Self::Bulk,
+            // HoldingsAnnounce (opcode 222) → Bulk: small, periodic public discovery
+            // broadcast (#1428). Kept in agreement with `from_chia_type` (222 is a
+            // `ProtocolMessageTypes` variant) so both paths route holdings to the bulk lane.
+            crate::service::holdings_announce::HOLDINGS_ANNOUNCE => Self::Bulk,
             // Default
             _ => Self::Normal,
         }

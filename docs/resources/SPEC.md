@@ -459,7 +459,7 @@ pub enum DigMessageType {
 The `200..=219` band is the **consensus** band (`DigMessageType` above, plus
 `RegisterPeer = 218` / `RegisterAck = 219`). The `220..=255` band is **free** for
 application protocols — directed (`DIG_MESSAGE = 220`) or broadcast
-(`STORE_MELTED = 221`).
+(`STORE_MELTED = 221`, `HOLDINGS_ANNOUNCE = 222`).
 
 #### 2.3.1 `DIG_MESSAGE = 220` — directed dig-message transport (WU6, epic #796)
 
@@ -551,6 +551,101 @@ key**, supplied by the caller from the peer's mTLS cert binding (the message car
 | `frame_store_melted(&StoreMeltedAnnounce) -> Message` | Build the outbound opcode-221 broadcast frame (`id = None`). |
 | `store_melted_payload(&Message) -> Option<StoreMeltedAnnounce>` | Inbound routing: lift + decode an opcode-221 frame (else `None`). |
 | `is_store_melted(u8) -> bool` | Recognise opcode 221. |
+
+#### 2.3.4 `HOLDINGS_ANNOUNCE = 222` — holdings-announce broadcast (#1428, spec #1394)
+
+Opcode **222** (`HOLDINGS_ANNOUNCE`) lets a provider (a dig-node hosting `.dig` content)
+flood a **signed batch** of holdings add/remove deltas telling every peer which content
+keys it now serves and at which addresses. dig-node verifies each announcement
+(`verify_holdings_announce`) before feeding the deltas into **dig-dht's holder set**. It
+is a first-class `ProtocolMessageTypes::HoldingsAnnounce` variant (the third opcode of the
+free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is exported as
+`dig_gossip::HOLDINGS_ANNOUNCE`.
+
+- **PUBLIC broadcast, flood-disseminated.** Holdings are public discovery data addressed
+  to everyone, so `classify_broadcast(HoldingsAnnounce) = Plumtree` (eager/lazy flood) at
+  **Bulk** priority. The transport `seen_set` dedups by the announcement bytes; a later
+  `seq` from the same provider supersedes an earlier one.
+- **§5.4-EXEMPT (signed + mTLS, NOT recipient-sealed).** It carries no recipient-specific
+  content — it is a public all-peers broadcast, exactly the L2 consensus-gossip carve-out
+  (NC-1) — so it is mTLS-authenticated and signed but NOT end-to-end sealed to a recipient
+  key. Deliberate, documented exemption.
+- **The signature IS the DHT-poisoning gate** (unlike store-melt, whose authority is an
+  on-chain proof). It binds the batch of `(content_key, addresses)` deltas to the provider
+  identity, so no third party can advertise content on the provider's behalf or point
+  resolvers at attacker-controlled addresses. `verify_holdings_announce` performs the
+  five-step fail-closed gate:
+  1. `changes.len() <= 256` (else `TooManyChanges`).
+  2. `provider_peer_id` decodes as 64-hex → `[u8; 32]` (else `BadPeerIdHex`).
+  3. `SHA-256(provider_spki)` equals the carried peer id (else `PeerIdMismatch`) — the peer
+     id is VERIFIED against the SPKI, never trusted.
+  4. `provider_spki` parses as an `id-ecPublicKey` / `prime256v1` (P-256) key (else `BadSpki`).
+  5. the ECDSA-P256 signature verifies over the signing message under that key (else
+     `InvalidSignature`).
+- **Leaf-key identity — sound standalone (decider-locked, #1428).** An announcement carries
+  the provider's TLS leaf `SubjectPublicKeyInfo` DER (`provider_spki`) and is signed by that
+  leaf key (ECDSA-P256). The SPKI is BOTH what the `peer_id` hashes (`peer_id =
+  SHA-256(SPKI DER)`, §5.2) AND the key that verifies the signature — so possession of the
+  leaf private key IS the authority, and the peer_id already commits to the signing key. No
+  full certificate, no binding extension, no CA chain, and no handshake/proof-of-possession
+  are needed; dig-dht (#1424) and dig-warden (#1449) re-verify standalone. This REPLACES the
+  earlier BLS "inline cert + #1204 binding" draft, which was **forgeable**: because the
+  DigNetwork CA key is public, an attacker could graft a self-consistent BLS binding onto a
+  copied victim SPKI and forge an announce under the victim's peer_id. Signing with the leaf
+  key itself removes the separate binding there was to graft. The builder side
+  (`HoldingsSigner`) exposes `sign(signing_message) -> Vec<u8>` (ECDSA-P256 ASN.1-DER) and
+  `spki_der() -> Vec<u8>`; the v1 concrete signer is `EcdsaHoldingsSigner`.
+
+**`HoldingsAnnounce` wire layout** — variable length, big-endian; a `⟨lp⟩` field is
+`u16`-big-endian length-prefixed:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `provider_peer_id` | `⟨lp⟩` ASCII | 64 lowercase hex chars = `SHA-256(provider_spki)`; VERIFIED against the SPKI, not trusted. |
+| `provider_spki` | `⟨lp⟩` bytes | TLS leaf `SubjectPublicKeyInfo` DER; the P-256 key that signs AND whose hash is the peer_id. ~91 B. |
+| `seq` | `u64` BE | Monotonic; later supersedes earlier. |
+| `announced_at` | `u64` BE | Unix seconds. |
+| `change_count` | `u16` BE | `<= 256`; decode rejects a larger count. |
+| `changes` | `canonical_encode` | See below. |
+| `signature` | `⟨lp⟩` bytes | ECDSA-P256 ASN.1-DER over the signing message (~70-72 B, variable). |
+
+`decode` rejects any truncated frame, a `change_count > 256`, or trailing bytes.
+
+**`canonical_encode(changes)`** — the signed bytes; per delta a **kind-tag** byte then:
+
+- `Add`: `0x01 ‖ content_key[32] ‖ addr_count(u16 BE) ‖ (host⟨lp⟩ ‖ port(u16 BE))* ‖ expires_at(u64 BE)` — addresses ARE signed.
+- `Remove`: `0x02 ‖ content_key[32]`.
+
+**Signing message / signature.** `signing_message = "dig:holdings:v1" ‖ provider_peer_id(32B)
+‖ seq_be ‖ announced_at_be ‖ canonical_encode(changes)`, where `provider_peer_id(32B)` is
+the raw peer id (`SHA-256(provider_spki)`). The provider's leaf key signs this message with
+ECDSA-P256 (SHA-256, ASN.1-DER); the verifier checks it with the same algorithm — sign and
+verify operate over the FULL message (ring hashes it internally), NOT a pre-hashed 32-byte
+digest. The preimage layout is unchanged from the prior draft — only the SOURCE of
+`provider_peer_id` (the leaf SPKI) and the signature ALGORITHM (ECDSA-P256, not BLS) changed.
+The domain tag `"dig:holdings:v1"` is a cross-repo canonical constant — dig-node's verify and
+dig-dht's ingest recompute it byte-identically.
+
+**Send/route API** (in `service::holdings_announce`):
+
+| Item | Purpose |
+|------|---------|
+| `HoldingsAnnounce::new_signed(&signer, seq, announced_at, changes) -> Result` | Build a signed announcement (rejects `> 256` changes). |
+| `verify_holdings_announce(&HoldingsAnnounce) -> Result<(), HoldingsError>` | The DHT-ingest gate — the five-step fail-closed verify above. |
+| `HoldingsSigner` (`sign(&[u8]) -> Vec<u8>`, `spki_der() -> Vec<u8>`) / `EcdsaHoldingsSigner::new(key_pair, spki_der)` | Build-side abstraction; v1 ECDSA-P256 leaf-key signer paired with its SPKI. |
+| `HoldingsAnnounce::{encode,decode}` | Variable-length big-endian wire round-trip. |
+| `canonical_encode(&[HoldingsDelta]) -> Vec<u8>` / `holdings_signing_message(&peer_id, seq, announced_at, &changes) -> Vec<u8>` | Signed-bytes + signing-message helpers. |
+| `signing_message_digest(&peer_id, seq, announced_at, &changes) -> [u8;32]` | SHA-256 fingerprint of the signing message (KAT/layout helper; NOT what is signed). |
+| `frame_holdings_announce(&HoldingsAnnounce) -> Message` | Build the outbound opcode-222 broadcast frame (`id = None`). |
+| `holdings_announce_payload(&Message) -> Option<HoldingsAnnounce>` | Inbound routing: lift + decode an opcode-222 frame (else `None`). |
+| `is_holdings_announce(u8) -> bool` | Recognise opcode 222. |
+
+**KAT golden vector.** The ECDSA-P256 signature is randomized, so it is NOT hex-pinnable;
+`service::holdings_announce` pins only the signing-MESSAGE byte layout (via its SHA-256
+fingerprint) under a fixed literal peer id + fixed changes, so CI fails on any drift in the
+domain tag / `canonical_encode` / field order of this cross-repo wire contract. The
+SPKI→peer_id binding and the sign/verify behaviour (including the "sign with a foreign key,
+present the victim's SPKI" forgery rejection) are covered by behavioural tests.
 
 ### 2.4 PeerConnection (DIG extension of `chia-sdk-client::Peer`)
 

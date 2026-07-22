@@ -76,7 +76,11 @@ pub fn classify_broadcast(
         | NewUnfinishedBlock
         | RespondBlock
         | RespondUnfinishedBlock
-        | StoreMelted => BroadcastStrategy::Plumtree,
+        | StoreMelted
+        // `HoldingsAnnounce` (opcode 222) is a PUBLIC all-peers flood (holdings discovery,
+        // #1428) — it disseminates like the other announce broadcasts, deduped via the
+        // receiver's seen_set on the announcement bytes (a later `seq` supersedes).
+        | HoldingsAnnounce => BroadcastStrategy::Plumtree,
 
         // Unicast: response messages + directed dig-message envelopes are never
         // broadcast — a `DigMessage` (opcode 220) is a 1:1 directed frame (WU6).
