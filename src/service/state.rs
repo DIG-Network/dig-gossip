@@ -358,11 +358,13 @@ pub struct ServiceState {
     pub tls: ChiaCertificate,
 
     /// The node's CA-signed `dig-tls` mTLS identity for the unified `dig-nat` peer transport
-    /// (#1268/#1280). Lazily minted on first use ([`Self::nat_node_cert`]) so services that never dial
-    /// over `dig-nat` pay no BLS/cert-generation cost, and cached thereafter for a stable transport
-    /// `peer_id` for the life of the service. Distinct from [`Self::tls`] (the chia-ssl cert used by
-    /// the legacy chia-protocol WebSocket path): the `dig-nat` path requires a leaf chained to the
-    /// shipped DigNetwork CA carrying the #1204 BLS-G1 binding, which a self-signed chia cert is not.
+    /// (#1268/#1280). Resolved on first use ([`Self::nat_node_cert`]) and cached: the PERSISTENT
+    /// [`GossipConfig::nat_identity`](crate::types::config::GossipConfig::nat_identity) when injected
+    /// (#1541 — ONE identity across chia-ssl AND dig-nat), else a per-process ephemeral cert minted
+    /// lazily so identity-less services pay no BLS/cert-generation cost. Distinct from [`Self::tls`]
+    /// (the chia-ssl cert used by the legacy chia-protocol WebSocket path): the `dig-nat` path requires
+    /// a leaf chained to the shipped DigNetwork CA carrying the #1204 BLS-G1 binding, which a
+    /// self-signed chia cert is not.
     nat_node_cert: Mutex<Option<Arc<dig_tls::NodeCert>>>,
 
     /// Bitcoin/Chia-style address manager (tried/new bucket tables).
@@ -629,14 +631,22 @@ impl ServiceState {
     }
 
     /// The node's CA-signed `dig-tls` [`NodeCert`](dig_tls::NodeCert) for the unified `dig-nat`
-    /// transport, minted (and cached) on first use.
+    /// transport — the PERSISTENT injected identity when one was supplied, else a per-process
+    /// ephemeral one minted (and cached) on first use.
     ///
     /// dig-nat 0.6 requires an mTLS leaf **chained to the shipped DigNetwork CA** carrying the #1204
     /// BLS-G1 binding, so a self-signed chia-ssl cert cannot be bridged (the self-signed→CA-signed
-    /// cutover). Absent an externally-supplied node identity, we mint an ephemeral BLS key + a
-    /// CA-signed [`NodeCert`] here and cache it, giving a stable transport `peer_id` for the life of
-    /// this service. A future refinement (identity boundary, #908) lets `dig-node` inject a persistent
-    /// [`NodeCert`] so the transport identity survives restarts and ties to the node's real identity.
+    /// cutover). The identity resolves in this order:
+    ///
+    /// 1. **Injected persistent identity (#1541 / #1532 Defect 1b).** When the caller set
+    ///    [`GossipConfig::nat_identity`](crate::types::config::GossipConfig::nat_identity), THAT
+    ///    [`NodeCert`] is the transport identity — so the `dig-nat`/relay-traversed transport presents
+    ///    the SAME `peer_id = SHA-256(SPKI DER)` the node advertises/registers/pins over chia-ssl. This
+    ///    is the ONE-identity-across-all-transports contract that closes the Leg-B `peer_id` mismatch.
+    /// 2. **Ephemeral fallback.** Absent an injected identity, we mint an ephemeral BLS key + a
+    ///    CA-signed [`NodeCert`] here and cache it, giving a stable-but-distinct-from-advertised
+    ///    transport `peer_id` for the life of this process. This path is for tests and identity-less
+    ///    services ONLY; a node that advertises a persistent id MUST inject (`nat_identity`) instead.
     ///
     /// # Errors
     /// [`GossipError::InvalidConfig`] if BLS key or certificate generation fails.
@@ -648,6 +658,13 @@ impl ServiceState {
         if let Some(existing) = slot.as_ref() {
             return Ok(Arc::clone(existing));
         }
+        // (1) Persistent injected identity wins — cache it so every transport dial presents it.
+        if let Some(injected) = self.config.nat_identity.as_ref() {
+            let node = Arc::clone(injected);
+            *slot = Some(Arc::clone(&node));
+            return Ok(node);
+        }
+        // (2) Ephemeral fallback (tests / identity-less services).
         let mut seed = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut seed);
         let bls_sk = dig_tls::bls::SecretKey::from_seed(&seed);
@@ -992,5 +1009,70 @@ impl fmt::Debug for ServiceState {
             )
             .field("address_manager", &self.address_manager)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod nat_identity_tests {
+    //! **#1541 / #1532 (Defect 1b)** — the `dig-nat` transport identity contract: when a persistent
+    //! [`NodeCert`](dig_tls::NodeCert) is injected via
+    //! [`GossipConfig::nat_identity`](crate::types::config::GossipConfig::nat_identity), the transport
+    //! MUST present THAT identity (its `peer_id`), never a fresh ephemeral one — so a NAT/relay-traversed
+    //! (Leg B) connection carries the same `peer_id` the node advertises/registers/pins.
+
+    use super::*;
+
+    /// Mint a persistent, CA-signed [`NodeCert`] from a FIXED seed so its `peer_id` is deterministic —
+    /// standing in for `dig-node`'s on-disk persistent identity.
+    fn persistent_node_cert(seed: u8) -> Arc<dig_tls::NodeCert> {
+        let bls_sk = dig_tls::bls::SecretKey::from_seed(&[seed; 32]);
+        Arc::new(dig_tls::NodeCert::generate_signed(&bls_sk).expect("mint a CA-signed NodeCert"))
+    }
+
+    fn state_with(config: GossipConfig) -> ServiceState {
+        let tls = ChiaCertificate::generate().expect("chia-ssl cert");
+        ServiceState::new(config, tls).expect("construct ServiceState")
+    }
+
+    /// GREEN: an injected persistent identity IS the transport identity — the `dig-nat` `peer_id`
+    /// equals the injected `NodeCert`'s `peer_id` (one identity across chia-ssl AND dig-nat).
+    #[test]
+    fn injected_identity_is_the_nat_transport_identity() {
+        let injected = persistent_node_cert(0x11);
+        let expected = injected.peer_id();
+
+        let mut config = GossipConfig::default();
+        config.nat_identity = Some(Arc::clone(&injected));
+        let state = state_with(config);
+
+        let presented = state.nat_node_cert().expect("resolve nat identity");
+        assert_eq!(
+            presented.peer_id(),
+            expected,
+            "the dig-nat transport must present the INJECTED persistent peer_id, not an ephemeral one"
+        );
+
+        // Cached + stable across calls (never re-minted once resolved).
+        let again = state.nat_node_cert().expect("resolve nat identity again");
+        assert_eq!(again.peer_id(), expected);
+    }
+
+    /// RED-without-the-fix: with NO injected identity the transport mints a RANDOM ephemeral cert, so
+    /// its `peer_id` does NOT match the node's persistent advertised identity — the exact #1532 Leg-B
+    /// `peer_id` mismatch. This proves the injection is what closes the gap (the assertion above would
+    /// FAIL if `nat_node_cert` ignored `nat_identity` and always minted, as it did pre-#1541).
+    #[test]
+    fn ephemeral_fallback_does_not_match_the_persistent_identity() {
+        let advertised = persistent_node_cert(0x22).peer_id();
+
+        // No nat_identity injected → ephemeral mint.
+        let state = state_with(GossipConfig::default());
+        let ephemeral = state.nat_node_cert().expect("mint ephemeral nat identity");
+
+        assert_ne!(
+            ephemeral.peer_id(),
+            advertised,
+            "without injection the transport identity is ephemeral and cannot match the advertised id"
+        );
     }
 }

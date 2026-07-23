@@ -987,9 +987,11 @@ impl GossipHandle {
     /// [`NodeCert`](dig_nat::NodeCert): an mTLS leaf chained to the shipped DigNetwork CA carrying the
     /// #1204 BLS-G1 binding — what [`Self::connect_via_nat`] presents as the mTLS client certificate
     /// (#1268/#1280 self-signed→CA-signed cutover). Minted + cached on first use for a stable transport
-    /// `peer_id`. NOTE: this transport `peer_id` is derived from the NodeCert's SPKI and is therefore
-    /// distinct from [`Self::local_peer_id`] (the chia-ssl WebSocket-path id) until `dig-node` supplies
-    /// a single unified identity (#908). Gated on the running lifecycle.
+    /// `peer_id`. This transport `peer_id` is derived from the NodeCert's SPKI; when the caller injects
+    /// its persistent identity via [`GossipConfig::nat_identity`](crate::types::config::GossipConfig::nat_identity)
+    /// (#1541), it equals [`Self::local_peer_id`] (the chia-ssl WebSocket-path id) — ONE identity across
+    /// all transports. Absent injection it falls back to a per-process ephemeral id (tests /
+    /// identity-less services only). Gated on the running lifecycle.
     pub fn nat_identity(
         &self,
     ) -> Result<std::sync::Arc<crate::nat::NatLocalIdentity>, GossipError> {

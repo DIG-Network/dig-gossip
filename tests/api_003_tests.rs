@@ -82,6 +82,7 @@ fn test_config_all_fields_exist() {
         keepalive_ping_interval_secs: Some(7),
         keepalive_peer_timeout_secs: Some(42),
         peer_pool: Some(dig_gossip::PeerPoolConfig::default()),
+        nat_identity: None,
     };
 
     assert_eq!(cfg.listen_addr, "192.0.2.1:9000".parse().unwrap());
