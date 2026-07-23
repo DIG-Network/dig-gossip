@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.14.0] - 2026-07-22
+
+### Features
+- **dig-gossip:** Inject a persistent `NodeCert` as the `dig-nat` transport identity via `GossipConfig::nat_identity` — ONE identity across the chia-ssl AND dig-nat/relay-traversed transports, closing the Leg-B `peer_id` mismatch (#1541, #1532 Defect 1b). Ephemeral mint kept only as the tests/identity-less fallback.
+
 ## [0.13.0] - 2026-07-22
 
 ### Bug Fixes

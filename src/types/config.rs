@@ -268,6 +268,25 @@ pub struct GossipConfig {
     /// does not autonomously replenish toward a target. `Some(..)` turns on the DISCOVER → CONNECT
     /// → MAINTAIN lifecycle over `dig-nat` + the introducer (see [`crate::service::peer_pool`]).
     pub peer_pool: Option<PeerPoolConfig>,
+
+    /// **#1541 / #1532 (Defect 1b)** — the node's PERSISTENT `dig-tls` [`NodeCert`](dig_tls::NodeCert)
+    /// injected as the identity for the unified `dig-nat`/`DigPeer` NAT-traversal transport.
+    ///
+    /// The `dig-nat` transport carries the RELAYED / hole-punched path (Leg B of the connect ladder).
+    /// When this is `Some`, the transport presents THIS identity, so its
+    /// `peer_id = SHA-256(SPKI DER)` equals the advertised / registered / pinned `NodeCert` `peer_id`
+    /// — ONE identity across BOTH the chia-ssl (`cert_path`/`key_path`) and the `dig-nat` transports.
+    /// A remote pinning the advertised id then sees a matching id on a NAT/relay-traversed connection.
+    ///
+    /// When `None` (the default), [`ServiceState::nat_node_cert`](crate::service::state::ServiceState)
+    /// falls back to minting a RANDOM, EPHEMERAL per-boot `NodeCert` — a stable-for-this-process but
+    /// distinct-from-advertised transport identity. Callers that advertise/register/pin a persistent
+    /// `peer_id` (every real `dig-node`) MUST inject their persistent [`NodeCert`] here; the ephemeral
+    /// fallback exists only for tests and identity-less services.
+    ///
+    /// Held behind an [`Arc`](std::sync::Arc) because [`NodeCert`](dig_tls::NodeCert) deliberately does
+    /// not derive `Clone` (its private key lives in `Zeroizing`); the `Arc` keeps `GossipConfig: Clone`.
+    pub nat_identity: Option<std::sync::Arc<dig_tls::NodeCert>>,
 }
 
 impl Default for GossipConfig {
@@ -307,6 +326,7 @@ impl Default for GossipConfig {
             keepalive_ping_interval_secs: None,
             keepalive_peer_timeout_secs: None,
             peer_pool: None,
+            nat_identity: None,
         }
     }
 }
