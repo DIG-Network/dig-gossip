@@ -1359,7 +1359,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caef6056a5788d05d173cdc3c562ac28ae093828f851f69378b74e4e3d578e41"
 dependencies = [
  "heck",
- "indexmap 1.9.3",
+ "indexmap 2.14.0",
  "itertools 0.15.0",
  "proc-macro-crate 3.5.0",
  "proc-macro2",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1505,9 +1505,9 @@ dependencies = [
 
 [[package]]
 name = "dig-nat"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6a47bc31d0f1559076a85a01a2334755b99079504140202e8f6271798e7ddfb"
+checksum = "5074965e7951a0bbf8afc754a2179ddc0969190ed970bbb7648435c4b64eaca2"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4509,7 +4509,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
