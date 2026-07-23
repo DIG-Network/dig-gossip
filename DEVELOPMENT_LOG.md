@@ -2,6 +2,27 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## The dig-nat transport identity must be the node's PERSISTENT NodeCert, not ephemeral (#1541 / #1532 Defect 1b)
+
+- **ONE identity across ALL transports is a hard contract.** A node advertises/registers/pins ONE
+  `peer_id = SHA-256(SPKI DER)`. Both transports must present it: the chia-ssl WebSocket path (`:9444`
+  peer-RPC + `:9445` direct-gossip) AND the unified `dig-nat`/`DigPeer` NAT-traversal path (Leg B — the
+  relayed / hole-punched connect ladder). If they differ, a remote pinning the advertised id gets
+  `peer_id mismatch` on whichever transport carries the wrong identity.
+- **The bug:** `ServiceState::nat_node_cert` minted a RANDOM EPHEMERAL `NodeCert` per construction
+  (a per-boot BLS seed), documented distinct-from-advertised 'until #908'. dig-node injected its
+  persistent NodeCert ONLY into the chia-ssl `cert_path`, never the dig-nat path — so every
+  NAT/relay-traversed connection presented a different, per-boot id. That is the #1532 Leg-B blocker,
+  on the exact transport the #1062 / #836 connect flywheel relies on.
+- **The fix:** `GossipConfig::nat_identity: Option<Arc<dig_tls::NodeCert>>`. When `Some`,
+  `nat_node_cert` resolves to THAT identity (cached); the ephemeral mint remains ONLY as the fallback
+  for tests / identity-less services. Every real `dig-node` MUST inject. `NodeCert` deliberately does
+  not derive `Clone` (private key in `Zeroizing`), so the field is `Arc`-wrapped to keep
+  `GossipConfig: Clone`.
+- **Release-first cascade:** dig-gossip ships the injection API first; dig-node then wires its
+  persistent NodeCert through `nat_identity` + rev-bumps. This + dig-nat responder/glare + dig-node
+  chia-ssl unification = the complete Leg-B fix.
+
 ## Pool auto-dial dropped the discovered `peer_id` and never tried the relay circuit (#1517)
 
 - **The two #1062 Leg-B blockers after #1422's SPKI dialer landed both lived HERE, in dig-gossip's
