@@ -1041,8 +1041,10 @@ mod nat_identity_tests {
         let injected = persistent_node_cert(0x11);
         let expected = injected.peer_id();
 
-        let mut config = GossipConfig::default();
-        config.nat_identity = Some(Arc::clone(&injected));
+        let config = GossipConfig {
+            nat_identity: Some(Arc::clone(&injected)),
+            ..GossipConfig::default()
+        };
         let state = state_with(config);
 
         let presented = state.nat_node_cert().expect("resolve nat identity");
