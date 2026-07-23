@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.15.0] - 2026-07-22
+
+### Miscellaneous
+- **deps:** Move dig-nat to the 0.11 peer stack (#1550) — unifies dig-node on ONE dig-nat 0.11 (enable_accept); additive/API-compatible, no code change; preserves #1541 (nat_identity) + #1517 (auto-dial)
+
 ## [0.14.0] - 2026-07-23
 
 ### Features
