@@ -956,6 +956,17 @@ impl GossipHandle {
         self.inner
             .total_connections
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        // #1581: feed the directly-connected peer into the pool-event stream exactly like the
+        // relayed path (`adopt_nat_connection`) and the pool dial loop do. Without this a peer
+        // reached by a direct WSS dial is invisible to every `PoolEvent` consumer — DHT routing
+        // (#1574's `spawn_dht_routing_feed`), the peer-selector, and PEX — so direct-path DISCOVER
+        // returns zero providers while the relayed path works. Same shape (verified `peer_id`,
+        // DHT-reachable `addr`) `adopt_nat_connection` publishes, so downstream consumers behave
+        // identically on both paths.
+        self.inner
+            .pool
+            .publish(crate::service::peer_pool::PoolEvent::PeerAdded { peer_id, addr });
         Ok(peer_id)
     }
 
