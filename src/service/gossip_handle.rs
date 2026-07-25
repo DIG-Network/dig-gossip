@@ -809,6 +809,15 @@ impl GossipHandle {
                 .map_err(GossipError::from)?;
 
         let peer_id = peer_id_from_tls_spki_der(&out.remote_spki_der);
+        // #1584: self-connection guard by verified identity. The address-based `dial_targets_local_listen`
+        // check above only catches a dial to our OWN listen address; a relay introducer advertising this
+        // node at its external IP slips past it, so re-check by the handshake-verified `peer_id` (mirrors
+        // the inbound `precheck_inbound_peer` guard) before this peer is added to the pool + published as
+        // `PoolEvent::PeerAdded`.
+        if peer_id == self.inner.config.peer_id {
+            let _ = out.peer.close().await;
+            return Err(GossipError::SelfConnection);
+        }
         let is_banned = self
             .inner
             .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
@@ -1137,6 +1146,15 @@ impl GossipHandle {
         let peer_id = conn.peer_id();
         let remote = conn.remote_addr();
         let method = conn.method();
+
+        // #1584: self-connection guard on the OUTBOUND pool-add path, mirroring the inbound
+        // `precheck_inbound_peer` guard. A relay introducer can advertise this node to itself; without
+        // this check the self entry is adopted, published as `PoolEvent::PeerAdded`, and fed to the DHT
+        // routing table + peer selector as a provider — so a reader "discovers" itself, self-dials on a
+        // content read, and dead-ends (HTTP 404) instead of fetching from the real holder.
+        if peer_id == self.inner.config.peer_id {
+            return Err(GossipError::SelfConnection);
+        }
 
         if self
             .inner
