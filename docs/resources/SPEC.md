@@ -1319,6 +1319,29 @@ the per-connection handshake timeout), which is a slowloris-style resource-exhau
 headroom for legitimate reconnect/churn bursts while remaining a small, finite multiple rather
 than unbounded.
 
+### 5.2.2 Self-Connection Guard (normative — both directions)
+
+A node MUST NEVER admit a connection whose verified remote `PeerId` equals its own
+`GossipConfig::peer_id`, on EITHER direction, and MUST NOT let such a peer become a pool member or be
+published as a `PoolEvent`:
+
+1. **Inbound** — `precheck_inbound_peer` rejects the accepted connection when the handshake-derived
+   `PeerId` equals `config.peer_id` (`ConnectionRefused`, "inbound self-connection").
+2. **Outbound direct WSS** (`connect_to`) — in addition to the address-based `dial_targets_local_listen`
+   check (which only catches a dial to the node's OWN listen address), the handshake-verified `peer_id`
+   is re-checked against `config.peer_id`; a match returns `GossipError::SelfConnection` and the peer is
+   closed BEFORE it is inserted into the pool or a `PoolEvent::PeerAdded` is published.
+3. **Outbound `dig-nat` pool-add** (`adopt_nat_connection`) — the adopted connection's verified
+   `peer_id` is checked against `config.peer_id` before any pool insert / churn publish; a match returns
+   `GossipError::SelfConnection`.
+
+**Why the address guard alone is insufficient:** a relay introducer advertises this node to peers at its
+EXTERNAL address, which does not match the local listen bind (e.g. `[::]:port`), so an introduced self
+entry slips past `dial_targets_local_listen`. Only the identity-based guard is reliable. Without the
+outbound guards the self entry is adopted, published as `PeerAdded`, and fed to the DHT routing table +
+peer selector as a provider — a reader then "discovers" itself, self-dials on a content read, and
+dead-ends instead of fetching from the real holder (#1584).
+
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
 **ALL peer-to-peer connections MUST use mutual TLS (mTLS).** Both the client and server present certificates and verify each other. This is a hard security requirement — unencrypted connections and server-only TLS are never permitted for P2P.

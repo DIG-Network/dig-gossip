@@ -255,6 +255,57 @@ async fn banned_peer_cannot_be_adopted_into_the_pool() {
 }
 
 #[tokio::test]
+async fn self_peer_cannot_be_adopted_into_the_pool() {
+    // Regression (#1584): a peer whose `peer_id` equals this node's own `config.peer_id` must NEVER
+    // enter the connected pool nor be published as a `PoolEvent::PeerAdded`. Before the fix the
+    // outbound `adopt_nat_connection` path guarded banned/duplicate/max but — unlike the inbound
+    // `precheck_inbound_peer` guard — NOT self, so a relay-introduced self entry was adopted and fed
+    // to the DHT routing table + selector as a provider. A reader then "discovered" itself, self-dialed
+    // on a content read, and dead-ended (HTTP 404) instead of fetching from the real holder.
+    let dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(dir.path());
+    let mut cfg = common::test_gossip_config(dir.path());
+    let self_id = PeerId::from([0x2a; 32]);
+    cfg.peer_id = self_id;
+    cfg.max_connections = 16;
+    cfg.peer_pool = Some(PeerPoolConfig {
+        min_peers: 1,
+        target_peers: 4,
+        max_peers: 8,
+        maintenance_interval_secs: 3600,
+        ..Default::default()
+    });
+    let svc = GossipService::new(cfg).expect("new");
+    let handle = svc.start().await.expect("start");
+    let mut events = handle.subscribe_pool_events().expect("subscribe");
+
+    // A connection whose remote identity is our OWN peer_id (as a relay introducer would advertise).
+    let (conn, _s) = loopback_nat_conn([0x2a; 32], addr(9700));
+    let err = handle.adopt_nat_connection(conn).await;
+    assert!(
+        matches!(err, Err(dig_gossip::GossipError::SelfConnection)),
+        "adopting a connection to our own peer_id must be refused as SelfConnection, got {err:?}"
+    );
+    assert_eq!(
+        handle.pool_stats().connected,
+        0,
+        "the self entry must never become a pool member"
+    );
+    assert!(
+        handle.connected_pool_peers().is_empty(),
+        "the self entry must never appear in the connected pool"
+    );
+    // And no PeerAdded churn event may have been published for self (no DHT/selector poisoning).
+    let published = tokio::time::timeout(Duration::from_millis(200), events.recv()).await;
+    assert!(
+        published.is_err(),
+        "no PoolEvent may be published for a self connection, got {published:?}"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+#[tokio::test]
 async fn pool_api_is_gated_after_stop() {
     let (svc, handle, _dir) = running_handle_with_pool(1, 4, 8).await;
     svc.stop().await.expect("stop");

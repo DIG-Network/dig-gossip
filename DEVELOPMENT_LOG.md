@@ -2,6 +2,27 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## The self-connection guard must cover the OUTBOUND pool-add path, not just inbound (#1584)
+
+- **The read-leg DATA 404 root cause.** A reader's peer pool held a SELF-ENTRY — its own
+  `peer_id` @ its own external IP as an outbound peer — injected by a relay introducer advertising the
+  node to itself. It was fed (via `PoolEvent::PeerAdded`, #1581) to the DHT routing table + peer
+  selector as a provider, so the reader "discovered" itself, self-dialed on a `/s` content read, and
+  dead-ended (`Direct` → connection refused to own IP; `Relayed` → "refusing relayed self-dial") →
+  HTTP 404, never reaching the real holder.
+- **Asymmetric guard was the bug.** `precheck_inbound_peer` rejected inbound self-connections
+  (`peer_id == config.peer_id`), but the two OUTBOUND pool-add sites — `connect_to` (direct WSS) and
+  `adopt_nat_connection` (dig-nat ladder) — guarded banned/duplicate/max but NOT self. The outbound
+  half adopted self while the inbound half rejected it.
+- **Address-based self-dial guard is insufficient.** `connect_to`'s `dial_targets_local_listen`
+  only catches a dial to the node's OWN listen address (`[::]:port`); a relay introducer advertises the
+  node at its EXTERNAL IP, which slips past it. The reliable guard is by verified `peer_id`.
+- **The fix (both paths, mirrors the inbound guard):** reject `peer_id == config.peer_id` with
+  `GossipError::SelfConnection` in `connect_to` (post-handshake, before pool insert / publish) and in
+  `adopt_nat_connection` (before pool insert / publish). Prevents self ever entering the pool or being
+  published as `PeerAdded`. dig-node should ALSO belt-and-suspenders filter local `peer_id` in its
+  capsule-pull provider selection.
+
 ## The dig-nat transport identity must be the node's PERSISTENT NodeCert, not ephemeral (#1541 / #1532 Defect 1b)
 
 - **ONE identity across ALL transports is a hard contract.** A node advertises/registers/pins ONE
