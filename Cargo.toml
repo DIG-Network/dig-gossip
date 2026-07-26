@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.15.2"
+version = "0.16.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -60,7 +60,15 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # `0.10` (#1428) re-pins dig-tls ^0.3 so exactly ONE dig-tls resolves across the peer stack (no
 # two-version clash on the re-exported NodeCert/PeerId). `#1517` consumes 0.10's SPKI-pinned dialer +
 # `connect_with_runtime`/`NatRuntime` relay-runtime API for pool auto-dial peer_id pinning + relay fallback.
-dig-nat = "0.11"
+#
+# `0.13` (cascade #1656) carries the #1640 `dig.fetchRange` framing fix — before it, a sender could
+# emit a frame no conforming receiver may accept, breaking every read above ~48 KiB. 0.11 and 0.12 are
+# BOTH skipped: they are mutually semver-incompatible on a `0.x` crate, so the fix could never reach a
+# consumer pinning `0.11`. 0.13's breaking surface reaches only this crate's `dig-nat` transport TESTS
+# (`encode()` is now fallible and the mux wire types are `#[non_exhaustive]`, so they are built through
+# constructors); the gossip production path builds no `dig-nat` mux frame — its own `StreamFrame`
+# (`src/service/dig_message.rs`) is a dig-gossip type with an infallible `encode()`.
+dig-nat = "0.13"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid

@@ -270,34 +270,26 @@ async fn nat_peer_connection_opens_channels_range_and_availability() {
         let req = dig_nat::RangeRequest::decode(&mut rs).await.unwrap();
         assert_eq!(req.store_id, "aa".repeat(32));
         assert_eq!(req.offset, 0);
-        let frame = dig_nat::RangeFrame {
-            offset: 0,
-            length: 4,
-            bytes: b"data".to_vec(),
-            complete: true,
-            total_length: Some(4),
-            chunk_lens: Some(vec![4]),
-            chunk_index: Some(0),
-            inclusion_proof: None,
-            root: Some("bb".repeat(32)),
-        };
-        rs.write_all(&frame.encode()).await.unwrap();
+        // A single complete frame: identity (root / total_length / chunk_count / chunk_index) plus the
+        // one-page layout it is also the first frame for.
+        let frame = dig_nat::RangeFrame::data(0, b"data".to_vec())
+            .with_complete(true)
+            .with_identity("bb".repeat(32), 4, 1)
+            .with_chunk_index(0)
+            .with_chunk_lens_page(0, vec![4]);
+        rs.write_all(&frame.encode().unwrap()).await.unwrap();
         rs.flush().await.unwrap();
 
         // 3) availability control call — read the request, answer one item available
         let mut av = server.accept_stream().await.expect("availability stream");
         let areq = dig_nat::AvailabilityRequest::decode(&mut av).await.unwrap();
         assert_eq!(areq.items.len(), 1);
-        let aresp = dig_nat::AvailabilityResponse {
-            items: vec![dig_nat::AvailabilityAnswer {
-                available: true,
-                roots: None,
-                total_length: Some(4),
-                chunk_count: Some(1),
-                complete: Some(true),
-            }],
-        };
-        av.write_all(&aresp.encode()).await.unwrap();
+        let aresp =
+            dig_nat::AvailabilityResponse::new(vec![dig_nat::AvailabilityAnswer::available()
+                .with_total_length(4)
+                .with_chunk_count(1)
+                .with_complete(true)]);
+        av.write_all(&aresp.encode().unwrap()).await.unwrap();
         av.flush().await.unwrap();
     });
 
@@ -321,11 +313,7 @@ async fn nat_peer_connection_opens_channels_range_and_availability() {
     assert_eq!(frame.total_length, Some(4));
 
     // 3) query_availability
-    let items = vec![dig_nat::AvailabilityItem {
-        store_id: "aa".repeat(32),
-        root: Some("bb".repeat(32)),
-        retrieval_key: None,
-    }];
+    let items = vec![dig_nat::AvailabilityItem::store("aa".repeat(32)).with_root("bb".repeat(32))];
     let resp = conn
         .query_availability(items)
         .await

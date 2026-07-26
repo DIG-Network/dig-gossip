@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.15.2"
+version = "0.16.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1505,12 +1505,13 @@ dependencies = [
 
 [[package]]
 name = "dig-nat"
-version = "0.11.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5074965e7951a0bbf8afc754a2179ddc0969190ed970bbb7648435c4b64eaca2"
+checksum = "f2093ca487bf797e12bacff33a0cc92484879d53d0087ea8e3503e6b2ffc26f7"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "base64",
  "dig-constants",
  "dig-identity",
  "dig-ip",
@@ -1521,7 +1522,6 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "serde",
- "serde_bytes",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -4015,16 +4015,6 @@ checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
 dependencies = [
  "ordered-float",
  "serde",
-]
-
-[[package]]
-name = "serde_bytes"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
-dependencies = [
- "serde",
- "serde_core",
 ]
 
 [[package]]
