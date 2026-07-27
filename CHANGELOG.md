@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.2] - 2026-07-27
+
+### Bug Fixes
+- **con:** Let this node re-dial a peer with a stale outbound slot (outbound newest-wins, #1703)
+
 ## [0.17.1] - 2026-07-27
 
 ### Bug Fixes
