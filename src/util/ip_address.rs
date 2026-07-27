@@ -26,12 +26,35 @@ use std::net::{IpAddr, SocketAddr};
 
 use dig_ip::{Family, LocalStack};
 
+/// Canonicalize an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to its IPv4 form.
+///
+/// A genuine IPv6 address is returned unchanged (so it still groups by its own /32, per §5.2). This
+/// is the one seam where a mapped-v6 candidate would otherwise be keyed differently than its plain-v4
+/// twin: without canonicalization `subnet_group` collapses `::ffff:a.b.c.d` to group `0` (its first
+/// four bytes are zero) instead of the mapped `a.b` /16, and the AS classifier ([`super::as_lookup`])
+/// fails to match it against v4 BGP prefixes — either seam lets the SAME routable network dodge the
+/// one-outbound-per-/16 (INT-006) or per-AS (INT-007) eclipse cap by presenting itself as mapped-v6.
+/// `Ipv6Addr::to_ipv4_mapped` is the canonical test — deliberately NOT `to_ipv4`, which would also
+/// fold the deprecated v4-*compatible* `::a.b.c.d` form.
+pub(crate) fn canonical_ip(ip: &IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => *ip,
+        },
+        IpAddr::V4(_) => *ip,
+    }
+}
+
 /// Compute /16 group key for IP. IPv4: first 2 octets. IPv6: first 4 bytes.
+///
+/// An IPv4-mapped IPv6 address is canonicalized to IPv4 first ([`canonical_ip`]), so it shares the
+/// /16 group of its plain-v4 twin and cannot dodge the /16 eclipse cap (INT-006, #1709).
 ///
 /// SPEC §1.6#5: "One outbound per /16 group."
 /// Chia `node_discovery.py:296-306`, `peer_info.py:51-56`.
 pub fn subnet_group(ip: &IpAddr) -> u32 {
-    match ip {
+    match canonical_ip(ip) {
         IpAddr::V4(v4) => {
             let o = v4.octets();
             ((o[0] as u32) << 8) | (o[1] as u32)
@@ -151,5 +174,34 @@ mod tests {
     fn disjoint_families_yield_no_candidates() {
         let candidates = vec![v6("[2001:db8::1]:9444"), v6("[2001:db8::2]:9444")];
         assert!(order_by_local_stack(&V4_ONLY, &candidates).is_empty());
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().expect("valid IpAddr")
+    }
+
+    // #1709 regression — an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) MUST group by the mapped /16
+    // exactly like its plain-v4 twin, or the same network dodges the /16 eclipse cap (INT-006) by
+    // presenting itself as mapped-v6 (collapsing to group 0) vs plain-v4.
+    #[test]
+    fn v4_mapped_v6_groups_with_plain_v4_same_16() {
+        let mapped = subnet_group(&ip("::ffff:203.0.113.7"));
+        let plain = subnet_group(&ip("203.0.113.9"));
+        assert_eq!(
+            mapped, plain,
+            "mapped-v6 must share the /16 group of its plain-v4 twin"
+        );
+        // And it is the actual 203.0 /16 key, not the collapsed IPv6 group 0.
+        assert_eq!(mapped, 203u32 << 8);
+    }
+
+    // Genuine IPv6 (not v4-mapped) still groups by its first 4 bytes (/32) — §5.2 IPv6-first unchanged.
+    #[test]
+    fn genuine_ipv6_still_groups_by_slash_32() {
+        let g = subnet_group(&ip("2001:db8::1"));
+        assert_eq!(
+            g,
+            (0x20u32 << 24) | (0x01u32 << 16) | (0x0du32 << 8) | 0xb8u32
+        );
     }
 }
