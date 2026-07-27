@@ -173,3 +173,7 @@ Durable, high-signal realizations (not a change diary).
   `Send`. Closing the displaced peer is an `.await`; scope the `peers` guard in a `{ … }` block that
   returns the superseded slot (an explicit `drop(peers)` before the await did NOT satisfy the auto-Send
   analysis — the block scope did).
+
+## Lane anchor — dig_ecosystem#1703 item 1 (outbound reconnect symmetry)
+
+WIP: mirror the #1691 inbound newest-wins fix to the OUTBOUND connect_to path (gossip_handle.rs:829-837 DuplicateConnection reject) — supersede the stale outbound slot on redial, reusing the generation/abort infra already present. Real-wire regression: outbound redial after a dropped link is accepted. Implementation follows.
