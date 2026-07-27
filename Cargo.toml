@@ -68,7 +68,16 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # (`encode()` is now fallible and the mux wire types are `#[non_exhaustive]`, so they are built through
 # constructors); the gossip production path builds no `dig-nat` mux frame — its own `StreamFrame`
 # (`src/service/dig_message.rs`) is a dig-gossip type with an infallible `encode()`.
-dig-nat = "0.13"
+#
+# `0.14` (cascade #1686) is PURELY ADDITIVE over 0.13 — it adds the decode-side `ChunkLensAssembler` /
+# `ChunkLensError` / `MAX_RESOURCE_CHUNK_COUNT` / `RangeFrame::split_chunk_lens_pages` mirror of 0.13's
+# paged range-metadata prologue. Nothing is removed or resignatured, so this crate needs no code
+# migration. The re-pin is nonetheless MANDATORY, not cosmetic: a `0.x` MINOR is semver-INCOMPATIBLE,
+# so `dig-nat = "0.13"` (`>=0.13.0, <0.14.0`) can never resolve 0.14.0 — leaving it would force
+# dig-node's tree to resolve TWO dig-nat versions and fail to compile on the re-exported dig-nat-owned
+# types below (`expected dig_nat::relay::RelayStatus, found dig_nat::RelayStatus`). Every node on every
+# path from dig-nat to dig-node must be bumped; this crate is the last one.
+dig-nat = "0.14"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
