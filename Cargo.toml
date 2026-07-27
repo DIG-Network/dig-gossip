@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -68,7 +68,27 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # (`encode()` is now fallible and the mux wire types are `#[non_exhaustive]`, so they are built through
 # constructors); the gossip production path builds no `dig-nat` mux frame — its own `StreamFrame`
 # (`src/service/dig_message.rs`) is a dig-gossip type with an infallible `encode()`.
-dig-nat = "0.13"
+#
+# `0.14` (cascade #1686) is PURELY ADDITIVE over 0.13 — it adds the decode-side `ChunkLensAssembler` /
+# `ChunkLensError` / `MAX_RESOURCE_CHUNK_COUNT` / `RangeFrame::split_chunk_lens_pages` mirror of 0.13's
+# paged range-metadata prologue. Nothing is removed or resignatured, so this crate needs no code
+# migration. The re-pin is nonetheless MANDATORY, not cosmetic: a `0.x` MINOR is semver-INCOMPATIBLE,
+# so `dig-nat = "0.13"` (`>=0.13.0, <0.14.0`) can never resolve 0.14.0 — leaving it would force
+# dig-node's tree to resolve TWO dig-nat versions and fail to compile on the re-exported dig-nat-owned
+# types below (`expected dig_nat::relay::RelayStatus, found dig_nat::RelayStatus`). Every node on every
+# path from dig-nat to dig-node must be bumped; this crate is the last one.
+#
+# WHY the bump is a MINOR even though nothing here changed: `src/nat/mod.rs` re-exports dig-nat types
+# from THIS crate's public API, so a dig-nat version change rotates their type identity for our
+# consumers. Resolved at dig-nat's head rather than assumed — SIX are nominal types DEFINED in dig-nat
+# (`NatConfig` config.rs, `NatError` error.rs, `TraversalKind` method/mod.rs, `PeerSession` mux.rs,
+# `PeerTarget` + `PeerConnection` peer.rs). `PeerStream` is the seventh re-export but is only a
+# `pub type` ALIAS to `Compat<yamux::Stream>`, so it is NOT dig-nat-owned and unifies across dig-nat
+# versions — correcting the "seven OWNED types" claim carried by the 0.16.0 changelog. The remaining
+# re-exports (`NodeCert`, `PeerId`, `BindingPolicy`, `peer_id_from_*`) come from dig-tls, which both
+# dig-nat versions pin at `^0.3`, so cargo unifies those. Six rotating nominal types is still a
+# breaking public-API change for consumers ⇒ MINOR on `0.x`, not patch.
+dig-nat = "0.14"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
