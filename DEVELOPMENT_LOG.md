@@ -201,12 +201,31 @@ Durable, high-signal realizations (not a change diary).
   → enforce INT-006/INT-007 against the current outbound budget, else close the stream + return the
   same `ConnectionFiltered` error. If it IS an outbound reconnect → its group/AS is already counted →
   skip the check and supersede. The pre-handshake path keeps ONLY the max_connections check.
-- Budget hygiene on admit: if the superseded slot was OUTBOUND, `remove_outbound(old_ip)` for its
-  group/AS before `add_outbound(new_ip)` — a same-IP reconnect nets to a no-op (one-per-group invariant
-  means the group was only ever this slot's), a new-IP reconnect releases the vacated group so the
-  budget can't leak a phantom occupancy. DEFERRED (#1703 item 2): a same-peer reconnect that MOVES into
-  a DIFFERENT already-occupied group is not re-refused (a single verified identity reconnecting is not
-  an eclipse-widening distinct identity); reconciled by the departed-peer reaper.
+- SET-vs-MAP UNDER-COUNT TRAP (caught by the full trio re-gate — the round-4 `remove_outbound` fix was
+  itself unsafe): the `SubnetGroupFilter`/`AsDiversityFilter` were refcount-free `HashSet`s. Round-4
+  added `remove_outbound`-on-supersede to release a vacated group; but a plain set has no refcount, so
+  removing a group entry when ANOTHER live outbound still occupies it UNDER-COUNTS — the set reports the
+  group free while the map still holds an outbound there, and a later net-new dial is wrongly admitted =
+  2 outbound in one /16 (the exact INT-006 cap). Exploit needs only `connect_to`s: P1→G_a, P2→G_b;
+  redial P1→G_b (reconnect, gate skipped; `remove_outbound(G_a)`+`add_outbound(G_b)`); redial P2→G_c
+  (`remove_outbound(G_b)` but P1 still in G_b!) → set loses G_b → net-new R dials G_b → admitted.
+- FINAL FIX (single source of truth = the peer map): DELETE the side-set occupancy entirely
+  (`SubnetGroupFilter`, `AsDiversityFilter`, the `subnet_filter`/`as_filter` `ServiceState` fields, and
+  all `add_outbound`/`remove_outbound`/`is_allowed` calls in `connect_to`+`disconnect`). Derive
+  occupancy on demand from `peers`: `state::outbound_diversity_conflict(peers, as_table, new_peer_id,
+  candidate_ip)` scans OUTBOUND slots (excluding `new_peer_id`) for a same-`/16` (INT-006) or same-AS
+  (INT-007) occupant. Keep only an immutable `as_table: AsLookupTable` on `ServiceState` for AS
+  classification (empty by default → AS fails open, same as before). The check + insert run under ONE
+  `peers`-lock hold so the check→insert is atomic (closes the concurrent-net-new-dial TOCTOU). Inserting
+  / removing map slots IS the accounting — no bookkeeping on admit/supersede/disconnect. A refcount-free
+  parallel set of a map's contents is an anti-pattern for security-critical caps: derive, don't mirror.
+- DEFERRED (#1703 item 2): a same-`peer_id` outbound reconnect that MOVES into a DIFFERENT already-
+  occupied group is not re-refused (a single verified identity reconnecting is not an eclipse-widening
+  distinct identity, and map-derived accounting means a same-identity migration can't corrupt what a
+  later net-new dial sees); reconciled by the departed-peer reaper.
+- The `SubnetGroupFilter`/`AsDiversityFilter` structs' old unit tests (dsc_010/dsc_011/int_006/int_007)
+  were repointed to the retained pure classifiers (`subnet_group`, `AsLookupTable::lookup`); the
+  end-to-end map-derived enforcement is covered in `con_1703_outbound_reconnect_tests`.
 - Max-connections stays ALWAYS enforced (pre-handshake, never bypassed): a supersede replaces a slot,
   so at capacity a reconnect whose stale slot occupies the last slot returns `MaxConnectionsReached` —
   acceptable; the departed-peer reaper (#1703 item 2) is the complement.

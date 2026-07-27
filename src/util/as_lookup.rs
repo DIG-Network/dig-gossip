@@ -10,18 +10,18 @@
 //! # Design
 //!
 //! - **`AsLookupTable`** — in-memory sorted vec of (network, prefix_len, ASN) entries.
-//!   Longest-prefix-match via reverse-sorted binary search.
-//! - **`AsDiversityFilter`** — tracks outbound AS numbers in a `HashSet<AsNumber>`.
-//!   `is_allowed()` returns false if ASN already in outbound set.
+//!   Longest-prefix-match via reverse-sorted binary search. This is REFERENCE DATA only.
+//!   AS-level outbound diversity (INT-007) is enforced in `connect_to` by classifying each live peer
+//!   with this table and comparing against the candidate across the peer map (#1703) — the single
+//!   source of truth — never a parallel occupancy set that could drift out of agreement with the map.
 //!   Unknown IPs (not in BGP table) fail open — allowed through.
-//! - **Fallback** — if no BGP table loaded, /16 filter (DSC-011) is sole guard.
+//! - **Fallback** — if no BGP table loaded, `/16` grouping (DSC-011) is the sole guard.
 //!
 //! # Chia comparison
 //!
 //! Chia only does /16 grouping (`node_discovery.py:296-306`). An attacker controlling
 //! many /16 blocks in one AS can bypass that. AS-level grouping catches this.
 
-use std::collections::HashSet;
 use std::net::IpAddr;
 
 /// Autonomous System number (32-bit, per RFC 6793).
@@ -117,73 +117,5 @@ fn ip_in_prefix(ip: &IpAddr, network: &IpAddr, prefix_len: u8) -> bool {
             (ip_bits & mask) == (net_bits & mask)
         }
         _ => false, // v4 vs v6 mismatch
-    }
-}
-
-/// Outbound AS diversity filter (**DSC-010**).
-///
-/// Tracks AS numbers of current outbound connections. Rejects candidates
-/// whose AS is already represented in outbound set.
-///
-/// SPEC §6.4 item 3: "AS-level diversity — one outbound per AS."
-/// SPEC §1.8#7: "AS-level grouping provides stronger eclipse resistance."
-#[derive(Debug, Clone)]
-pub struct AsDiversityFilter {
-    /// BGP prefix table for IP → AS resolution.
-    as_table: AsLookupTable,
-    /// AS numbers currently represented in outbound connections.
-    outbound_as_numbers: HashSet<AsNumber>,
-}
-
-impl AsDiversityFilter {
-    /// Create filter with given BGP table.
-    pub fn new(as_table: AsLookupTable) -> Self {
-        Self {
-            as_table,
-            outbound_as_numbers: HashSet::new(),
-        }
-    }
-
-    /// Create filter with no BGP data (all candidates allowed — /16 is sole guard).
-    pub fn no_bgp_data() -> Self {
-        Self::new(AsLookupTable::empty())
-    }
-
-    /// Check if candidate IP is allowed (AS not already in outbound set).
-    ///
-    /// Returns `true` if:
-    /// - AS unknown (IP not in BGP table) — fail open per DSC-010 spec
-    /// - AS not yet represented in outbound connections
-    ///
-    /// Returns `false` if AS already has an outbound connection.
-    pub fn is_allowed(&self, ip: &IpAddr) -> bool {
-        match self.as_table.lookup(ip) {
-            Some(asn) => !self.outbound_as_numbers.contains(&asn),
-            None => true, // fail open — unknown AS allowed
-        }
-    }
-
-    /// Record new outbound connection's AS.
-    pub fn add_outbound(&mut self, ip: &IpAddr) {
-        if let Some(asn) = self.as_table.lookup(ip) {
-            self.outbound_as_numbers.insert(asn);
-        }
-    }
-
-    /// Remove outbound connection's AS (on disconnect).
-    pub fn remove_outbound(&mut self, ip: &IpAddr) {
-        if let Some(asn) = self.as_table.lookup(ip) {
-            self.outbound_as_numbers.remove(&asn);
-        }
-    }
-
-    /// Current outbound AS count.
-    pub fn outbound_as_count(&self) -> usize {
-        self.outbound_as_numbers.len()
-    }
-
-    /// Whether BGP data is loaded.
-    pub fn has_bgp_data(&self) -> bool {
-        !self.as_table.is_empty()
     }
 }

@@ -1395,23 +1395,35 @@ inbound supersede. The invariants (cert-gated displacement, map-boundedness, unc
 handling, session-generation guard against stale-session eviction) and the **always-enforced
 max-connections admission** apply unchanged.
 
-The outbound diversity budget (one-outbound-per-/16 INT-006, one-per-AS INT-007) MUST be decided on
-the **handshake-verified identity, NOT the pre-handshake dialed address**. A peer-map slot sharing the
-dialed address may be an INBOUND slot or a Nat slot (whose address is sourced from
-attacker-influenced `RespondPeers`) that does NOT consume this node's outbound diversity budget;
-admitting past the filters merely because *some* slot occupies that address would let a peer place a
-second outbound connection in an already-full /16 or AS and widen an eclipse. Therefore, after the
-handshake yields the verified `peer_id`: if the map already holds an **outbound** slot under that same
-`peer_id`, the admission is a genuine outbound reconnect whose group/AS is already counted — the
-diversity check is skipped and the slot is superseded; otherwise (a net-new identity, or an admission
-that would replace a non-outbound slot at that address) the admission is net-new outbound occupancy
-and MUST satisfy INT-006 + INT-007 against the current outbound budget, else be refused (the completed
-handshake stream is closed and a `ConnectionFiltered` error returned). On admit the budget is updated
-for the verified address; when a superseded OUTBOUND slot's group/AS differs from the new address's
-(the peer reconnected from a new IP) the vacated group/AS is released so the budget cannot leak
-occupancy. (A same-identity outbound reconnect that MOVES into a different, already-occupied group is
-reconciled by the departed-peer reaper, #1703 item 2.) Without the outbound path, a node could never
-re-establish a dropped outbound link to a peer until the stale slot was cleared.
+The outbound diversity budget (one-outbound-per-/16 INT-006, one-per-AS INT-007) MUST be derived from
+the **live peer map — the single source of truth — never a parallel occupancy set**, and decided on
+the **handshake-verified identity, NOT the pre-handshake dialed address**. Two rationales, both
+normative:
+
+- *Single source of truth.* Outbound `/16`+AS occupancy MUST be computed on demand by scanning the
+  peer map (each OUTBOUND slot's `remote()` classified to its `/16` group via `subnet_group` and, when
+  a BGP table is loaded, to its AS number), NOT tracked in a separate mutable `HashSet` mutated on
+  connect/disconnect. A refcount-free side-set drifts out of agreement with the map: when two outbound
+  peers share a group and one is removed or superseded, an unconditional "remove group" deletes the
+  entry while the other peer still occupies it — an UNDER-COUNT that then re-admits a second outbound
+  into the occupied group, defeating the cap. The map cannot under-count what it contains.
+- *Verified identity, not address.* A peer-map slot sharing the dialed address may be an INBOUND slot
+  or a Nat slot (whose address is sourced from attacker-influenced `RespondPeers`) that does NOT occupy
+  this node's outbound budget; deciding on address would let a peer place a second outbound in an
+  already-full group and widen an eclipse.
+
+Therefore, ATOMICALLY under one hold of the `peers` lock (the same hold that performs the insert, so
+two concurrent net-new dials into the same empty group cannot both pass): if the map already holds an
+**outbound** slot under the verified `peer_id`, the admission is a genuine outbound reconnect whose
+group/AS the map already counts (it is excluded from the scan) — the diversity check is skipped and
+the slot is superseded. Otherwise (a net-new identity, or an admission that would replace a
+non-outbound slot at that address) it is net-new outbound occupancy and MUST have zero other outbound
+slots in its `/16` (INT-006) or AS (INT-007) in the map, else be refused (the completed handshake
+stream is closed and a `ConnectionFiltered` error returned). No add/remove bookkeeping runs on
+admit/supersede/disconnect — inserting and removing map slots IS the accounting. (A same-identity
+outbound reconnect that MOVES into a different, already-occupied group is reconciled by the
+departed-peer reaper, #1703 item 2.) Without the outbound path, a node could never re-establish a
+dropped outbound link to a peer until the stale slot was cleared.
 
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 

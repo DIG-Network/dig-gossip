@@ -182,17 +182,17 @@ async fn eclipse_admission_is_refused_for_verified_new_identity_in_full_group() 
     let _ = common::generate_test_certs(client_dir.path());
     let (_client_svc, client_h) = service_from_dir(client_dir.path()).await;
 
-    // Legitimate outbound to L1 — claims the outbound /16 budget for group 127.0. This is the
-    // PRODUCTION path (`connect_to` is the only caller of `add_outbound`); a directly-seeded slot would
-    // NOT populate the filter, and the eclipse gate below would then have nothing to fire against.
+    // Legitimate outbound to L1 — occupies /16 group 127.0 in the peer map (the single source of
+    // truth for outbound diversity occupancy, #1703). A real `connect_to` inserts a live OUTBOUND
+    // slot; occupancy is then derived from that map, not from any side-set.
     client_h
         .connect_to(l1_bound)
         .await
-        .expect("outbound to L1 fills the /16 budget");
+        .expect("outbound to L1 occupies the /16 group");
     assert_eq!(
-        client_h.__outbound_subnet_group_count_for_tests(),
+        client_h.__stub_filter_count_for_tests(None, true).await,
         1,
-        "the real outbound to L1 must have populated the /16 budget (group 127.0) — else the INT-006 \
+        "the real outbound to L1 must occupy the /16 group (127.0) in the peer map — else the INT-006 \
          refusal below would be vacuous and the test would pass for the wrong reason"
     );
 
@@ -219,5 +219,73 @@ async fn eclipse_admission_is_refused_for_verified_new_identity_in_full_group() 
         client_h.__stub_filter_count_for_tests(None, true).await,
         1,
         "exactly one OUTBOUND peer — L2 was not admitted as a second outbound in the full /16"
+    );
+}
+
+/// **#1703 round-5 under-count regression (the set-vs-map drift trap).** Proves outbound diversity
+/// occupancy is derived from the peer map — the single source of truth — and NOT from a parallel
+/// side-set that can under-count.
+///
+/// The round-4 code tracked outbound `/16` occupancy in a refcount-free `HashSet` that only
+/// `connect_to` ever populated (`add_outbound`), and it deleted a group entry unconditionally on
+/// supersede/disconnect even when another live outbound still occupied that group — so the set could
+/// report a group as FREE while the peer map still held an outbound connection in it, wrongly
+/// admitting a SECOND outbound into the group (the exact INT-006 eclipse cap this lane enforces).
+///
+/// This test constructs precisely that divergence WITHOUT any supersede gymnastics: seeding an
+/// OUTBOUND slot directly into the peer map (via the stub helper) populates the map but NEVER touches
+/// the side-set — so on round-4 the set is empty for group `127.0` while the map holds an outbound
+/// there. A net-new verified identity then dials into that same `/16`.
+///
+/// RED (round-4 side-set): the empty set reports `127.0` free → the net-new dial is ADMITTED → two
+/// outbound in one `/16`. GREEN (map-derived): the occupancy count sees the seeded outbound slot in
+/// `127.0` and REFUSES with the INT-006 error.
+#[tokio::test]
+async fn map_derived_occupancy_refuses_new_identity_when_a_seeded_outbound_holds_the_group() {
+    // A real listener the net-new dial will complete a handshake against — on loopback, so its `/16`
+    // group is 127.0 (loopback is all one /16, so a same-group occupant is a different loopback IP).
+    let listener_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(listener_dir.path());
+    let (_listener_svc, listener_h) = service_from_dir(listener_dir.path()).await;
+    let listener_bound = listener_h
+        .__listen_bound_addr_for_tests()
+        .expect("listener addr");
+
+    let client_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(client_dir.path());
+    let (_client_svc, client_h) = service_from_dir(client_dir.path()).await;
+
+    // Seed an OUTBOUND slot in the SAME /16 (127.0) directly into the peer map, at a DIFFERENT
+    // loopback address than the listener (so a distinct `peer_id`). The stub path writes ONLY the peer
+    // map — it never calls the round-4 `add_outbound` — so on the round-4 side-set code group 127.0 is
+    // absent from the set (the under-count) while the map plainly holds an outbound there.
+    let seeded_outbound: std::net::SocketAddr = "127.0.0.99:59999".parse().expect("valid addr");
+    assert_ne!(
+        seeded_outbound.ip(),
+        listener_bound.ip(),
+        "the seeded occupant must be a distinct address so it carries a distinct peer_id"
+    );
+    client_h
+        .__connect_stub_peer_with_direction(seeded_outbound, NodeType::FullNode, true)
+        .await
+        .expect("seed an outbound slot occupying /16 127.0 in the peer map");
+
+    // Dial the listener: a real handshake yields its net-new verified identity, in the /16 127.0 the
+    // seeded outbound slot already occupies. Map-derived occupancy must REFUSE (INT-006). On round-4
+    // the empty side-set admitted it — a second outbound in the group.
+    let err = client_h.connect_to(listener_bound).await.expect_err(
+        "a net-new verified identity in a /16 the peer map already shows occupied must be refused",
+    );
+    assert!(
+        matches!(err, GossipError::ConnectionFiltered(ref m) if m.contains("INT-006")),
+        "expected INT-006 diversity refusal derived from the peer map, got {err:?}"
+    );
+
+    // No eclipse admission: still exactly one OUTBOUND slot (the seeded occupant); the listener was
+    // not admitted as a second outbound in 127.0.
+    assert_eq!(
+        client_h.__stub_filter_count_for_tests(None, true).await,
+        1,
+        "the net-new dial must not have landed a second outbound in the occupied /16"
     );
 }
