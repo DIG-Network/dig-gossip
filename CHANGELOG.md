@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.3] - 2026-07-27
+
+### Bug Fixes
+- **net:** Canonicalize IPv4-mapped IPv6 before /16 subnet grouping (#1709)
+
 ## [0.17.2] - 2026-07-27
 
 ### Bug Fixes
