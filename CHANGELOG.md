@@ -7,7 +7,7 @@ This project adheres to [Semantic Versioning](https://semver.org) and
 ## [0.17.0] - 2026-07-27
 
 ### Chores
-- **deps:** Bump dig-nat to 0.14 — release 0.17.0 (cascade #1686)
+- **deps:** Bump dig-nat to 0.14 — cascade #1686 (#26)
 
 ## [0.16.0] - 2026-07-26
 
