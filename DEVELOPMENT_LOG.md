@@ -126,3 +126,12 @@ Durable, high-signal realizations (not a change diary).
   yet implemented in dig-gossip (the gossip-over-nat message loop lands with dig-node integration);
   the relayed route carries the SAME frame the direct nat path carries, so no plaintext-to-relay path
   exists to leak.
+
+## Lane anchor — dig_ecosystem#1691 (P1/MVP: restarted peer cannot reconnect)
+
+WIP: the inbound duplicate-PeerId guard (src/connection/listener.rs) rejects a reconnect on stale
+peer-map presence with no liveness check, so a restarted peer (same peer_id) 404s every read. Fix:
+reap/supersede the stale session before rejecting (mirror prune_expired_dig_bans; newest-wins is
+safe because the dial is mTLS-authenticated to peer_id = SHA-256(TLS SPKI DER)), with the adversarial
+guards (a non-cert-holder cannot displace; a peer cannot churn slots to exhaust the map). Real-wire
+regression test + SPEC.md. Implementation follows.
