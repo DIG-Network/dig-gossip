@@ -762,16 +762,20 @@ impl GossipHandle {
         // Reconnect symmetry (#1703) — the outbound mirror of the inbound #1691 newest-wins policy.
         //
         // A dropped outbound link leaves this endpoint's slot in `peers` (dig-gossip never reaps a
-        // slot on disconnect) AND leaves its /16 + AS registered in the diversity filters. A re-dial
-        // to that SAME endpoint must therefore SUPERSEDE the stale slot (newest-wins), so it is
-        // neither a `DuplicateConnection` to reject nor subject to the one-per-/16 (INT-006) /
-        // one-per-AS (INT-007) diversity filters that the stale slot itself populated — otherwise a
-        // node could never re-establish a dropped outbound link. The supersede is keyed by the
-        // handshake-verified `peer_id` at insert time below (mTLS-gated, replace-not-grow), mirroring
-        // `negotiate_inbound_over_ws`. A genuinely NEW endpoint still passes the full diversity
-        // admission. Max-connections admission is UNCHANGED and always enforced (the map stays bounded
-        // at one slot per `peer_id`).
-        let is_reconnect = {
+        // slot on disconnect), so `connect_to` must be able to re-establish it: no `DuplicateConnection`
+        // reject, and the freshly mTLS-authenticated session supersedes the stale slot at insert time
+        // below (keyed by the handshake-verified `peer_id`, replace-not-grow — mirroring
+        // `negotiate_inbound_over_ws`).
+        //
+        // The one-outbound-per-/16 (INT-006) / one-per-AS (INT-007) diversity decision is DELIBERATELY
+        // NOT made here on the dialed address. The pre-handshake address is unverified and a peer-map
+        // slot at that address may be an INBOUND Live slot or a Nat slot (whose `remote` is sourced
+        // from attacker-influenced `RespondPeers`) — neither of which consumes THIS node's outbound
+        // diversity budget. Deciding diversity on address alone would let a peer bypass the cap and
+        // widen an eclipse. The decision is instead made AFTER the handshake, against the VERIFIED
+        // identity (see the diversity gate below). Only the max-connections admission is pre-checked
+        // here (unchanged; the map stays bounded at one slot per `peer_id`).
+        {
             let peers = self
                 .inner
                 .peers
@@ -781,30 +785,6 @@ impl GossipHandle {
                 return Err(GossipError::MaxConnectionsReached(
                     self.inner.config.max_connections,
                 ));
-            }
-            peers.values().any(|slot| slot.remote() == addr)
-        };
-
-        if !is_reconnect {
-            // INT-006: /16 subnet group filter — one outbound per /16 (new endpoints only; a re-dial
-            // reuses the group its stale slot already holds, so it stays one-outbound-per-/16).
-            if let Ok(sf) = self.inner.subnet_filter.lock() {
-                if !sf.is_allowed(&addr.ip()) {
-                    return Err(GossipError::ConnectionFiltered(format!(
-                        "INT-006: /16 subnet group already has an outbound connection for {}",
-                        addr.ip()
-                    )));
-                }
-            }
-
-            // INT-007: AS diversity filter — one outbound per AS (new endpoints only; same rationale).
-            if let Ok(af) = self.inner.as_filter.lock() {
-                if !af.is_allowed(&addr.ip()) {
-                    return Err(GossipError::ConnectionFiltered(format!(
-                        "INT-007: AS already has an outbound connection for {}",
-                        addr.ip()
-                    )));
-                }
             }
         }
 
@@ -837,10 +817,52 @@ impl GossipHandle {
             let _ = out.peer.close().await;
             return Err(GossipError::PeerBanned(peer_id));
         }
-        // Reconnect symmetry (#1703): no post-handshake `DuplicateConnection` reject on `peer_id`. A
-        // re-dial to a peer whose stale slot survives a dropped link supersedes it at insert time
-        // below (newest-wins, mTLS-gated), mirroring the inbound #1691 fix — see the reconnect note at
-        // the top of this method and the supersede at the `peers.insert` below.
+        // #1703 eclipse-admission gate — the outbound diversity decision, tied to the POST-handshake
+        // VERIFIED identity (NOT the pre-handshake address, which an attacker influences via
+        // `RespondPeers`). There is no `DuplicateConnection` reject: a re-dial to a peer whose stale
+        // slot survives a dropped link supersedes it at insert time below (newest-wins, mTLS-gated —
+        // #1691). But whether this admission consumes a NEW outbound /16+AS budget slot depends on the
+        // verified identity: only a slot ALREADY outbound under THIS `peer_id` is a genuine reconnect
+        // whose group/AS the filters already count. Anything else — a net-new identity, or "upgrading"
+        // an inbound/Nat slot that shares the address — is net-new outbound occupancy and MUST pass
+        // INT-006/INT-007 against the current outbound budget, or a peer could exceed
+        // one-outbound-per-/16 / one-per-AS (eclipse-widening).
+        let is_outbound_reconnect = {
+            let peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            matches!(peers.get(&peer_id), Some(slot) if slot.is_outbound())
+        };
+        if !is_outbound_reconnect {
+            let subnet_blocked = self
+                .inner
+                .subnet_filter
+                .lock()
+                .map(|sf| !sf.is_allowed(&addr.ip()))
+                .unwrap_or(false);
+            if subnet_blocked {
+                let _ = out.peer.close().await;
+                return Err(GossipError::ConnectionFiltered(format!(
+                    "INT-006: /16 subnet group already has an outbound connection for {}",
+                    addr.ip()
+                )));
+            }
+            let as_blocked = self
+                .inner
+                .as_filter
+                .lock()
+                .map(|af| !af.is_allowed(&addr.ip()))
+                .unwrap_or(false);
+            if as_blocked {
+                let _ = out.peer.close().await;
+                return Err(GossipError::ConnectionFiltered(format!(
+                    "INT-007: AS already has an outbound connection for {}",
+                    addr.ip()
+                )));
+            }
+        }
 
         let src = PeerInfo {
             host: addr.ip().to_string(),
@@ -918,12 +940,20 @@ impl GossipHandle {
 
         // Newest-wins supersede (#1703) — the outbound counterpart of the inbound #1691 supersede.
         // `HashMap::insert` returned any prior slot for this `peer_id` (a re-dial to a peer whose
-        // stale slot survived a dropped link). Tear the displaced Live slot down AFTER releasing the
-        // `peers` lock: abort its keepalive so it cannot fire a ghost teardown against this newer
-        // session, then close its WebSocket (dropping a `LiveSlot` does not close the socket). The
-        // generation guard in `disconnect_after_keepalive_failure` is the load-bearing invariant; this
-        // abort is the prompt first line of defence. A displaced Stub/Nat slot carries no keepalive and
-        // is closed by being dropped here (its dedicated teardown is #1703 items 2/4, out of scope).
+        // stale slot survived a dropped link). Note whether that displaced slot was an OUTBOUND slot
+        // (of any kind) and at what address, so the outbound diversity budget it held can be released
+        // for its vacated group/AS below.
+        let superseded_outbound_ip = superseded
+            .as_ref()
+            .filter(|slot| slot.is_outbound())
+            .map(|slot| slot.remote().ip());
+
+        // Tear the displaced Live slot down AFTER releasing the `peers` lock: abort its keepalive so
+        // it cannot fire a ghost teardown against this newer session, then close its WebSocket
+        // (dropping a `LiveSlot` does not close the socket). The generation guard in
+        // `disconnect_after_keepalive_failure` is the load-bearing invariant; this abort is the prompt
+        // first line of defence. A displaced Stub/Nat slot carries no keepalive and is closed by being
+        // dropped here (its dedicated transport teardown is #1703 items 2/4, out of scope).
         if let Some(PeerSlot::Live(stale)) = superseded {
             stale.keepalive_task.abort();
             let _ = stale.peer.close().await;
@@ -934,13 +964,25 @@ impl GossipHandle {
             pt.add_peer(peer_id);
         }
 
-        // INT-006: Record outbound /16 group.
+        // INT-006/INT-007: update the outbound diversity budget for the VERIFIED admission (#1703).
+        // If we superseded an OUTBOUND slot, first release its group/AS: when the peer reconnected
+        // from a NEW address the old group/AS would otherwise leak occupancy (a phantom outbound in a
+        // group we no longer occupy); when the address is unchanged this remove-then-add nets to a
+        // no-op (the one-outbound-per-group invariant means the group was only ever this slot's).
+        // Then claim the new address's group/AS (idempotent). NOTE (#1703 item 2, deferred): a
+        // same-`peer_id` reconnect that MOVES to a different /16/AS already occupied by ANOTHER
+        // outbound peer is not re-refused here — it is a single verified identity reconnecting (not an
+        // eclipse-widening distinct identity); reconciling that against the reaper is item 2.
         if let Ok(mut sf) = self.inner.subnet_filter.lock() {
+            if let Some(old_ip) = superseded_outbound_ip {
+                sf.remove_outbound(&old_ip);
+            }
             sf.add_outbound(&addr.ip());
         }
-
-        // INT-007: Record outbound AS.
         if let Ok(mut af) = self.inner.as_filter.lock() {
+            if let Some(old_ip) = superseded_outbound_ip {
+                af.remove_outbound(&old_ip);
+            }
             af.add_outbound(&addr.ip());
         }
 
@@ -1756,6 +1798,19 @@ impl GossipHandle {
         is_outbound: bool,
     ) -> Result<PeerId, GossipError> {
         self.connect_stub_inner(addr, node_type, is_outbound).await
+    }
+
+    /// Test hook (#1703): how many distinct `/16` groups the outbound diversity filter (INT-006)
+    /// currently holds. Lets a test assert the outbound budget was populated the production way (by a
+    /// real [`Self::connect_to`], the only path that calls `add_outbound`) before probing the
+    /// eclipse-admission gate.
+    #[doc(hidden)]
+    pub fn __outbound_subnet_group_count_for_tests(&self) -> usize {
+        self.inner
+            .subnet_filter
+            .lock()
+            .map(|sf| sf.outbound_group_count())
+            .unwrap_or(0)
     }
 
     /// How many stub rows match [`Self::get_connections`] filters (until CON-001 returns real [`PeerConnection`]s).

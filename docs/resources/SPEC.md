@@ -1387,19 +1387,31 @@ slot refused every reconnect and the peer's subsequent reads 404'd (observed on 
 
 **Outbound symmetry (normative; #1703).** The same newest-wins policy holds for the OUTBOUND dial
 path (`GossipHandle::connect_to`), not only the inbound listener. A dropped outbound link leaves this
-node's slot for that peer in the map (again, no reaping) AND leaves the peer's /16 (INT-006) + AS
-(INT-007) registered in the outbound diversity filters. `connect_to` therefore MUST NOT refuse a
-re-dial to an endpoint it already holds a slot for (no `DuplicateConnection`), and MUST NOT let the
-diversity filters the stale slot itself populated self-block that re-dial: a re-dial to an already-held
-endpoint bypasses the one-per-/16 / one-per-AS admission (the group/AS is already this endpoint's, so
-the re-dial stays one-outbound-per-group), while a genuinely NEW endpoint still passes full diversity
-admission. The freshly mTLS-authenticated outbound session supersedes the stale slot at insert time
-(keyed by the handshake-verified `peer_id`, `HashMap::insert` replace-not-grow), aborts the displaced
-slot's keepalive, and `Peer::close()`s it — identical to the inbound supersede. The invariants above
-(cert-gated displacement, map-boundedness, unchanged ban/penalty handling, and the session-generation
-guard against stale-session eviction) apply unchanged. **Max-connections admission is unchanged and
-always enforced** on the outbound path. Without this, a node could never re-establish a dropped
-outbound link to a peer until the stale slot was cleared.
+node's slot for that peer in the map (again, no reaping), so `connect_to` MUST NOT refuse a re-dial to
+a peer whose slot survives (no `DuplicateConnection`): the freshly mTLS-authenticated outbound session
+supersedes the stale slot at insert time (keyed by the handshake-verified `peer_id`, `HashMap::insert`
+replace-not-grow), aborts the displaced slot's keepalive, and `Peer::close()`s it — identical to the
+inbound supersede. The invariants (cert-gated displacement, map-boundedness, unchanged ban/penalty
+handling, session-generation guard against stale-session eviction) and the **always-enforced
+max-connections admission** apply unchanged.
+
+The outbound diversity budget (one-outbound-per-/16 INT-006, one-per-AS INT-007) MUST be decided on
+the **handshake-verified identity, NOT the pre-handshake dialed address**. A peer-map slot sharing the
+dialed address may be an INBOUND slot or a Nat slot (whose address is sourced from
+attacker-influenced `RespondPeers`) that does NOT consume this node's outbound diversity budget;
+admitting past the filters merely because *some* slot occupies that address would let a peer place a
+second outbound connection in an already-full /16 or AS and widen an eclipse. Therefore, after the
+handshake yields the verified `peer_id`: if the map already holds an **outbound** slot under that same
+`peer_id`, the admission is a genuine outbound reconnect whose group/AS is already counted — the
+diversity check is skipped and the slot is superseded; otherwise (a net-new identity, or an admission
+that would replace a non-outbound slot at that address) the admission is net-new outbound occupancy
+and MUST satisfy INT-006 + INT-007 against the current outbound budget, else be refused (the completed
+handshake stream is closed and a `ConnectionFiltered` error returned). On admit the budget is updated
+for the verified address; when a superseded OUTBOUND slot's group/AS differs from the new address's
+(the peer reconnected from a new IP) the vacated group/AS is released so the budget cannot leak
+occupancy. (A same-identity outbound reconnect that MOVES into a different, already-occupied group is
+reconciled by the departed-peer reaper, #1703 item 2.) Without the outbound path, a node could never
+re-establish a dropped outbound link to a peer until the stale slot was cleared.
 
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 

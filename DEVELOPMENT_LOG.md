@@ -184,14 +184,32 @@ Durable, high-signal realizations (not a change diary).
   same-`/16` re-dial (e.g. any loopback re-dial — `subnet_group(127.0.0.1)` has no bypass) is refused
   with `ConnectionFiltered`. Fixing only the duplicate reject leaves outbound reconnect still broken in
   production. The two are the SAME stale-slot root; both must be handled for item 1 to actually work.
-- Fix: detect a re-dial to an already-held endpoint (`peers.values().any(|s| s.remote() == addr)`) and,
-  for that case, skip BOTH the duplicate reject and the diversity `is_allowed` checks — the group/AS is
-  already this endpoint's, so superseding it keeps one-outbound-per-group. A genuinely new endpoint
-  still passes full diversity admission. This keys on address (peer_id is unknown pre-handshake); the
-  actual newest-wins supersede at insert is peer_id-keyed and mTLS-gated.
-- Max-connections stays ALWAYS enforced (never bypassed by the reconnect flag): a supersede replaces a
-  slot, so at capacity a reconnect whose stale slot occupies the last slot returns
-  `MaxConnectionsReached` — acceptable; the departed-peer reaper (#1703 item 2) is the complement.
+- ECLIPSE-ADMISSION TRAP (caught by the adversarial+security gate — the address heuristic is unsafe):
+  a first attempt keyed the diversity bypass on address (`peers.values().any(|s| s.remote()==addr)`).
+  That is exploitable. The outbound diversity budget is populated ONLY by outbound `add_outbound`; an
+  INBOUND Live slot or a Nat slot (whose `remote` comes from attacker-influenced `RespondPeers`) sits
+  in the peer map at an address WITHOUT consuming that budget. So "a slot exists at addr" does NOT imply
+  "addr already consumes a diversity slot": with an outbound already filling /16 5.6, a Nat slot at
+  5.6.7.8, a dial to 5.6.7.8 would be treated as a reconnect, bypass INT-006, handshake to a NET-NEW
+  peer_id, and `insert` a SECOND outbound Live in /16 5.6 (supersedes nothing) — exceeding
+  one-per-/16//AS and widening an eclipse. Restricting to `is_outbound() && remote()==addr` is ALSO
+  insufficient (different-peer_id-same-address still inserts a net-new key → map growth + 2 outbound).
+- CORRECT FIX (verified-identity gate): decide diversity on the POST-handshake verified `peer_id`, not
+  the pre-handshake address. After the handshake, `is_outbound_reconnect =
+  matches!(peers.get(&peer_id), Some(s) if s.is_outbound())`. If NOT an outbound reconnect (net-new
+  identity, or an admission replacing a non-outbound slot at that address) → net-new outbound occupancy
+  → enforce INT-006/INT-007 against the current outbound budget, else close the stream + return the
+  same `ConnectionFiltered` error. If it IS an outbound reconnect → its group/AS is already counted →
+  skip the check and supersede. The pre-handshake path keeps ONLY the max_connections check.
+- Budget hygiene on admit: if the superseded slot was OUTBOUND, `remove_outbound(old_ip)` for its
+  group/AS before `add_outbound(new_ip)` — a same-IP reconnect nets to a no-op (one-per-group invariant
+  means the group was only ever this slot's), a new-IP reconnect releases the vacated group so the
+  budget can't leak a phantom occupancy. DEFERRED (#1703 item 2): a same-peer reconnect that MOVES into
+  a DIFFERENT already-occupied group is not re-refused (a single verified identity reconnecting is not
+  an eclipse-widening distinct identity); reconciled by the departed-peer reaper.
+- Max-connections stays ALWAYS enforced (pre-handshake, never bypassed): a supersede replaces a slot,
+  so at capacity a reconnect whose stale slot occupies the last slot returns `MaxConnectionsReached` —
+  acceptable; the departed-peer reaper (#1703 item 2) is the complement.
 - The outbound insert ALREADY carried the #1691 generation + keepalive-AbortHandle wiring (added
   defensively by the #1691 lane), so no new generation plumbing was needed — the same
   `disconnect_after_keepalive_failure` / `apply_inbound_rate_limit_violation` compare-and-remove guards

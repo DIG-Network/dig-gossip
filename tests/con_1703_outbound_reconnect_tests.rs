@@ -33,7 +33,7 @@ mod common;
 
 use std::path::Path;
 
-use dig_gossip::{GossipHandle, GossipService};
+use dig_gossip::{GossipError, GossipHandle, GossipService, NodeType};
 
 /// Start a full [`GossipService`] (TLS listener + accept loop) from an existing cert directory.
 async fn service_from_dir(dir: &Path) -> (GossipService, GossipHandle) {
@@ -144,4 +144,80 @@ async fn outbound_reconnect_churn_keeps_map_bounded() {
             None => last_pid = Some(pid),
         }
     }
+}
+
+/// **#1703 eclipse-admission regression (security gate).** The reconnect bypass must NOT let a peer
+/// exceed the one-outbound-per-/16 (INT-006) diversity cap. A peer-map slot at the dialed address
+/// that is NOT an outbound slot for the handshake-VERIFIED identity — here an inbound slot injected at
+/// a second listener's address (its `remote` would, in the wild, come from attacker-influenced
+/// `RespondPeers`) — does not consume this node's outbound diversity budget, so admitting past the
+/// filters on address alone would place a SECOND outbound peer in an already-occupied /16.
+///
+/// Setup: a legitimate outbound to `L1` fills /16 group `127.0`. An inbound stub is injected at `L2`'s
+/// address (same /16, a DIFFERENT peer_id than `L2`'s real cert). `connect_to(L2)` then completes a
+/// real handshake yielding `L2`'s net-new verified peer_id.
+///
+/// RED (pre-fix): the address-keyed `is_reconnect` predicate matched the inbound stub, bypassed
+/// INT-006, and admitted a second outbound in `127.0`. GREEN: the diversity decision is made against
+/// the verified identity, so the dial is refused with the INT-006 error.
+#[tokio::test]
+async fn eclipse_admission_is_refused_for_verified_new_identity_in_full_group() {
+    // L1 — the legitimate outbound that fills /16 group 127.0.
+    let l1_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(l1_dir.path());
+    let (_l1_svc, l1_h) = service_from_dir(l1_dir.path()).await;
+    let l1_bound = l1_h
+        .__listen_bound_addr_for_tests()
+        .expect("L1 listen addr");
+
+    // L2 — a distinct real listener (distinct cert => distinct verified peer_id), same /16.
+    let l2_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(l2_dir.path());
+    let (_l2_svc, l2_h) = service_from_dir(l2_dir.path()).await;
+    let l2_bound = l2_h
+        .__listen_bound_addr_for_tests()
+        .expect("L2 listen addr");
+
+    let client_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(client_dir.path());
+    let (_client_svc, client_h) = service_from_dir(client_dir.path()).await;
+
+    // Legitimate outbound to L1 — claims the outbound /16 budget for group 127.0. This is the
+    // PRODUCTION path (`connect_to` is the only caller of `add_outbound`); a directly-seeded slot would
+    // NOT populate the filter, and the eclipse gate below would then have nothing to fire against.
+    client_h
+        .connect_to(l1_bound)
+        .await
+        .expect("outbound to L1 fills the /16 budget");
+    assert_eq!(
+        client_h.__outbound_subnet_group_count_for_tests(),
+        1,
+        "the real outbound to L1 must have populated the /16 budget (group 127.0) — else the INT-006 \
+         refusal below would be vacuous and the test would pass for the wrong reason"
+    );
+
+    // Inject an INBOUND slot at L2's address (peer_id_for_addr(l2_bound) — NOT L2's cert identity).
+    // An inbound slot does not consume the outbound diversity budget; it only shares the address.
+    client_h
+        .__connect_stub_peer_with_direction(l2_bound, NodeType::FullNode, false)
+        .await
+        .expect("inject inbound slot sharing L2's address");
+
+    // Dial L2: the handshake yields L2's net-new verified identity in the already-full /16 127.0.
+    // The verified-identity diversity gate must REFUSE (INT-006).
+    let err = client_h.connect_to(l2_bound).await.expect_err(
+        "a net-new verified identity in a full /16 must be refused, not eclipse-admitted",
+    );
+    assert!(
+        matches!(err, GossipError::ConnectionFiltered(ref m) if m.contains("INT-006")),
+        "expected INT-006 diversity refusal, got {err:?}"
+    );
+
+    // The eclipse admission did not happen: no second outbound Live peer landed in group 127.0. The
+    // client holds exactly the L1 outbound + the injected inbound stub (two entries, one outbound).
+    assert_eq!(
+        client_h.__stub_filter_count_for_tests(None, true).await,
+        1,
+        "exactly one OUTBOUND peer — L2 was not admitted as a second outbound in the full /16"
+    );
 }
