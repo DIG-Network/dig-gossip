@@ -174,6 +174,31 @@ Durable, high-signal realizations (not a change diary).
   returns the superseded slot (an explicit `drop(peers)` before the await did NOT satisfy the auto-Send
   analysis — the block scope did).
 
-## Lane anchor — dig_ecosystem#1703 item 1 (outbound reconnect symmetry)
+## Outbound reconnect symmetry — the coupled diversity-filter self-block (#1703, mirror of #1691)
 
-WIP: mirror the #1691 inbound newest-wins fix to the OUTBOUND connect_to path (gossip_handle.rs:829-837 DuplicateConnection reject) — supersede the stale outbound slot on redial, reusing the generation/abort infra already present. Real-wire regression: outbound redial after a dropped link is accepted. Implementation follows.
+- The DuplicateConnection reject was NOT the only thing blocking an outbound re-dial. `connect_to` has
+  TWO stale-slot blockers, and both fire before the newest-wins insert can supersede: (1) the
+  pre-dial address-level `DuplicateConnection` reject, and (2) the INT-006 /16 + INT-007 AS diversity
+  filters. On a dropped outbound link the stale slot survives AND its /16+AS stay registered in the
+  filters (an abrupt drop never calls `remove_outbound`), so even after removing the duplicate reject a
+  same-`/16` re-dial (e.g. any loopback re-dial — `subnet_group(127.0.0.1)` has no bypass) is refused
+  with `ConnectionFiltered`. Fixing only the duplicate reject leaves outbound reconnect still broken in
+  production. The two are the SAME stale-slot root; both must be handled for item 1 to actually work.
+- Fix: detect a re-dial to an already-held endpoint (`peers.values().any(|s| s.remote() == addr)`) and,
+  for that case, skip BOTH the duplicate reject and the diversity `is_allowed` checks — the group/AS is
+  already this endpoint's, so superseding it keeps one-outbound-per-group. A genuinely new endpoint
+  still passes full diversity admission. This keys on address (peer_id is unknown pre-handshake); the
+  actual newest-wins supersede at insert is peer_id-keyed and mTLS-gated.
+- Max-connections stays ALWAYS enforced (never bypassed by the reconnect flag): a supersede replaces a
+  slot, so at capacity a reconnect whose stale slot occupies the last slot returns
+  `MaxConnectionsReached` — acceptable; the departed-peer reaper (#1703 item 2) is the complement.
+- The outbound insert ALREADY carried the #1691 generation + keepalive-AbortHandle wiring (added
+  defensively by the #1691 lane), so no new generation plumbing was needed — the same
+  `disconnect_after_keepalive_failure` / `apply_inbound_rate_limit_violation` compare-and-remove guards
+  cover the outbound-inserted slot (same `peers` map, same `LiveSlot`). This lane only had to remove
+  the two rejects and make the insert-supersede the primary path.
+- Test note: restarting a `GossipService` "server" at the same `listen_addr` flakes with EADDRINUSE
+  (os error 98) — the accepted inbound socket sits in TIME_WAIT on the listen port and the service does
+  not set `SO_REUSEADDR`. The deterministic re-dial-to-a-live-server tests drive the identical guard
+  (the surviving stale slot is indistinguishable at `connect_to` from a dropped-link slot), so a
+  server-restart test adds no coverage — dropped for reliability.

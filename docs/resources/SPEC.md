@@ -1385,6 +1385,22 @@ invariants:
 This restores reconnection for a bounced peer (upgrade/crash/service restart); before it, the stale
 slot refused every reconnect and the peer's subsequent reads 404'd (observed on the #1640 fleet).
 
+**Outbound symmetry (normative; #1703).** The same newest-wins policy holds for the OUTBOUND dial
+path (`GossipHandle::connect_to`), not only the inbound listener. A dropped outbound link leaves this
+node's slot for that peer in the map (again, no reaping) AND leaves the peer's /16 (INT-006) + AS
+(INT-007) registered in the outbound diversity filters. `connect_to` therefore MUST NOT refuse a
+re-dial to an endpoint it already holds a slot for (no `DuplicateConnection`), and MUST NOT let the
+diversity filters the stale slot itself populated self-block that re-dial: a re-dial to an already-held
+endpoint bypasses the one-per-/16 / one-per-AS admission (the group/AS is already this endpoint's, so
+the re-dial stays one-outbound-per-group), while a genuinely NEW endpoint still passes full diversity
+admission. The freshly mTLS-authenticated outbound session supersedes the stale slot at insert time
+(keyed by the handshake-verified `peer_id`, `HashMap::insert` replace-not-grow), aborts the displaced
+slot's keepalive, and `Peer::close()`s it — identical to the inbound supersede. The invariants above
+(cert-gated displacement, map-boundedness, unchanged ban/penalty handling, and the session-generation
+guard against stale-session eviction) apply unchanged. **Max-connections admission is unchanged and
+always enforced** on the outbound path. Without this, a node could never re-establish a dropped
+outbound link to a peer until the stale slot was cleared.
+
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
 **ALL peer-to-peer connections MUST use mutual TLS (mTLS).** Both the client and server present certificates and verify each other. This is a hard security requirement — unencrypted connections and server-only TLS are never permitted for P2P.

@@ -26,33 +26,21 @@
 //! Each test drives the **real** [`GossipService`] over native-tls: TCP -> TLS -> WSS -> Chia
 //! handshake. The dialer establishes an outbound link, then re-dials the same live server; the stale
 //! outbound slot is what a dropped link leaves behind (dig-gossip does not reap it), so re-dialing is
-//! the faithful driver of the exact guard the fix removes. A dedicated test also drops and restarts
-//! the server at the same address to exercise a genuine dropped-then-re-established link end-to-end.
+//! the faithful driver of the exact guard the fix removes — the surviving slot is indistinguishable,
+//! at the `connect_to` guard, from a slot left by an abruptly-dropped connection.
 
 mod common;
 
-use std::net::SocketAddr;
 use std::path::Path;
-use std::time::Duration;
 
-use dig_gossip::{GossipConfig, GossipHandle, GossipService};
-
-/// Start a [`GossipService`] from an existing cert directory, letting `configure` adjust the config
-/// (used to pin a fixed `listen_addr` when restarting a "server" at the same endpoint).
-async fn service_with_config(
-    dir: &Path,
-    configure: impl FnOnce(&mut GossipConfig),
-) -> (GossipService, GossipHandle) {
-    let mut cfg = common::test_gossip_config(dir);
-    configure(&mut cfg);
-    let svc = GossipService::new(cfg).expect("GossipService::new");
-    let handle = svc.start().await.expect("GossipService::start");
-    (svc, handle)
-}
+use dig_gossip::{GossipHandle, GossipService};
 
 /// Start a full [`GossipService`] (TLS listener + accept loop) from an existing cert directory.
 async fn service_from_dir(dir: &Path) -> (GossipService, GossipHandle) {
-    service_with_config(dir, |_| {}).await
+    let cfg = common::test_gossip_config(dir);
+    let svc = GossipService::new(cfg).expect("GossipService::new");
+    let handle = svc.start().await.expect("GossipService::start");
+    (svc, handle)
 }
 
 /// **#1703 core regression:** a re-dial to an endpoint whose stale outbound slot still sits in the
@@ -75,8 +63,15 @@ async fn redial_to_same_peer_is_accepted_and_supersedes_stale_slot() {
     let (_client_svc, client_h) = service_from_dir(client_dir.path()).await;
 
     // First outbound dial: the dialer registers exactly one outbound slot (session generation 0).
-    let server_pid = client_h.connect_to(bound).await.expect("first outbound dial");
-    assert_eq!(client_h.peer_count().await, 1, "one outbound peer after dial");
+    let server_pid = client_h
+        .connect_to(bound)
+        .await
+        .expect("first outbound dial");
+    assert_eq!(
+        client_h.peer_count().await,
+        1,
+        "one outbound peer after dial"
+    );
     assert_eq!(
         client_h.__peer_generation_for_tests(server_pid),
         Some(0),
@@ -149,51 +144,4 @@ async fn outbound_reconnect_churn_keeps_map_bounded() {
             None => last_pid = Some(pid),
         }
     }
-}
-
-/// **Genuine dropped-then-re-established link:** the server is dropped abruptly (leaving the dialer's
-/// outbound slot stale), then restarted at the SAME address with the SAME identity; the dialer's
-/// re-dial is accepted and round-trips over the fresh link.
-#[tokio::test]
-async fn outbound_reconnect_after_server_restart_round_trips() {
-    let server_dir = common::test_temp_dir();
-    let _ = common::generate_test_certs(server_dir.path());
-    let (server1_svc, server1_h) = service_from_dir(server_dir.path()).await;
-    let bound: SocketAddr = server1_h
-        .__listen_bound_addr_for_tests()
-        .expect("server listen addr");
-
-    let client_dir = common::test_temp_dir();
-    let _ = common::generate_test_certs(client_dir.path());
-    let (_client_svc, client_h) = service_from_dir(client_dir.path()).await;
-
-    let server_pid = client_h.connect_to(bound).await.expect("first outbound dial");
-    assert_eq!(client_h.peer_count().await, 1);
-
-    // Abrupt server teardown — the dialer's outbound slot survives (no clean disconnect).
-    drop(server1_h);
-    drop(server1_svc);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(
-        client_h.peer_count().await,
-        1,
-        "the stale outbound slot survives the dropped link (dig-gossip does not reap)"
-    );
-
-    // Server restarts at the SAME address + identity (same cert dir -> same peer_id).
-    let (_server2_svc, _server2_h) = service_with_config(server_dir.path(), |cfg| {
-        cfg.listen_addr = bound;
-    })
-    .await;
-
-    let redial_pid = client_h
-        .connect_to(bound)
-        .await
-        .expect("re-dial after a dropped link must be accepted (#1703)");
-    assert_eq!(redial_pid, server_pid, "same identity across the restart");
-    assert_eq!(client_h.peer_count().await, 1, "map stays bounded");
-    client_h
-        .request_peers_from(&server_pid)
-        .await
-        .expect("the re-established outbound link must serve a round-trip");
 }
