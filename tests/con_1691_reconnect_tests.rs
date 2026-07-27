@@ -275,3 +275,75 @@ async fn stale_keepalive_does_not_evict_reconnect() {
         "peer still connected after the stale keepalive would have fired"
     );
 }
+
+/// **Sibling of the ghost-keepalive race — the rate-limit → ban path (#1691, Angle 5).**
+///
+/// A superseded session's buffered CON-005 rate-limit violations, if processed after the reconnect
+/// supersedes its slot, must NOT charge the reconnect's reputation nor cross the ban threshold and
+/// evict it. `apply_inbound_rate_limit_violation` is generation-guarded: it acts only when the map
+/// slot still has the caller session's generation.
+///
+/// Driven deterministically by calling the guarded entry point directly with a chosen generation
+/// (the drain-window race is too non-deterministic to force on the wire): a reconnect makes the live
+/// slot generation 1; a STALE caller (generation 0) is a no-op, a MATCHING caller (generation 1)
+/// charges + bans. RED without the guard: the stale calls would ban+evict the reconnect.
+#[tokio::test]
+async fn stale_rate_limit_violation_does_not_ban_reconnect() {
+    let server_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(server_dir.path());
+    let (_server_svc, server_h) = service_from_dir(server_dir.path()).await;
+    let bound = server_h
+        .__listen_bound_addr_for_tests()
+        .expect("listen addr");
+
+    // Connect, drop abruptly, reconnect — the live slot is now generation 1 (superseded gen 0).
+    let client_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(client_dir.path());
+    let (client1_svc, client1_h) = service_from_dir(client_dir.path()).await;
+    client1_h.connect_to(bound).await.expect("first connect");
+    let peer_pid = server_h.__peer_ids_for_tests()[0];
+    drop(client1_h);
+    drop(client1_svc);
+    let (_client2_svc, client2_h) = service_from_dir(client_dir.path()).await;
+    client2_h
+        .connect_to(bound)
+        .await
+        .expect("reconnect accepted");
+
+    let current_gen = server_h
+        .__peer_generation_for_tests(peer_pid)
+        .expect("reconnect slot has a generation");
+    assert_eq!(current_gen, 1, "reconnect supersedes generation 0 with 1");
+    let stale_gen = current_gen - 1; // the dropped session's generation
+
+    let state = server_h.__state_arc_for_tests();
+
+    // A stale session floods rate-limit violations (7 × 15 pts > the 100 ban threshold). With the
+    // guard these are no-ops against the newer slot: no charge, no ban, no eviction.
+    for _ in 0..7 {
+        dig_gossip::apply_inbound_rate_limit_violation(&state, peer_pid, stale_gen);
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        server_h.peer_count().await,
+        1,
+        "a stale session's rate-limit trips must not evict the reconnect"
+    );
+    let rep = server_h
+        .__con004_peer_reputation_for_tests(peer_pid)
+        .expect("reconnect slot still present");
+    assert_eq!(
+        rep.penalty_points, 0,
+        "the reconnect's reputation must not be charged by a stale session"
+    );
+
+    // The genuine current session (matching generation) IS charged and, past the threshold, banned.
+    for _ in 0..7 {
+        dig_gossip::apply_inbound_rate_limit_violation(&state, peer_pid, current_gen);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !server_h.__peer_ids_for_tests().contains(&peer_pid),
+        "a matching-generation rate-limit ban evicts the live slot"
+    );
+}

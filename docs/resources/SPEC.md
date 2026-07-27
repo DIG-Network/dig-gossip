@@ -1366,16 +1366,21 @@ invariants:
    the count of distinct authenticated identities.
 3. **Ban/penalty handling is unchanged** — the CON-007 ban expiry + ban check still precede admission;
    a banned identity is rejected before the newest-wins path.
-4. **No ghost-keepalive eviction (session generations).** CON-004 keepalive is **on by default**
-   (`keepalive_*_secs = None` resolves to `PING_INTERVAL_SECS` / `PEER_TIMEOUT_SECS`, i.e. 30 s / 90 s),
-   so a superseded session's keepalive would otherwise fire a blind teardown and evict the *reconnect*.
-   Every `LiveSlot` therefore carries a monotonic **session generation** (allocated from
-   `ServiceState::next_peer_generation` at insert, so a reconnect out-ranks the slot it replaces).
-   EVERY per-session teardown keyed by `PeerId` (keepalive failure, …) MUST be a **compare-and-remove**:
-   it evicts the map entry only when the entry still has the SAME generation as the caller's session.
-   A stale task thus becomes a no-op against a newer slot. The supersede path additionally ABORTS the
-   displaced slot's keepalive immediately; the generation guard is the load-bearing invariant and the
-   abort is the prompt first line of defence.
+4. **No stale-session eviction of the reconnect (session generations).** Two per-session tasks can
+   evict a slot by `PeerId`: the CON-004 keepalive (on by default — `keepalive_*_secs = None` resolves
+   to `PING_INTERVAL_SECS` / `PEER_TIMEOUT_SECS`, i.e. 30 s / 90 s) and the CON-005 rate-limit → CON-007
+   ban trip. Either, left ungated, would let a superseded session's lingering keepalive OR buffered
+   rate-limit violations charge and evict the *reconnect*. Every `LiveSlot` therefore carries a
+   monotonic **session generation** (allocated from `ServiceState::next_peer_generation` at insert, so
+   a reconnect out-ranks the slot it replaces), and EVERY per-session teardown/charge keyed by `PeerId`
+   MUST be a **compare-and-remove**: it charges/evicts the map entry only when the entry still has the
+   SAME generation as the caller's session — specifically `disconnect_after_keepalive_failure` and
+   `apply_inbound_rate_limit_violation` → `enforce_timed_ban_and_disconnect(_, Some(gen))`. A stale task
+   thus becomes a no-op against a newer slot. The supersede path additionally ABORTS the displaced
+   slot's keepalive immediately; the generation guard is the load-bearing invariant and the abort is
+   the prompt first line of defence. **Operator-initiated bans** (`ban_peer`/`penalize_peer` via the
+   handle) pass `None` and remain a blind, identity-scoped remove — that is the correct intent and is
+   not reachable from a stale per-session task.
 
 This restores reconnection for a bounced peer (upgrade/crash/service restart); before it, the stale
 slot refused every reconnect and the peer's subsequent reads 404'd (observed on the #1640 fleet).

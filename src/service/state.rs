@@ -172,10 +172,14 @@ pub(crate) struct LiveSlot {
     /// [`ServiceState::next_peer_generation`] when the slot is inserted, so a newest-wins reconnect
     /// (same `peer_id`, new slot) always has a strictly-greater generation than the slot it replaced.
     ///
-    /// Every per-session teardown keyed by `peer_id` (keepalive failure, …) carries the generation of
-    /// the session it belongs to and does a **compare-and-remove**: it only evicts the map entry when
-    /// the entry still has the SAME generation. This makes a stale task's teardown a no-op against a
-    /// newer slot, so a superseded connection's lingering keepalive can never evict the reconnect.
+    /// EVERY per-session teardown keyed by `peer_id` carries the generation of the session it belongs
+    /// to and does a **compare-and-remove**: it only charges/evicts the map entry when the entry still
+    /// has the SAME generation. This covers BOTH per-session eviction paths — the CON-004 keepalive
+    /// failure (`disconnect_after_keepalive_failure`) AND the CON-005 rate-limit → ban trip
+    /// (`apply_inbound_rate_limit_violation` → `enforce_timed_ban_and_disconnect(_, Some(gen))`). So a
+    /// superseded connection's lingering keepalive OR buffered rate-limit violations can never charge
+    /// or evict the reconnect. (Operator-initiated bans pass `None` and remain a blind, identity-scoped
+    /// remove — they are not reachable from a stale per-session task.)
     pub generation: u64,
     /// [`AbortHandle`](tokio::task::AbortHandle) for this slot's CON-004 keepalive task (#1691).
     ///
@@ -872,17 +876,38 @@ impl ServiceState {
     ///
     /// Shared by explicit [`super::gossip_handle::GossipHandle::ban_peer`], automatic
     /// threshold bans, and CON-005 rate-limit bursts that cross the reputation threshold.
+    ///
+    /// # `caller_generation` — who is asking (#1691)
+    ///
+    /// * `None` — an **operator-initiated** ban (`ban_peer` / `penalize_peer` via the handle). The
+    ///   ban is identity-scoped: it evicts whatever slot the identity currently holds (blind remove),
+    ///   which is the correct intent and is not reachable from a stale per-session task.
+    /// * `Some(gen)` — a **per-session** ban fed by that session's CON-005 rate-limit trips. This is a
+    ///   compare-and-remove: it bans + evicts ONLY when the slot in the map is still `Live` with the
+    ///   SAME generation. If a same-`peer_id` reconnect has already superseded the tripping session,
+    ///   the map holds a newer slot and this call is a no-op — a stale session's buffered violations
+    ///   must never ban or evict the reconnect (the same eviction class as the keepalive guard).
     pub(crate) async fn enforce_timed_ban_and_disconnect(
         &self,
         peer_id: PeerId,
         now_unix_secs: u64,
+        caller_generation: Option<u64>,
     ) {
         self.prune_expired_dig_bans(now_unix_secs).await;
         let removed = {
             let Ok(mut peers) = self.peers.lock() else {
                 return;
             };
-            peers.remove(&peer_id)
+            match caller_generation {
+                Some(gen) => match peers.get(&peer_id) {
+                    // Still this session's slot — ban + evict it.
+                    Some(PeerSlot::Live(l)) if l.generation == gen => peers.remove(&peer_id),
+                    // Superseded / gone / other kind — do NOT ban or evict the newer slot.
+                    _ => return,
+                },
+                // Operator ban: evict whatever slot the identity holds.
+                None => peers.remove(&peer_id),
+            }
         };
         let ip = removed
             .as_ref()
@@ -940,7 +965,21 @@ impl ServiceState {
 /// **CON-007:** if [`PeerReputation::apply_penalty`] reports a *fresh* ban threshold crossing,
 /// we spawn [`ServiceState::enforce_timed_ban_and_disconnect`] — this function is synchronous
 /// (called under the inbound forwarder's hot path) and therefore cannot `.await` directly.
-pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: PeerId) {
+///
+/// # `generation` — the calling session (#1691)
+///
+/// This runs on a per-connection inbound bridge. `generation` is that session's
+/// [`LiveSlot::generation`]. The penalty is charged — and any threshold-cross ban applied — ONLY
+/// when the slot currently in the map for `peer_id` is still `Live` with the SAME generation. If a
+/// same-`peer_id` reconnect has superseded this session, the buffered violation is a **no-op**: a
+/// stale session must never charge the reputation of, or ban+evict, the reconnect (the same eviction
+/// class the keepalive guard closes). The spawned ban carries `Some(generation)` so the guard also
+/// holds across the async gap between charge and enforcement.
+pub fn apply_inbound_rate_limit_violation(
+    state: &Arc<ServiceState>,
+    peer_id: PeerId,
+    generation: u64,
+) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -949,10 +988,13 @@ pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: Pe
         let Ok(peers) = state.peers.lock() else {
             return;
         };
-        let Some(PeerSlot::Live(live)) = peers.get(&peer_id) else {
-            return;
-        };
-        Arc::clone(&live.reputation)
+        // Compare-and-charge: only this session's live slot may be penalized (#1691).
+        match peers.get(&peer_id) {
+            Some(PeerSlot::Live(live)) if live.generation == generation => {
+                Arc::clone(&live.reputation)
+            }
+            _ => return, // superseded / gone — do not charge the reconnect
+        }
     };
     let triggered = match rep_mtx.lock() {
         Ok(mut rep) => rep.apply_penalty(PenaltyReason::RateLimitExceeded, now),
@@ -964,7 +1006,8 @@ pub fn apply_inbound_rate_limit_violation(state: &Arc<ServiceState>, peer_id: Pe
         let st = Arc::clone(state);
         tokio::spawn(async move {
             let n = crate::types::peer::metric_unix_timestamp_secs();
-            st.enforce_timed_ban_and_disconnect(peer_id, n).await;
+            st.enforce_timed_ban_and_disconnect(peer_id, n, Some(generation))
+                .await;
         });
     }
 }

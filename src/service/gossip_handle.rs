@@ -944,6 +944,8 @@ impl GossipHandle {
                 let tx = tx.clone();
                 let mut inbound_rx = out.inbound_rx;
                 let pid_task = peer_id;
+                // This session's generation — so a rate-limit trip cannot penalize a later reconnect (#1691).
+                let gen_task = generation;
                 let peer_rpc = peer_inbound_rpc;
                 let state_fwd = self.inner.clone();
                 let lim_fwd = lim;
@@ -954,7 +956,7 @@ impl GossipHandle {
                             .map(|mut g| g.handle_message(&msg))
                             .unwrap_or(true);
                         if !allowed {
-                            apply_inbound_rate_limit_violation(&state_fwd, pid_task);
+                            apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
                             continue;
                         }
                         if let Ok(wl_in) = message_wire_len(&msg) {
@@ -1821,7 +1823,7 @@ impl GossipHandle {
         self.require_running()?;
         let now = metric_unix_timestamp_secs();
         self.inner
-            .enforce_timed_ban_and_disconnect(*peer_id, now)
+            .enforce_timed_ban_and_disconnect(*peer_id, now, None)
             .await;
         Ok(())
     }
@@ -1895,7 +1897,7 @@ impl GossipHandle {
 
         if should_enforce && !already_banned {
             self.inner
-                .enforce_timed_ban_and_disconnect(*peer_id, now)
+                .enforce_timed_ban_and_disconnect(*peer_id, now, None)
                 .await;
         }
         Ok(())
@@ -2159,6 +2161,23 @@ impl GossipHandle {
     #[doc(hidden)]
     pub fn __con004_penalty_points_for_tests(&self, peer_id: PeerId) -> Option<u32> {
         self.inner.penalties.lock().ok()?.get(&peer_id).copied()
+    }
+
+    /// #1691: the current live slot's monotonic session [`generation`](super::state::LiveSlot::generation).
+    #[doc(hidden)]
+    pub fn __peer_generation_for_tests(&self, peer_id: PeerId) -> Option<u64> {
+        let peers = self.inner.peers.lock().ok()?;
+        match peers.get(&peer_id)? {
+            PeerSlot::Live(l) => Some(l.generation),
+            PeerSlot::Stub(_) | PeerSlot::Nat(_) => None,
+        }
+    }
+
+    /// #1691: clone the shared [`ServiceState`] `Arc` so a test can drive the per-session teardown
+    /// guards (`apply_inbound_rate_limit_violation`) directly with a chosen generation.
+    #[doc(hidden)]
+    pub fn __state_arc_for_tests(&self) -> std::sync::Arc<super::state::ServiceState> {
+        self.inner.clone()
     }
 
     /// CON-002: snapshot of [`PeerId`] keys in the live/stub map (order not stable — use for single-peer asserts).

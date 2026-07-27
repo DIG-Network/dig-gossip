@@ -798,6 +798,8 @@ where
         if let Some(tx_b) = guard.as_ref() {
             let tx: broadcast::Sender<(PeerId, Message)> = tx_b.clone();
             let pid_task = peer_id;
+            // This session's generation — so a rate-limit trip cannot penalize a later reconnect (#1691).
+            let gen_task = generation;
             let peer_rpc = peer_for_keepalive.clone();
             let state_fwd = state.clone();
             let lim_fwd = lim;
@@ -808,7 +810,7 @@ where
                         .map(|mut g| g.handle_message(&msg))
                         .unwrap_or(true);
                     if !allowed {
-                        apply_inbound_rate_limit_violation(&state_fwd, pid_task);
+                        apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
                         continue;
                     }
                     if let Ok(wl_in) = message_wire_len(&msg) {
