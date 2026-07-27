@@ -429,6 +429,7 @@ impl GossipService {
         };
         for (_, slot) in old_peers {
             if let PeerSlot::Live(l) = slot {
+                l.keepalive_task.abort();
                 let _ = l.peer.close().await;
             }
         }

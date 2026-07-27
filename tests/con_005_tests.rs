@@ -177,7 +177,7 @@ fn test_apply_inbound_rate_limit_violation_no_panic() {
     let tls = load_ssl_cert(&cfg.cert_path, &cfg.key_path).expect("load test tls");
     let state = Arc::new(ServiceState::new(cfg, tls).expect("ServiceState::new"));
     let ghost = peer_id_for_addr("127.0.0.1:59999".parse().unwrap());
-    apply_inbound_rate_limit_violation(&state, ghost);
+    apply_inbound_rate_limit_violation(&state, ghost, 0);
 }
 
 /// **Row:** `test_rate_limit_factor_scaling` — lower [`dig_gossip::PeerOptions::rate_limit_factor`]

@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -251,6 +251,12 @@ tor = ["dep:arti-client", "dep:tokio-socks"]
 [[test]]
 name = "con_002_tests"
 path = "tests/con_002_tests.rs"
+required-features = ["native-tls"]
+
+# #1691 restarted-peer reconnect: newest-wins supersede over a stale inbound slot (native-tls wire).
+[[test]]
+name = "con_1691_reconnect_tests"
+path = "tests/con_1691_reconnect_tests.rs"
 required-features = ["native-tls"]
 
 # CON-003 includes `connect_to` ↔ listener integration (`test_validation_both_directions`).

@@ -206,7 +206,7 @@ fn remote_spki_from_native_tls_stream(
 /// This is the entry point spawned by [`accept_loop`] for each accepted TCP connection.
 /// It delegates to [`handle_inbound_native_inner`] and catches any errors, logging them
 /// at `debug` level. Errors here are **expected** for normal rejections (banned peers,
-/// duplicate connections, TLS failures) — they do not indicate bugs.
+/// a superseded reconnect, TLS failures) — they do not indicate bugs.
 ///
 /// # Arguments
 ///
@@ -233,8 +233,26 @@ async fn handle_inbound_native(
 /// WebSocket upgrade. Extracting it keeps the two TLS paths byte-for-byte identical in their
 /// admission policy (#1371).
 ///
-/// Enforces, in order: self-connection rejection (SPEC §4 `SelfConnection`), timed-ban expiry +
-/// ban check (CON-007), and the one-slot-per-`PeerId` duplicate check.
+/// Enforces, in order: self-connection rejection (SPEC §4 `SelfConnection`) and timed-ban expiry +
+/// ban check (CON-007).
+///
+/// # Reconnect policy — newest-wins (dig_ecosystem#1691)
+///
+/// There is deliberately **no** duplicate-`PeerId` rejection here. A held peer-map slot carries no
+/// per-slot liveness value to consult — dig-gossip never reaps a slot on disconnect, and the CON-004
+/// keepalive removes a slot on failure rather than stamping freshness on it — so a
+/// `peers.contains_key(peer_id)` reject would refuse a **restarted** peer that redials with the same
+/// `peer_id` even though its old slot is dead. That was the #1691 defect: a bounced peer could never
+/// reconnect and every read it attempted 404'd. Instead the freshly-authenticated inbound session is
+/// admitted and **supersedes** the stale slot at insert time (see [`negotiate_inbound_over_ws`],
+/// which aborts the displaced slot's keepalive then closes its [`Peer`]).
+///
+/// This is safe because `peer_id` here is derived from the **completed, verified** TLS handshake
+/// (`SHA-256` of the captured client-cert SPKI; see the SPKI capture at each caller). Only the holder
+/// of the private key for `peer_id` can complete the mTLS handshake, so no third party can reach this
+/// path for an identity it does not own — a live peer cannot be displaced by someone lacking its key.
+/// The map keeps exactly one slot per `peer_id` (`HashMap::insert` replaces, never grows), so it
+/// stays bounded by the count of distinct authenticated identities even under reconnect churn.
 ///
 /// # Errors
 ///
@@ -270,18 +288,8 @@ async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<
         )));
     }
 
-    // Duplicate check — only one slot per PeerId in the peer map. The lock scope is intentionally
-    // narrow to avoid holding it across async points.
-    let peers = state
-        .peers
-        .lock()
-        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
-    if peers.contains_key(&peer_id) {
-        return Err(ClientError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "duplicate inbound PeerId",
-        )));
-    }
+    // No duplicate-PeerId reject: a restarted peer must be able to reconnect (#1691). The stale slot
+    // is superseded at insert time under the mTLS-gated newest-wins policy documented above.
     Ok(())
 }
 
@@ -289,7 +297,7 @@ async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<
 ///
 /// Spawned by [`accept_loop`] for each accepted TCP connection when the `rustls` feature is enabled
 /// (the production dig-node build). Delegates to [`handle_inbound_rustls_inner`] and logs failures at
-/// `debug` — rejections (banned/duplicate/TLS) are expected, not bugs.
+/// `debug` — rejections (banned/TLS) + a superseded reconnect are expected, not bugs.
 #[cfg(feature = "rustls")]
 async fn handle_inbound_rustls(
     state: Arc<ServiceState>,
@@ -352,7 +360,7 @@ async fn handle_inbound_rustls_inner(
         }
     };
 
-    // Steps 3-5: self / ban / duplicate guards (shared with the native-tls path).
+    // Steps 3-4: self / ban guards (shared with the rustls path); reconnect uses newest-wins (#1691).
     precheck_inbound_peer(&state, peer_id).await?;
 
     // Step 6: WebSocket upgrade over the server rustls stream. The server-side stream cannot inhabit
@@ -374,7 +382,8 @@ async fn handle_inbound_rustls_inner(
 /// 3. **Self-connection guard** — reject if the derived `peer_id` matches our own
 ///    [`GossipConfig::peer_id`](crate::types::config::GossipConfig::peer_id).
 /// 4. **Ban check** — reject peers in the [`ServiceState::banned`] set.
-/// 5. **Duplicate check** — reject peers already present in [`ServiceState::peers`].
+/// 5. **Reconnect admission** — no duplicate reject; a same-`peer_id` restart supersedes the
+///    stale slot at insert time (newest-wins, mTLS-gated — #1691).
 /// 6. **WebSocket upgrade** — [`accept_async`] over the TLS stream.
 /// 7. **Chia handshake** — delegated to [`negotiate_inbound_over_ws`].
 ///
@@ -420,7 +429,7 @@ async fn handle_inbound_native_inner(
         }
     };
 
-    // Steps 3-5: self / ban / duplicate guards (shared with the rustls path).
+    // Steps 3-4: self / ban guards (shared with the native-tls path); reconnect uses newest-wins (#1691).
     precheck_inbound_peer(&state, peer_id).await?;
 
     // Step 6: WebSocket upgrade over the now-established TLS stream.
@@ -728,28 +737,59 @@ where
     };
     let peer_for_keepalive = peer.clone();
     let lim = Arc::clone(&inbound_limiter);
-    let mut peers = state
-        .peers
-        .lock()
-        .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
     let opened_at = metric_unix_timestamp_secs();
-    peers.insert(
+
+    // Phase 8a: allocate this session's generation and start its keepalive BEFORE inserting the slot,
+    // so the slot can own the keepalive `AbortHandle` (#1691). The keepalive loop sleeps a full
+    // interval before its first probe, so spawning it fractionally before the insert is safe — it
+    // cannot act on the map until well after the slot lands.
+    let generation = state.next_peer_generation();
+    let keepalive_task = crate::connection::keepalive::spawn_keepalive_task(
+        state.clone(),
         peer_id,
-        PeerSlot::Live(LiveSlot {
-            meta,
-            peer,
-            remote_protocol_version,
-            remote_software_version_sanitized,
-            reputation: std::sync::Arc::new(std::sync::Mutex::new(
-                crate::types::reputation::PeerReputation::default(),
-            )),
-            inbound_rate_limiter: Arc::clone(&inbound_limiter),
-            traffic: std::sync::Arc::new(std::sync::Mutex::new(PeerConnectionWireMetrics::new(
-                opened_at,
-            ))),
-        }),
+        generation,
+        peer_for_keepalive.clone(),
     );
-    drop(peers);
+
+    // Newest-wins (#1691): a same-`peer_id` reconnect supersedes any stale slot. `HashMap::insert`
+    // returns the prior slot (if any) — one slot per identity, so the map never grows on reconnect.
+    // The `peer_id` was authenticated by the completed mTLS handshake, so only the genuine
+    // key-holder can reach this replacement (see `precheck_inbound_peer`). The guard is scoped to
+    // this block so it is released before the `await` below (the std `MutexGuard` is not `Send`).
+    let superseded = {
+        let mut peers = state
+            .peers
+            .lock()
+            .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
+        peers.insert(
+            peer_id,
+            PeerSlot::Live(LiveSlot {
+                meta,
+                peer,
+                remote_protocol_version,
+                remote_software_version_sanitized,
+                reputation: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::types::reputation::PeerReputation::default(),
+                )),
+                inbound_rate_limiter: Arc::clone(&inbound_limiter),
+                traffic: std::sync::Arc::new(std::sync::Mutex::new(
+                    PeerConnectionWireMetrics::new(opened_at),
+                )),
+                generation,
+                keepalive_task,
+            }),
+        )
+    };
+
+    // Tear down the displaced session after releasing the peers lock (#1691): abort its keepalive so
+    // it cannot fire a ghost teardown against this newer slot, then close its WebSocket (dropping a
+    // `LiveSlot` does not close the socket — see `LiveSlot` docs). The generation guard in
+    // `disconnect_after_keepalive_failure` is the load-bearing invariant; this abort is the prompt
+    // first line of defence.
+    if let Some(PeerSlot::Live(stale)) = superseded {
+        stale.keepalive_task.abort();
+        let _ = stale.peer.close().await;
+    }
 
     // --- Phase 9: Bridge inbound wire messages into the service broadcast channel ---
     // CON-005: [`RateLimiter::handle_message`] must approve each frame before CON-004 keepalive
@@ -758,6 +798,8 @@ where
         if let Some(tx_b) = guard.as_ref() {
             let tx: broadcast::Sender<(PeerId, Message)> = tx_b.clone();
             let pid_task = peer_id;
+            // This session's generation — so a rate-limit trip cannot penalize a later reconnect (#1691).
+            let gen_task = generation;
             let peer_rpc = peer_for_keepalive.clone();
             let state_fwd = state.clone();
             let lim_fwd = lim;
@@ -768,7 +810,7 @@ where
                         .map(|mut g| g.handle_message(&msg))
                         .unwrap_or(true);
                     if !allowed {
-                        apply_inbound_rate_limit_violation(&state_fwd, pid_task);
+                        apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
                         continue;
                     }
                     if let Ok(wl_in) = message_wire_len(&msg) {
@@ -796,8 +838,7 @@ where
         }
     }
 
-    // --- Phase 10: Start the keepalive loop for this connection (CON-004) ---
-    crate::connection::keepalive::spawn_keepalive_task(state.clone(), peer_id, peer_for_keepalive);
+    // (Keepalive was started in Phase 8a so the slot could own its `AbortHandle` — #1691.)
 
     // Increment the lifetime connection counter (API-008 stats).
     state

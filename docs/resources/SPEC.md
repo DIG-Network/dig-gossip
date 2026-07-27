@@ -1342,6 +1342,49 @@ outbound guards the self entry is adopted, published as `PeerAdded`, and fed to 
 peer selector as a provider — a reader then "discovers" itself, self-dials on a content read, and
 dead-ends instead of fetching from the real holder (#1584).
 
+### 5.2.3 Reconnect Admission — newest-wins (normative; #1691)
+
+A node MUST admit a **restarted peer** that redials with the same verified `PeerId`, even while the
+node still holds a peer-map slot from that peer's prior (now-dead) connection. No per-slot liveness
+value exists for a guard to consult: a slot is NOT reaped when its connection drops (the inbound
+forwarder task simply ends), and the CON-004 keepalive REMOVES a slot on failure rather than stamping
+a freshness timestamp on it. Therefore `precheck_inbound_peer` MUST NOT reject an inbound session
+merely because `peers.contains_key(peer_id)`.
+
+Instead the freshly-authenticated inbound session is admitted and **supersedes** the incumbent slot:
+`negotiate_inbound_over_ws` inserts the new `LiveSlot` over the existing key (`HashMap::insert`,
+newest-wins) and, after releasing the `peers` lock, MUST tear down the displaced slot — abort its
+keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). Rationale +
+invariants:
+
+1. **Cert-gated displacement.** The `peer_id` at the guard is derived from the **completed, verified**
+   mTLS handshake (`SHA-256` of the captured client-cert SPKI, §5.3). Only the holder of that identity's
+   private key can complete the handshake, so no third party can reach the newest-wins path for an
+   identity it does not own — a live peer cannot be displaced by anyone lacking its key.
+2. **Map-boundedness.** Exactly one slot per `PeerId` (`insert` replaces, never grows), so a single
+   identity cannot accumulate slots or exhaust the map under reconnect churn; the map stays bounded by
+   the count of distinct authenticated identities.
+3. **Ban/penalty handling is unchanged** — the CON-007 ban expiry + ban check still precede admission;
+   a banned identity is rejected before the newest-wins path.
+4. **No stale-session eviction of the reconnect (session generations).** Two per-session tasks can
+   evict a slot by `PeerId`: the CON-004 keepalive (on by default — `keepalive_*_secs = None` resolves
+   to `PING_INTERVAL_SECS` / `PEER_TIMEOUT_SECS`, i.e. 30 s / 90 s) and the CON-005 rate-limit → CON-007
+   ban trip. Either, left ungated, would let a superseded session's lingering keepalive OR buffered
+   rate-limit violations charge and evict the *reconnect*. Every `LiveSlot` therefore carries a
+   monotonic **session generation** (allocated from `ServiceState::next_peer_generation` at insert, so
+   a reconnect out-ranks the slot it replaces), and EVERY per-session teardown/charge keyed by `PeerId`
+   MUST be a **compare-and-remove**: it charges/evicts the map entry only when the entry still has the
+   SAME generation as the caller's session — specifically `disconnect_after_keepalive_failure` and
+   `apply_inbound_rate_limit_violation` → `enforce_timed_ban_and_disconnect(_, Some(gen))`. A stale task
+   thus becomes a no-op against a newer slot. The supersede path additionally ABORTS the displaced
+   slot's keepalive immediately; the generation guard is the load-bearing invariant and the abort is
+   the prompt first line of defence. **Operator-initiated bans** (`ban_peer`/`penalize_peer` via the
+   handle) pass `None` and remain a blind, identity-scoped remove — that is the correct intent and is
+   not reachable from a stale per-session task.
+
+This restores reconnection for a bounced peer (upgrade/crash/service restart); before it, the stale
+slot refused every reconnect and the peer's subsequent reads 404'd (observed on the #1640 fleet).
+
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
 **ALL peer-to-peer connections MUST use mutual TLS (mTLS).** Both the client and server present certificates and verify each other. This is a hard security requirement — unencrypted connections and server-only TLS are never permitted for P2P.

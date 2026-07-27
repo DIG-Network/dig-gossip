@@ -873,27 +873,51 @@ impl GossipHandle {
         let peer = out.peer;
         let peer_for_keepalive = peer.clone();
         let lim = Arc::clone(&inbound_limiter);
-        let mut peers = self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?;
         let opened_at = metric_unix_timestamp_secs();
-        peers.insert(
+
+        // Allocate this session's generation and start its keepalive BEFORE inserting the slot, so
+        // the slot owns the keepalive `AbortHandle` and a stale task compare-and-removes against the
+        // generation (#1691). The keepalive loop sleeps an interval before its first probe, so
+        // spawning it just before the insert cannot race the map.
+        let generation = self.inner.next_peer_generation();
+        let keepalive_task = crate::connection::keepalive::spawn_keepalive_task(
+            self.inner.clone(),
             peer_id,
-            PeerSlot::Live(LiveSlot {
-                meta,
-                peer,
-                remote_protocol_version: out.their_handshake.protocol_version.clone(),
-                remote_software_version_sanitized: out.remote_software_version_sanitized,
-                reputation: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::types::reputation::PeerReputation::default(),
-                )),
-                inbound_rate_limiter: Arc::clone(&inbound_limiter),
-                traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(opened_at))),
-            }),
+            generation,
+            peer_for_keepalive.clone(),
         );
-        drop(peers);
+
+        let superseded = {
+            let mut peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            peers.insert(
+                peer_id,
+                PeerSlot::Live(LiveSlot {
+                    meta,
+                    peer,
+                    remote_protocol_version: out.their_handshake.protocol_version.clone(),
+                    remote_software_version_sanitized: out.remote_software_version_sanitized,
+                    reputation: std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::types::reputation::PeerReputation::default(),
+                    )),
+                    inbound_rate_limiter: Arc::clone(&inbound_limiter),
+                    traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(opened_at))),
+                    generation,
+                    keepalive_task,
+                }),
+            )
+        };
+
+        // The pre-insert `DuplicateConnection` guard normally means there is nothing to supersede, but
+        // a race could still leave a prior slot here; tear it down (abort keepalive + close) so its
+        // ghost keepalive cannot evict this newer session (#1691).
+        if let Some(PeerSlot::Live(stale)) = superseded {
+            stale.keepalive_task.abort();
+            let _ = stale.peer.close().await;
+        }
 
         // INT-001: Register peer in Plumtree state (starts as eager per SPEC §8.1).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
@@ -920,6 +944,8 @@ impl GossipHandle {
                 let tx = tx.clone();
                 let mut inbound_rx = out.inbound_rx;
                 let pid_task = peer_id;
+                // This session's generation — so a rate-limit trip cannot penalize a later reconnect (#1691).
+                let gen_task = generation;
                 let peer_rpc = peer_inbound_rpc;
                 let state_fwd = self.inner.clone();
                 let lim_fwd = lim;
@@ -930,7 +956,7 @@ impl GossipHandle {
                             .map(|mut g| g.handle_message(&msg))
                             .unwrap_or(true);
                         if !allowed {
-                            apply_inbound_rate_limit_violation(&state_fwd, pid_task);
+                            apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
                             continue;
                         }
                         if let Ok(wl_in) = message_wire_len(&msg) {
@@ -956,11 +982,8 @@ impl GossipHandle {
             }
         }
 
-        crate::connection::keepalive::spawn_keepalive_task(
-            self.inner.clone(),
-            peer_id,
-            peer_for_keepalive,
-        );
+        // (Keepalive was started before the slot insert so the slot could own its `AbortHandle` —
+        // #1691.)
 
         self.inner
             .total_connections
@@ -1756,6 +1779,7 @@ impl GossipHandle {
         let remote_ip = removed.as_ref().map(|s| s.remote().ip());
         let was_present = removed.is_some();
         if let Some(PeerSlot::Live(l)) = removed {
+            l.keepalive_task.abort();
             let _ = l.peer.close().await;
         }
         // POOL-*: publish churn so dig-node's pool consumers (and the maintenance loop) learn the peer
@@ -1799,7 +1823,7 @@ impl GossipHandle {
         self.require_running()?;
         let now = metric_unix_timestamp_secs();
         self.inner
-            .enforce_timed_ban_and_disconnect(*peer_id, now)
+            .enforce_timed_ban_and_disconnect(*peer_id, now, None)
             .await;
         Ok(())
     }
@@ -1873,7 +1897,7 @@ impl GossipHandle {
 
         if should_enforce && !already_banned {
             self.inner
-                .enforce_timed_ban_and_disconnect(*peer_id, now)
+                .enforce_timed_ban_and_disconnect(*peer_id, now, None)
                 .await;
         }
         Ok(())
@@ -2137,6 +2161,23 @@ impl GossipHandle {
     #[doc(hidden)]
     pub fn __con004_penalty_points_for_tests(&self, peer_id: PeerId) -> Option<u32> {
         self.inner.penalties.lock().ok()?.get(&peer_id).copied()
+    }
+
+    /// #1691: the current live slot's monotonic session [`generation`](super::state::LiveSlot::generation).
+    #[doc(hidden)]
+    pub fn __peer_generation_for_tests(&self, peer_id: PeerId) -> Option<u64> {
+        let peers = self.inner.peers.lock().ok()?;
+        match peers.get(&peer_id)? {
+            PeerSlot::Live(l) => Some(l.generation),
+            PeerSlot::Stub(_) | PeerSlot::Nat(_) => None,
+        }
+    }
+
+    /// #1691: clone the shared [`ServiceState`] `Arc` so a test can drive the per-session teardown
+    /// guards (`apply_inbound_rate_limit_violation`) directly with a chosen generation.
+    #[doc(hidden)]
+    pub fn __state_arc_for_tests(&self) -> std::sync::Arc<super::state::ServiceState> {
+        self.inner.clone()
     }
 
     /// CON-002: snapshot of [`PeerId`] keys in the live/stub map (order not stable — use for single-peer asserts).
