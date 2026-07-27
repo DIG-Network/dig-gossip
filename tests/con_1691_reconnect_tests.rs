@@ -104,7 +104,11 @@ async fn restarted_peer_reconnects_and_supersedes_stale_slot() {
         keys_after[0], peer_pid,
         "the reconnected slot is keyed by the same cert-derived peer_id"
     );
-    assert_eq!(server_h.peer_count().await, 1, "one live peer after reconnect");
+    assert_eq!(
+        server_h.peer_count().await,
+        1,
+        "one live peer after reconnect"
+    );
 }
 
 /// **Map-boundedness under reconnect churn:** repeated restarts of the same identity never grow the
@@ -164,7 +168,10 @@ async fn foreign_identity_cannot_displace_incumbent() {
     let dir_a = common::test_temp_dir();
     let _ = common::generate_test_certs(dir_a.path());
     let (_svc_a, handle_a) = service_from_dir(dir_a.path()).await;
-    handle_a.connect_to(bound).await.expect("incumbent connects");
+    handle_a
+        .connect_to(bound)
+        .await
+        .expect("incumbent connects");
     let incumbent = server_h.__peer_ids_for_tests();
     assert_eq!(incumbent.len(), 1);
     let incumbent_pid = incumbent[0];

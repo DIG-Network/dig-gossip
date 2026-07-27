@@ -127,11 +127,34 @@ Durable, high-signal realizations (not a change diary).
   the relayed route carries the SAME frame the direct nat path carries, so no plaintext-to-relay path
   exists to leak.
 
-## Lane anchor — dig_ecosystem#1691 (P1/MVP: restarted peer cannot reconnect)
+## A restarted peer could never reconnect — newest-wins over a stale inbound slot (#1691)
 
-WIP: the inbound duplicate-PeerId guard (src/connection/listener.rs) rejects a reconnect on stale
-peer-map presence with no liveness check, so a restarted peer (same peer_id) 404s every read. Fix:
-reap/supersede the stale session before rejecting (mirror prune_expired_dig_bans; newest-wins is
-safe because the dial is mTLS-authenticated to peer_id = SHA-256(TLS SPKI DER)), with the adversarial
-guards (a non-cert-holder cannot displace; a peer cannot churn slots to exhaust the map). Real-wire
-regression test + SPEC.md. Implementation follows.
+- **Symptom.** After a peer restarted (upgrade/crash/service bounce) it redialed with the SAME
+  `peer_id` (= `SHA-256(TLS SPKI DER)`, bound to its DIG identity) and was refused; every read it then
+  attempted 404'd. Seen live on the #1640 step-4a EC2 fleet — the holder had the content, had served it
+  2 min earlier, both nodes up; only the reader had restarted.
+- **Root cause.** `precheck_inbound_peer` (src/connection/listener.rs) rejected any inbound session on
+  a bare `peers.contains_key(peer_id)` with NO liveness check and NO reap. dig-gossip never removes a
+  peer-map slot when the connection drops — the inbound forwarder task in `negotiate_inbound_over_ws`
+  just ends when `inbound_rx` closes; it does not touch `peers`. And keepalive-driven reaping is OFF by
+  default (`keepalive_ping_interval_secs`/`keepalive_peer_timeout_secs` default to `None`, in both
+  `GossipConfig::default` and the test config). So the stale slot lingered forever and blocked the
+  reconnect.
+- **No liveness signal exists to consult.** `PeerSlot`/`LiveSlot` carry no `last_seen`/keepalive
+  timestamp; even when keepalive is enabled it feeds `PeerReputation` RTT and REMOVES the slot on
+  failure, not a per-slot freshness value a guard could read. So "reap-then-check" had nothing to
+  check against → the fix is **newest-wins gated on the mTLS-proven identity**.
+- **Why newest-wins is safe.** `peer_id` at the guard is derived from the COMPLETED, verified mTLS
+  handshake (the rustls/native-tls acceptor requests+requires+captures the client cert, then SPKI→hash;
+  see the #1371 entry). Only the holder of that identity's private key can complete the handshake, so
+  no third party can reach the supersede path for an identity it does not own — a live peer cannot be
+  displaced by someone lacking its key. And `HashMap::insert` replaces (one slot per `peer_id`), so the
+  map stays bounded under reconnect churn.
+- **The fix.** Drop the duplicate reject from `precheck_inbound_peer` (self + CON-007 ban checks
+  stay). At the `peers.insert` in `negotiate_inbound_over_ws`, capture the superseded slot and, after
+  releasing the `peers` lock, `Peer::close()` it — dropping a `LiveSlot` does NOT close its socket
+  (documented on `LiveSlot`), so an explicit close prevents leaking the stale reader/writer.
+- **Gotcha — std `MutexGuard` is not `Send`.** The inbound future is `tokio::spawn`ed, so it must be
+  `Send`. Closing the displaced peer is an `.await`; scope the `peers` guard in a `{ … }` block that
+  returns the superseded slot (an explicit `drop(peers)` before the await did NOT satisfy the auto-Send
+  analysis — the block scope did).
