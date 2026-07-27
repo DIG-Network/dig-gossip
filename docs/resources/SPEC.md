@@ -340,7 +340,11 @@ ordering preference.
 - [`AddressManager::select_peer`] itself is a Bitcoin/Chia-style single-address weighted-random
   draw over the whole address book and is family-blind by design (this is unchanged — the
   address book's own grouping, `PeerInfo::get_group` / `subnet_group`, is already family-aware
-  for `/16` vs `/32` eclipse-resistance grouping and is NOT part of this rule).
+  for `/16` vs `/32` eclipse-resistance grouping and is NOT part of this rule). An IPv4-mapped
+  IPv6 address (`::ffff:a.b.c.d`) is canonicalized to its IPv4 form before the group key is
+  computed, so it shares the mapped `/16` group of its plain-v4 twin (and resolves to the same AS
+  in the BGP classifier) — a mapped-v6 presentation cannot dodge the one-outbound-per-`/16`
+  (INT-006) or per-AS (INT-007) eclipse cap. Genuine IPv6 still groups by its `/32`.
 - The CANDIDATE LIST assembled from repeated draws — `GossipHandle`'s `gather_pool_candidates`,
   the source of dial candidates for `run_pool_maintenance_once` / the connected-peer-pool
   planner (POOL-\*) — is passed through

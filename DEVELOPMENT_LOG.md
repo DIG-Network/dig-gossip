@@ -2,6 +2,17 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## IPv4-mapped IPv6 must be canonicalized BEFORE subnet/AS grouping, or the /16 eclipse cap is dodgeable (#1709)
+
+- `subnet_group` keys IPv6 by its first 4 bytes. An IPv4-mapped IPv6 address `::ffff:a.b.c.d` has
+  zero first-four-bytes, so it collapses to group `0` and does NOT collide with the plain-v4 `a.b`
+  /16 group of the SAME routable network — a theoretical dodge of the map-derived one-outbound-per-/16
+  cap (INT-006, shipped v0.17.2). The AS classifier has the same seam: `ip_in_prefix`'s `(V6, V4)`
+  mismatch arm returns false, so a mapped-v6 fails open as unknown against v4 BGP prefixes (INT-007).
+- Fix: `util::ip_address::canonical_ip` folds `::ffff:a.b.c.d` → IPv4 (via `Ipv6Addr::to_ipv4_mapped`,
+  NOT `to_ipv4` which would also fold deprecated v4-compatible `::a.b.c.d`) before both group/AS keys.
+  Genuine IPv6 is untouched and still groups by /32 (§5.2 IPv6-first). One helper, reused by both paths.
+
 ## The self-connection guard must cover the OUTBOUND pool-add path, not just inbound (#1584)
 
 - **The read-leg DATA 404 root cause.** A reader's peer pool held a SELF-ENTRY — its own

@@ -80,10 +80,14 @@ impl AsLookupTable {
     ///
     /// SPEC §1.8#7 — "AS numbers resolved via cached BGP prefix table."
     pub fn lookup(&self, ip: &IpAddr) -> Option<AsNumber> {
+        // Canonicalize an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) to IPv4 first, so it matches the
+        // v4 BGP prefixes of its plain-v4 twin instead of falling through the v6/v4 mismatch arm of
+        // `ip_in_prefix` and dodging the per-AS eclipse cap (INT-007, #1709). Genuine IPv6 is unchanged.
+        let ip = super::ip_address::canonical_ip(ip);
         // Linear scan over entries sorted by prefix_len DESC.
         // First match = longest prefix match.
         for &(ref network, prefix_len, asn) in &self.entries {
-            if ip_in_prefix(ip, network, prefix_len) {
+            if ip_in_prefix(&ip, network, prefix_len) {
                 return Some(asn);
             }
         }
@@ -117,5 +121,32 @@ fn ip_in_prefix(ip: &IpAddr, network: &IpAddr, prefix_len: u8) -> bool {
             (ip_bits & mask) == (net_bits & mask)
         }
         _ => false, // v4 vs v6 mismatch
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().expect("valid IpAddr")
+    }
+
+    // #1709 regression — a v4-mapped IPv6 candidate must resolve to the SAME AS as its plain-v4 twin,
+    // else it dodges the per-AS eclipse cap (INT-007). Without canonicalization the `(V6, V4)` mismatch
+    // arm of `ip_in_prefix` returns false and the mapped form fails open as an unknown IP.
+    #[test]
+    fn v4_mapped_v6_resolves_same_as_plain_v4() {
+        let table = AsLookupTable::from_entries(vec![(ip("203.0.113.0"), 24, 64500)]);
+        assert_eq!(table.lookup(&ip("203.0.113.9")), Some(64500));
+        assert_eq!(table.lookup(&ip("::ffff:203.0.113.7")), Some(64500));
+    }
+
+    // Genuine IPv6 still matches only v6 prefixes — canonicalization leaves it untouched.
+    #[test]
+    fn genuine_ipv6_resolves_via_v6_prefix() {
+        let table = AsLookupTable::from_entries(vec![(ip("2001:db8::"), 32, 64510)]);
+        assert_eq!(table.lookup(&ip("2001:db8::1")), Some(64510));
+        assert_eq!(table.lookup(&ip("2001:dead::1")), None);
     }
 }
