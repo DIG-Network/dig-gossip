@@ -239,12 +239,13 @@ async fn handle_inbound_native(
 /// # Reconnect policy — newest-wins (dig_ecosystem#1691)
 ///
 /// There is deliberately **no** duplicate-`PeerId` rejection here. A held peer-map slot carries no
-/// liveness signal to consult (dig-gossip never reaps a slot on disconnect, and keepalive-driven
-/// reaping is off by default — `keepalive_*_secs = None`), so a `peers.contains_key(peer_id)` reject
-/// would refuse a **restarted** peer that redials with the same `peer_id` even though its old slot is
-/// dead. That was the #1691 defect: a bounced peer could never reconnect and every read it attempted
-/// 404'd. Instead the freshly-authenticated inbound session is admitted and **supersedes** the stale
-/// slot at insert time (see [`negotiate_inbound_over_ws`], which closes the displaced [`Peer`]).
+/// per-slot liveness value to consult — dig-gossip never reaps a slot on disconnect, and the CON-004
+/// keepalive removes a slot on failure rather than stamping freshness on it — so a
+/// `peers.contains_key(peer_id)` reject would refuse a **restarted** peer that redials with the same
+/// `peer_id` even though its old slot is dead. That was the #1691 defect: a bounced peer could never
+/// reconnect and every read it attempted 404'd. Instead the freshly-authenticated inbound session is
+/// admitted and **supersedes** the stale slot at insert time (see [`negotiate_inbound_over_ws`],
+/// which aborts the displaced slot's keepalive then closes its [`Peer`]).
 ///
 /// This is safe because `peer_id` here is derived from the **completed, verified** TLS handshake
 /// (`SHA-256` of the captured client-cert SPKI; see the SPKI capture at each caller). Only the holder
@@ -737,6 +738,19 @@ where
     let peer_for_keepalive = peer.clone();
     let lim = Arc::clone(&inbound_limiter);
     let opened_at = metric_unix_timestamp_secs();
+
+    // Phase 8a: allocate this session's generation and start its keepalive BEFORE inserting the slot,
+    // so the slot can own the keepalive `AbortHandle` (#1691). The keepalive loop sleeps a full
+    // interval before its first probe, so spawning it fractionally before the insert is safe — it
+    // cannot act on the map until well after the slot lands.
+    let generation = state.next_peer_generation();
+    let keepalive_task = crate::connection::keepalive::spawn_keepalive_task(
+        state.clone(),
+        peer_id,
+        generation,
+        peer_for_keepalive.clone(),
+    );
+
     // Newest-wins (#1691): a same-`peer_id` reconnect supersedes any stale slot. `HashMap::insert`
     // returns the prior slot (if any) — one slot per identity, so the map never grows on reconnect.
     // The `peer_id` was authenticated by the completed mTLS handshake, so only the genuine
@@ -761,14 +775,19 @@ where
                 traffic: std::sync::Arc::new(std::sync::Mutex::new(
                     PeerConnectionWireMetrics::new(opened_at),
                 )),
+                generation,
+                keepalive_task,
             }),
         )
     };
 
-    // Close the displaced connection's WebSocket after releasing the peers lock. Dropping a
-    // `LiveSlot` does not close its underlying socket (see `LiveSlot` docs), so an explicit close
-    // frees the stale peer's reader/writer instead of leaking it across the reconnect.
+    // Tear down the displaced session after releasing the peers lock (#1691): abort its keepalive so
+    // it cannot fire a ghost teardown against this newer slot, then close its WebSocket (dropping a
+    // `LiveSlot` does not close the socket — see `LiveSlot` docs). The generation guard in
+    // `disconnect_after_keepalive_failure` is the load-bearing invariant; this abort is the prompt
+    // first line of defence.
     if let Some(PeerSlot::Live(stale)) = superseded {
+        stale.keepalive_task.abort();
         let _ = stale.peer.close().await;
     }
 
@@ -817,8 +836,7 @@ where
         }
     }
 
-    // --- Phase 10: Start the keepalive loop for this connection (CON-004) ---
-    crate::connection::keepalive::spawn_keepalive_task(state.clone(), peer_id, peer_for_keepalive);
+    // (Keepalive was started in Phase 8a so the slot could own its `AbortHandle` — #1691.)
 
     // Increment the lifetime connection counter (API-008 stats).
     state

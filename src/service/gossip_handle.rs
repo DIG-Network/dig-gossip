@@ -873,27 +873,51 @@ impl GossipHandle {
         let peer = out.peer;
         let peer_for_keepalive = peer.clone();
         let lim = Arc::clone(&inbound_limiter);
-        let mut peers = self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?;
         let opened_at = metric_unix_timestamp_secs();
-        peers.insert(
+
+        // Allocate this session's generation and start its keepalive BEFORE inserting the slot, so
+        // the slot owns the keepalive `AbortHandle` and a stale task compare-and-removes against the
+        // generation (#1691). The keepalive loop sleeps an interval before its first probe, so
+        // spawning it just before the insert cannot race the map.
+        let generation = self.inner.next_peer_generation();
+        let keepalive_task = crate::connection::keepalive::spawn_keepalive_task(
+            self.inner.clone(),
             peer_id,
-            PeerSlot::Live(LiveSlot {
-                meta,
-                peer,
-                remote_protocol_version: out.their_handshake.protocol_version.clone(),
-                remote_software_version_sanitized: out.remote_software_version_sanitized,
-                reputation: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::types::reputation::PeerReputation::default(),
-                )),
-                inbound_rate_limiter: Arc::clone(&inbound_limiter),
-                traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(opened_at))),
-            }),
+            generation,
+            peer_for_keepalive.clone(),
         );
-        drop(peers);
+
+        let superseded = {
+            let mut peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            peers.insert(
+                peer_id,
+                PeerSlot::Live(LiveSlot {
+                    meta,
+                    peer,
+                    remote_protocol_version: out.their_handshake.protocol_version.clone(),
+                    remote_software_version_sanitized: out.remote_software_version_sanitized,
+                    reputation: std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::types::reputation::PeerReputation::default(),
+                    )),
+                    inbound_rate_limiter: Arc::clone(&inbound_limiter),
+                    traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(opened_at))),
+                    generation,
+                    keepalive_task,
+                }),
+            )
+        };
+
+        // The pre-insert `DuplicateConnection` guard normally means there is nothing to supersede, but
+        // a race could still leave a prior slot here; tear it down (abort keepalive + close) so its
+        // ghost keepalive cannot evict this newer session (#1691).
+        if let Some(PeerSlot::Live(stale)) = superseded {
+            stale.keepalive_task.abort();
+            let _ = stale.peer.close().await;
+        }
 
         // INT-001: Register peer in Plumtree state (starts as eager per SPEC §8.1).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
@@ -956,11 +980,8 @@ impl GossipHandle {
             }
         }
 
-        crate::connection::keepalive::spawn_keepalive_task(
-            self.inner.clone(),
-            peer_id,
-            peer_for_keepalive,
-        );
+        // (Keepalive was started before the slot insert so the slot could own its `AbortHandle` —
+        // #1691.)
 
         self.inner
             .total_connections
@@ -1756,6 +1777,7 @@ impl GossipHandle {
         let remote_ip = removed.as_ref().map(|s| s.remote().ip());
         let was_present = removed.is_some();
         if let Some(PeerSlot::Live(l)) = removed {
+            l.keepalive_task.abort();
             let _ = l.peer.close().await;
         }
         // POOL-*: publish churn so dig-node's pool consumers (and the maintenance loop) learn the peer

@@ -1345,15 +1345,17 @@ dead-ends instead of fetching from the real holder (#1584).
 ### 5.2.3 Reconnect Admission — newest-wins (normative; #1691)
 
 A node MUST admit a **restarted peer** that redials with the same verified `PeerId`, even while the
-node still holds a peer-map slot from that peer's prior (now-dead) connection. The peer map carries no
-liveness signal a guard can consult — a slot is NOT reaped when its connection drops, and keepalive
-reaping is off unless `keepalive_ping_interval_secs`/`keepalive_peer_timeout_secs` are configured — so
-`precheck_inbound_peer` MUST NOT reject an inbound session merely because `peers.contains_key(peer_id)`.
+node still holds a peer-map slot from that peer's prior (now-dead) connection. No per-slot liveness
+value exists for a guard to consult: a slot is NOT reaped when its connection drops (the inbound
+forwarder task simply ends), and the CON-004 keepalive REMOVES a slot on failure rather than stamping
+a freshness timestamp on it. Therefore `precheck_inbound_peer` MUST NOT reject an inbound session
+merely because `peers.contains_key(peer_id)`.
 
 Instead the freshly-authenticated inbound session is admitted and **supersedes** the incumbent slot:
 `negotiate_inbound_over_ws` inserts the new `LiveSlot` over the existing key (`HashMap::insert`,
-newest-wins) and, after releasing the `peers` lock, MUST call `Peer::close()` on the displaced slot
-(dropping a `LiveSlot` does not close its socket). Rationale + invariants:
+newest-wins) and, after releasing the `peers` lock, MUST tear down the displaced slot — abort its
+keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). Rationale +
+invariants:
 
 1. **Cert-gated displacement.** The `peer_id` at the guard is derived from the **completed, verified**
    mTLS handshake (`SHA-256` of the captured client-cert SPKI, §5.3). Only the holder of that identity's
@@ -1364,6 +1366,16 @@ newest-wins) and, after releasing the `peers` lock, MUST call `Peer::close()` on
    the count of distinct authenticated identities.
 3. **Ban/penalty handling is unchanged** — the CON-007 ban expiry + ban check still precede admission;
    a banned identity is rejected before the newest-wins path.
+4. **No ghost-keepalive eviction (session generations).** CON-004 keepalive is **on by default**
+   (`keepalive_*_secs = None` resolves to `PING_INTERVAL_SECS` / `PEER_TIMEOUT_SECS`, i.e. 30 s / 90 s),
+   so a superseded session's keepalive would otherwise fire a blind teardown and evict the *reconnect*.
+   Every `LiveSlot` therefore carries a monotonic **session generation** (allocated from
+   `ServiceState::next_peer_generation` at insert, so a reconnect out-ranks the slot it replaces).
+   EVERY per-session teardown keyed by `PeerId` (keepalive failure, …) MUST be a **compare-and-remove**:
+   it evicts the map entry only when the entry still has the SAME generation as the caller's session.
+   A stale task thus becomes a no-op against a newer slot. The supersede path additionally ABORTS the
+   displaced slot's keepalive immediately; the generation guard is the load-bearing invariant and the
+   abort is the prompt first line of defence.
 
 This restores reconnection for a bounced peer (upgrade/crash/service restart); before it, the stale
 slot refused every reconnect and the peer's subsequent reads 404'd (observed on the #1640 fleet).

@@ -131,8 +131,22 @@ fn unix_secs() -> u64 {
 /// - On failure, calls [`disconnect_after_keepalive_failure`] which applies a
 ///   [`PenaltyReason::ConnectionIssue`] penalty (10 points — CON-007) and closes
 ///   the TLS/WebSocket transport.
-pub(crate) fn spawn_keepalive_task(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
-    tokio::spawn(async move { keepalive_loop(state, peer_id, peer).await });
+///
+/// Returns the spawned task's [`AbortHandle`](tokio::task::AbortHandle) so the caller can store it on
+/// the [`LiveSlot`] and abort it the instant the slot is superseded by a same-`peer_id` reconnect
+/// (#1691) — a stale keepalive must not linger and fire a ghost teardown against the newer slot.
+///
+/// `generation` is the slot's session id ([`LiveSlot::generation`]); it is threaded into the teardown
+/// so [`disconnect_after_keepalive_failure`] only evicts the map entry when it still belongs to THIS
+/// session.
+pub(crate) fn spawn_keepalive_task(
+    state: Arc<ServiceState>,
+    peer_id: PeerId,
+    generation: u64,
+    peer: Peer,
+) -> tokio::task::AbortHandle {
+    tokio::spawn(async move { keepalive_loop(state, peer_id, generation, peer).await })
+        .abort_handle()
 }
 
 /// Core keepalive loop: sleep -> check timeout -> send probe -> record RTT or disconnect.
@@ -158,7 +172,7 @@ pub(crate) fn spawn_keepalive_task(state: Arc<ServiceState>, peer_id: PeerId, pe
 /// The loop checks [`ServiceState::is_running`](crate::service::state::ServiceState::is_running)
 /// both before sleeping *and* after waking. This ensures prompt exit when the
 /// service is shutting down even if the sleep was already in flight.
-async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
+async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u64, peer: Peer) {
     // Resolve config overrides once — they are immutable for the connection lifetime.
     let ping_secs = state
         .config
@@ -195,7 +209,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
                 timeout_secs,
                 "keepalive: no successful probe within PEER_TIMEOUT_SECS; disconnecting"
             );
-            disconnect_after_keepalive_failure(&state, peer_id).await;
+            disconnect_after_keepalive_failure(&state, peer_id, generation).await;
             break;
         }
 
@@ -242,7 +256,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
                     error = %e,
                     "keepalive: RequestPeers probe failed; disconnecting"
                 );
-                disconnect_after_keepalive_failure(&state, peer_id).await;
+                disconnect_after_keepalive_failure(&state, peer_id, generation).await;
                 break;
             }
             // --- timeout: peer did not respond within PEER_TIMEOUT_SECS ---
@@ -255,7 +269,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
                     timeout_secs,
                     "keepalive: RequestPeers probe timed out; disconnecting"
                 );
-                disconnect_after_keepalive_failure(&state, peer_id).await;
+                disconnect_after_keepalive_failure(&state, peer_id, generation).await;
                 break;
             }
         }
@@ -290,20 +304,35 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, peer: Peer) {
 /// - `peer_id` should reference a [`PeerSlot::Live`] in `state.peers`. If the slot
 ///   has already been removed (race with another disconnect path), the function is
 ///   a no-op.
-async fn disconnect_after_keepalive_failure(state: &ServiceState, peer_id: PeerId) {
+///
+/// # Generation guard (#1691)
+///
+/// `generation` is the session id of the keepalive task that failed. The removal is a
+/// **compare-and-remove**: the slot is evicted only when the entry currently in the map is `Live`
+/// with the SAME `generation`. If a same-`peer_id` reconnect has already superseded this session, the
+/// map holds a slot with a newer generation and this stale teardown becomes a no-op — so a lingering
+/// keepalive from a dropped connection can never evict the reconnect (the #1691 self-inflicted race).
+async fn disconnect_after_keepalive_failure(
+    state: &ServiceState,
+    peer_id: PeerId,
+    generation: u64,
+) {
     let now = unix_secs();
 
-    // Step 1: atomically remove the slot from the peer map so no other code path
-    // can interact with it after this point.
+    // Step 1: compare-and-remove — evict the slot only if it is still THIS session's slot (same
+    // generation). A superseding reconnect bumps the generation, so a stale task removes nothing.
     let removed = {
         let mut peers = match state.peers.lock() {
             Ok(g) => g,
             Err(_) => return, // Poisoned mutex — nothing safe to do.
         };
-        peers.remove(&peer_id)
+        match peers.get(&peer_id) {
+            Some(PeerSlot::Live(l)) if l.generation == generation => peers.remove(&peer_id),
+            _ => None, // Already superseded / gone / a different slot kind — do not touch it.
+        }
     };
 
-    // If the slot was already gone (concurrent disconnect), bail out.
+    // If the slot was already gone or superseded (guard above), bail out.
     let Some(PeerSlot::Live(live)) = removed else {
         return;
     };

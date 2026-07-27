@@ -3,14 +3,13 @@
 //! ## The defect
 //!
 //! The inbound guard ([`precheck_inbound_peer`]) rejected any new session whose `peer_id` already
-//! had a slot in [`ServiceState::peers`](dig_gossip) — *without* checking whether the held slot was
-//! still alive and without reaping a dead one. dig-gossip never removes a peer-map slot when the
-//! underlying connection drops (the inbound forwarder task simply ends), and keepalive-driven
-//! reaping is **off by default** in production (`keepalive_*_secs = None`). So after a peer restarts
-//! (upgrade / crash / service bounce) and redials with the **same** `peer_id`
-//! (= `SHA-256(TLS SPKI DER)`, bound to its DIG identity), the holder still had the stale slot and
-//! refused the reconnect — every subsequent read that peer attempted 404'd. Observed live on the
-//! #1640 step-4a EC2 fleet.
+//! had a slot in [`ServiceState::peers`](dig_gossip). A held slot carries no liveness value a guard
+//! can consult: dig-gossip never removes a peer-map slot when the connection drops (the inbound
+//! forwarder task simply ends), and the CON-004 keepalive REMOVES a slot on failure rather than
+//! stamping a per-slot freshness timestamp. So after a peer restarts (upgrade / crash / service
+//! bounce) and redials with the **same** `peer_id` (= `SHA-256(TLS SPKI DER)`, bound to its DIG
+//! identity), the holder still had the stale slot and refused the reconnect — every subsequent read
+//! that peer attempted 404'd. Observed live on the #1640 step-4a EC2 fleet.
 //!
 //! ## The fix under test — newest-wins, gated on the mTLS-proven identity
 //!
@@ -20,6 +19,15 @@
 //! the private key for `peer_id` — only the genuine peer can complete it — and the peer map keeps
 //! exactly one slot per `peer_id` (replace, never grow), so the map stays bounded by distinct
 //! authenticated identities.
+//!
+//! ## The ghost-keepalive hazard (also covered here)
+//!
+//! CON-004 keepalive is **on by default** (`keepalive_*_secs = None` resolves to 30 s ping / 90 s
+//! timeout), so the superseded session's keepalive task must be stopped or it would fire a blind
+//! teardown that evicts the *reconnect*. The fix aborts the displaced slot's keepalive on supersede
+//! AND generation-guards every per-session teardown (a stale task compare-and-removes against its
+//! own generation, so it can never evict a newer slot). [`stale_keepalive_does_not_evict_reconnect`]
+//! drives this with short keepalive overrides and waits past the timeout.
 //!
 //! ## Proof strategy (real wire, not a symmetric mock)
 //!
@@ -33,7 +41,20 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use dig_gossip::{GossipHandle, GossipService, PeerId};
+use dig_gossip::{GossipConfig, GossipHandle, GossipService, PeerId};
+
+/// Start a [`GossipService`] whose config is produced by `configure` — used to set short keepalive
+/// timings so a stale keepalive actually fires inside the test window.
+async fn service_with_config(
+    dir: &Path,
+    configure: impl FnOnce(&mut GossipConfig),
+) -> (GossipService, GossipHandle) {
+    let mut cfg = common::test_gossip_config(dir);
+    configure(&mut cfg);
+    let svc = GossipService::new(cfg).expect("GossipService::new");
+    let handle = svc.start().await.expect("GossipService::start");
+    (svc, handle)
+}
 
 /// Start a full [`GossipService`] (TLS listener + accept loop) from an **existing** cert directory.
 ///
@@ -191,5 +212,66 @@ async fn foreign_identity_cannot_displace_incumbent() {
     assert!(
         keys.contains(&incumbent_pid),
         "the incumbent slot is untouched by a foreign identity"
+    );
+}
+
+/// **The ghost-keepalive race:** the superseded session's keepalive, if left running, would fire a
+/// blind teardown and evict the reconnect — reintroducing #1691 as a timed race. This test uses
+/// short server keepalive timings and waits PAST the stale timeout, then asserts the reconnect
+/// survives and still serves.
+///
+/// Fails on a fix that only closes the displaced socket (the stale keepalive still ticks, its blind
+/// `peers.remove(peer_id)` deletes the reconnect). Passes once the displaced keepalive is aborted on
+/// supersede AND the teardown is generation-guarded.
+#[tokio::test]
+async fn stale_keepalive_does_not_evict_reconnect() {
+    // Short keepalive so the STALE session's probe fails well inside the test window: 1 s ping, 2 s
+    // staleness timeout. The server runs the per-inbound keepalive that would otherwise ghost-evict.
+    let server_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(server_dir.path());
+    let (_server_svc, server_h) = service_with_config(server_dir.path(), |cfg| {
+        cfg.keepalive_ping_interval_secs = Some(1);
+        cfg.keepalive_peer_timeout_secs = Some(2);
+    })
+    .await;
+    let bound = server_h
+        .__listen_bound_addr_for_tests()
+        .expect("listen addr");
+
+    let client_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(client_dir.path());
+
+    // S1 connects, then is dropped abruptly — its server-side keepalive task keeps ticking.
+    let (client1_svc, client1_h) = service_from_dir(client_dir.path()).await;
+    client1_h.connect_to(bound).await.expect("first connect");
+    let peer_pid = server_h.__peer_ids_for_tests()[0];
+    drop(client1_h);
+    drop(client1_svc);
+
+    // S2 reconnects (same identity) BEFORE the stale keepalive's timeout elapses — the exact #1691
+    // window. This supersedes S1; the fix must abort S1's keepalive.
+    let (_client2_svc, client2_h) = service_from_dir(client_dir.path()).await;
+    client2_h
+        .connect_to(bound)
+        .await
+        .expect("reconnect accepted");
+    assert_eq!(server_h.peer_count().await, 1, "reconnect registered");
+
+    // Wait well past the stale keepalive's 2 s timeout. On the unfixed code S1's ghost keepalive now
+    // blindly removes peer_pid — i.e. evicts S2. The reconnect (client2_h) is kept alive so the
+    // server's keepalive on S2 itself keeps succeeding.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let keys = server_h.__peer_ids_for_tests();
+    assert_eq!(
+        keys.len(),
+        1,
+        "the reconnect must survive the stale keepalive's timeout (no ghost eviction)"
+    );
+    assert_eq!(keys[0], peer_pid, "the surviving slot is the reconnect");
+    assert_eq!(
+        server_h.peer_count().await,
+        1,
+        "peer still connected after the stale keepalive would have fired"
     );
 }

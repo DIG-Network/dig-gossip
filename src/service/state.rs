@@ -168,6 +168,21 @@ pub(crate) struct LiveSlot {
     /// CON-006 — per-live-connection counters mirrored into [`crate::types::peer::PeerConnection`]
     /// when snapshot APIs land; summed into [`crate::types::stats::GossipStats`] in [`crate::service::gossip_handle::GossipHandle::stats`].
     pub traffic: Arc<Mutex<PeerConnectionWireMetrics>>,
+    /// Monotonic **session generation** for this slot (#1691). Allocated from
+    /// [`ServiceState::next_peer_generation`] when the slot is inserted, so a newest-wins reconnect
+    /// (same `peer_id`, new slot) always has a strictly-greater generation than the slot it replaced.
+    ///
+    /// Every per-session teardown keyed by `peer_id` (keepalive failure, …) carries the generation of
+    /// the session it belongs to and does a **compare-and-remove**: it only evicts the map entry when
+    /// the entry still has the SAME generation. This makes a stale task's teardown a no-op against a
+    /// newer slot, so a superseded connection's lingering keepalive can never evict the reconnect.
+    pub generation: u64,
+    /// [`AbortHandle`](tokio::task::AbortHandle) for this slot's CON-004 keepalive task (#1691).
+    ///
+    /// Aborted the instant the slot is superseded by a same-`peer_id` reconnect, so the stale
+    /// keepalive stops immediately rather than racing to its next probe. The generation guard above
+    /// is the load-bearing invariant; this abort is the prompt first line of defence.
+    pub keepalive_task: tokio::task::AbortHandle,
 }
 
 /// **CON-007** — DIG timed-ban row stored alongside [`PeerId`] in [`ServiceState::banned`].
@@ -463,6 +478,12 @@ pub struct ServiceState {
     /// increasing -- never decremented on disconnect. Used by `GossipStats::total_connections`.
     pub total_connections: AtomicU64,
 
+    /// Monotonic allocator for [`LiveSlot::generation`] session ids (#1691). Every live slot inserted
+    /// into [`Self::peers`] draws a strictly-increasing generation from here, so a same-`peer_id`
+    /// reconnect out-ranks the slot it supersedes and stale per-session teardowns compare-and-remove
+    /// against it. Never reset; wraps only after 2^64 connections (effectively never).
+    pub(crate) peer_generation: AtomicU64,
+
     /// Cumulative peers received via `RespondPeers` across all peer exchange rounds.
     /// DSC-007: capped at [`MAX_TOTAL_PEERS_RECEIVED`](crate::constants::MAX_TOTAL_PEERS_RECEIVED) (3000).
     /// When this counter reaches the cap, further `RespondPeers` peer lists are silently discarded.
@@ -617,6 +638,7 @@ impl ServiceState {
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             total_connections: AtomicU64::new(0),
+            peer_generation: AtomicU64::new(0),
             total_peers_received: AtomicU64::new(0),
             listen_bound_addr: Mutex::new(None),
             listener_stop: Mutex::new(None),
@@ -867,9 +889,20 @@ impl ServiceState {
             .map(|s| s.remote().ip())
             .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED.into());
         if let Some(PeerSlot::Live(l)) = removed {
+            // Stop the CON-004 keepalive before closing so it cannot fire a ghost teardown (#1691).
+            l.keepalive_task.abort();
             let _ = l.peer.close().await;
         }
         self.execute_dig_timed_ban(peer_id, ip, now_unix_secs).await;
+    }
+
+    /// Allocate the next monotonic session generation for a live peer slot (#1691).
+    ///
+    /// Each live-slot insertion draws a strictly-increasing id, so a same-`peer_id` reconnect
+    /// out-ranks the slot it supersedes and a stale per-session teardown compare-and-removes against
+    /// it (never evicting the newer slot). See [`LiveSlot::generation`].
+    pub(crate) fn next_peer_generation(&self) -> u64 {
+        self.peer_generation.fetch_add(1, Ordering::Relaxed)
     }
 
     /// `true` if `peer_id` is currently banned **after** pruning expired rows at `now_unix_secs`.

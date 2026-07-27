@@ -136,24 +136,39 @@ Durable, high-signal realizations (not a change diary).
 - **Root cause.** `precheck_inbound_peer` (src/connection/listener.rs) rejected any inbound session on
   a bare `peers.contains_key(peer_id)` with NO liveness check and NO reap. dig-gossip never removes a
   peer-map slot when the connection drops — the inbound forwarder task in `negotiate_inbound_over_ws`
-  just ends when `inbound_rx` closes; it does not touch `peers`. And keepalive-driven reaping is OFF by
-  default (`keepalive_ping_interval_secs`/`keepalive_peer_timeout_secs` default to `None`, in both
-  `GossipConfig::default` and the test config). So the stale slot lingered forever and blocked the
-  reconnect.
-- **No liveness signal exists to consult.** `PeerSlot`/`LiveSlot` carry no `last_seen`/keepalive
-  timestamp; even when keepalive is enabled it feeds `PeerReputation` RTT and REMOVES the slot on
-  failure, not a per-slot freshness value a guard could read. So "reap-then-check" had nothing to
-  check against → the fix is **newest-wins gated on the mTLS-proven identity**.
+  just ends when `inbound_rx` closes; it does not touch `peers`. So the stale slot lingered and blocked
+  the reconnect.
+- **No per-slot liveness signal exists to consult — but keepalive IS on by default.** `PeerSlot`/
+  `LiveSlot` carry no `last_seen` timestamp, and the CON-004 keepalive REMOVES a slot on failure rather
+  than stamping freshness on it — so "reap-then-check" has nothing to read → the fix is **newest-wins
+  gated on the mTLS-proven identity**. IMPORTANT correction (an earlier draft of this fix claimed
+  keepalive was "off by default" — FALSE): `keepalive_loop` does `.unwrap_or(PING_INTERVAL_SECS)` /
+  `.unwrap_or(PEER_TIMEOUT_SECS)` (keepalive.rs), so `keepalive_*_secs = None` means production runs the
+  keepalive at 30 s ping / 90 s timeout, and `spawn_keepalive_task` runs unconditionally per connection.
 - **Why newest-wins is safe.** `peer_id` at the guard is derived from the COMPLETED, verified mTLS
   handshake (the rustls/native-tls acceptor requests+requires+captures the client cert, then SPKI→hash;
   see the #1371 entry). Only the holder of that identity's private key can complete the handshake, so
-  no third party can reach the supersede path for an identity it does not own — a live peer cannot be
-  displaced by someone lacking its key. And `HashMap::insert` replaces (one slot per `peer_id`), so the
-  map stays bounded under reconnect churn.
-- **The fix.** Drop the duplicate reject from `precheck_inbound_peer` (self + CON-007 ban checks
-  stay). At the `peers.insert` in `negotiate_inbound_over_ws`, capture the superseded slot and, after
-  releasing the `peers` lock, `Peer::close()` it — dropping a `LiveSlot` does NOT close its socket
-  (documented on `LiveSlot`), so an explicit close prevents leaking the stale reader/writer.
+  no third party can reach the supersede path for an identity it does not own. And `HashMap::insert`
+  replaces (one slot per `peer_id`), so the map stays bounded under reconnect churn.
+- **The landing trap — ghost keepalive re-introduced #1691 as a timed race.** Because keepalive is
+  always on, superseding S1 with S2 while leaving S1's keepalive task L1 running is a bug: ≤30 s later
+  L1's probe on the dead S1 fails and `disconnect_after_keepalive_failure` did a **blind
+  `peers.remove(peer_id)`** — which removes S2 (the reconnect), emptying `map[P]` and 404'ing the
+  reader again. The first draft (close-socket only, no keepalive teardown) passed its <200 ms tests but
+  would have failed in production at the 30 s tick.
+- **The robust fix — abort + session generations (compare-and-remove).** (1) `LiveSlot` gains a
+  `keepalive_task: AbortHandle`; the supersede path (and every Live-slot removal: ban-disconnect,
+  handle `disconnect`, service `stop`) `.abort()`s it so the stale keepalive stops immediately. (2)
+  `LiveSlot` gains a monotonic `generation` drawn from `ServiceState::next_peer_generation()` at
+  insert; the keepalive task carries its generation and `disconnect_after_keepalive_failure` is now a
+  **compare-and-remove** — it only removes/closes when `map[peer_id]` is `Live` with the SAME
+  generation. A stale task therefore no-ops against a newer slot even if its abort is missed/races. The
+  generation guard is the load-bearing invariant; the abort is the prompt first line of defence.
+- **Ordering gotcha — spawn keepalive BEFORE inserting the slot.** The slot must own the keepalive
+  `AbortHandle`, but the handle only exists after `tokio::spawn`. Spawn first (the loop sleeps a full
+  interval before its first probe, so it cannot touch the map before the insert lands), capture the
+  `AbortHandle`, then build+insert the `LiveSlot` with it. Applied at both insert sites (inbound
+  `negotiate_inbound_over_ws`, outbound `connect_to`).
 - **Gotcha — std `MutexGuard` is not `Send`.** The inbound future is `tokio::spawn`ed, so it must be
   `Send`. Closing the displaced peer is an `.await`; scope the `peers` guard in a `{ … }` block that
   returns the superseded slot (an explicit `drop(peers)` before the await did NOT satisfy the auto-Send
