@@ -12,9 +12,9 @@
 //!
 //! - **`subnet_group()`** — returns a u32 group key from an IP.
 //!   IPv4: first 2 octets (0-65535). IPv6: first 4 bytes.
-//!   Matches `PeerInfo::get_group()` in `types/peer.rs` but returns u32 for HashSet.
-//! - **`SubnetGroupFilter`** — HashSet<u32> of outbound /16 groups.
-//!   Fast O(1) check per candidate. Applied before AS filter (DSC-010).
+//!   Matches `PeerInfo::get_group()` in `types/peer.rs`. Outbound /16 diversity (INT-006) is enforced
+//!   in `connect_to` by comparing this key across the live peer map (#1703) — the single source of
+//!   truth — not a parallel occupancy set that could drift.
 //! - **`order_by_local_stack()`** — orders a candidate address list IPv6-first and DROPS any
 //!   candidate whose family the LOCAL host cannot originate on, using the canonical
 //!   [`dig_ip`] crate as the single family authority ([`dig_ip::Family`] for the IPv6-first key,
@@ -22,7 +22,6 @@
 //!   implementation of the "IPv6-first, IPv4-fallback" rule (CLAUDE.md §5.2); no crate hand-rolls a
 //!   family sort or a local-capability check any more.
 
-use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 
 use dig_ip::{Family, LocalStack};
@@ -41,47 +40,6 @@ pub fn subnet_group(ip: &IpAddr) -> u32 {
             let o = v6.octets();
             ((o[0] as u32) << 24) | ((o[1] as u32) << 16) | ((o[2] as u32) << 8) | (o[3] as u32)
         }
-    }
-}
-
-/// Outbound /16 subnet diversity filter (**DSC-011**).
-///
-/// Fast first-pass before AS diversity (DSC-010). Blocks candidates whose
-/// /16 group already has an outbound connection.
-///
-/// SPEC §6.4 item 3: "/16 group filter — one outbound per IPv4 /16 subnet."
-/// Chia `node_discovery.py:296-306`.
-#[derive(Debug, Clone, Default)]
-pub struct SubnetGroupFilter {
-    /// /16 groups currently represented in outbound connections.
-    outbound_groups: HashSet<u32>,
-}
-
-impl SubnetGroupFilter {
-    /// New empty filter.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Check if candidate IP allowed (group not already in outbound set).
-    pub fn is_allowed(&self, ip: &IpAddr) -> bool {
-        let group = subnet_group(ip);
-        !self.outbound_groups.contains(&group)
-    }
-
-    /// Record new outbound connection's /16 group.
-    pub fn add_outbound(&mut self, ip: &IpAddr) {
-        self.outbound_groups.insert(subnet_group(ip));
-    }
-
-    /// Remove outbound connection's /16 group (on disconnect).
-    pub fn remove_outbound(&mut self, ip: &IpAddr) {
-        self.outbound_groups.remove(&subnet_group(ip));
-    }
-
-    /// Current outbound group count.
-    pub fn outbound_group_count(&self) -> usize {
-        self.outbound_groups.len()
     }
 }
 

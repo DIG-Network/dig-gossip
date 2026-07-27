@@ -1,88 +1,77 @@
-//! Tests for **INT-007: AsDiversityFilter on connect_to()**.
+//! Tests for **INT-007: AS-level outbound diversity classification**.
 //!
 //! - **Spec:** `docs/requirements/domains/integration/specs/INT-007.md`
-//! - **Master SPEC:** SS6.4 item 3
+//! - **Master SPEC:** §6.4 item 3, §5.2.3
 //!
-//! INT-007 is satisfied when AsDiversityFilter is wired into ServiceState and
-//! checked during connect_to().
+//! Since #1703, outbound AS diversity is NOT tracked in a parallel mutable filter set (which could
+//! drift out of agreement with the actual connections and under-count). Occupancy is derived from the
+//! live peer map — the single source of truth — inside `connect_to`, using the immutable
+//! [`AsLookupTable`] purely to CLASSIFY each peer's IP to an AS number. The end-to-end enforcement
+//! ("a net-new outbound sharing an occupied AS/group is refused") is exercised against the real peer
+//! map in `con_1703_outbound_reconnect_tests`; this file proves the classification table INT-007
+//! builds on: longest-prefix match, and same-AS / different-AS / unknown-fail-open resolution.
 
-use dig_gossip::util::as_lookup::{AsDiversityFilter, AsLookupTable};
+use dig_gossip::util::as_lookup::AsLookupTable;
 use std::net::IpAddr;
 
-/// **INT-007: AsDiversityFilter with no BGP data allows all.**
+/// **INT-007: an empty table (no BGP data) classifies every IP as unknown → AS check fails open.**
 #[test]
-fn test_as_filter_no_bgp_data_allows_all() {
-    let f = AsDiversityFilter::no_bgp_data();
+fn test_no_bgp_data_classifies_all_as_unknown() {
+    let table = AsLookupTable::empty();
     let ip: IpAddr = "1.2.3.4".parse().unwrap();
-    assert!(f.is_allowed(&ip), "no BGP data should fail open");
-    assert!(!f.has_bgp_data());
+    assert!(table.is_empty());
+    assert_eq!(
+        table.lookup(&ip),
+        None,
+        "no BGP data → unknown AS → INT-007 fails open (/16 is the sole guard)"
+    );
 }
 
-/// **INT-007: AsDiversityFilter blocks same AS.**
+/// **INT-007: two IPs in the same AS resolve to the SAME AS number (map-derived INT-007 blocks the
+/// second outbound because their classifications collide).**
 #[test]
-fn test_as_filter_blocks_same_as() {
-    // Create table: 10.0.0.0/8 -> AS100, 20.0.0.0/8 -> AS200
+fn test_same_as_resolves_equal() {
     let entries = vec![
         ("10.0.0.0".parse::<IpAddr>().unwrap(), 8u8, 100u32),
         ("20.0.0.0".parse::<IpAddr>().unwrap(), 8u8, 200u32),
     ];
     let table = AsLookupTable::from_entries(entries);
-    let mut f = AsDiversityFilter::new(table);
-
-    assert!(f.has_bgp_data());
 
     let ip1: IpAddr = "10.1.1.1".parse().unwrap();
-    let ip2: IpAddr = "10.2.2.2".parse().unwrap(); // same AS (100)
-
-    assert!(f.is_allowed(&ip1));
-    f.add_outbound(&ip1);
-    assert!(!f.is_allowed(&ip2), "same AS should be blocked");
+    let ip2: IpAddr = "10.2.2.2".parse().unwrap();
+    assert_eq!(table.lookup(&ip1), Some(100));
+    assert_eq!(
+        table.lookup(&ip1),
+        table.lookup(&ip2),
+        "same-AS IPs must classify equal so INT-007 counts them as one occupancy"
+    );
 }
 
-/// **INT-007: AsDiversityFilter allows different AS.**
+/// **INT-007: IPs in different ASes resolve to different AS numbers (second outbound allowed).**
 #[test]
-fn test_as_filter_allows_different_as() {
+fn test_different_as_resolves_distinct() {
     let entries = vec![
         ("10.0.0.0".parse::<IpAddr>().unwrap(), 8u8, 100u32),
         ("20.0.0.0".parse::<IpAddr>().unwrap(), 8u8, 200u32),
     ];
     let table = AsLookupTable::from_entries(entries);
-    let mut f = AsDiversityFilter::new(table);
 
-    let ip1: IpAddr = "10.1.1.1".parse().unwrap(); // AS 100
-    let ip2: IpAddr = "20.1.1.1".parse().unwrap(); // AS 200
-
-    f.add_outbound(&ip1);
-    assert!(f.is_allowed(&ip2), "different AS should be allowed");
+    let ip1: IpAddr = "10.1.1.1".parse().unwrap();
+    let ip2: IpAddr = "20.1.1.1".parse().unwrap();
+    assert_ne!(table.lookup(&ip1), table.lookup(&ip2));
 }
 
-/// **INT-007: AsDiversityFilter remove_outbound re-allows the AS.**
+/// **INT-007: an IP outside every prefix classifies as unknown (fails open).**
 #[test]
-fn test_as_filter_remove_outbound() {
+fn test_unknown_ip_classifies_none() {
     let entries = vec![("10.0.0.0".parse::<IpAddr>().unwrap(), 8u8, 100u32)];
     let table = AsLookupTable::from_entries(entries);
-    let mut f = AsDiversityFilter::new(table);
 
-    let ip: IpAddr = "10.1.1.1".parse().unwrap();
-    f.add_outbound(&ip);
-    assert!(!f.is_allowed(&ip));
-
-    f.remove_outbound(&ip);
-    assert!(f.is_allowed(&ip), "after remove, AS should be allowed");
+    let unknown_ip: IpAddr = "192.168.1.1".parse().unwrap();
+    assert_eq!(table.lookup(&unknown_ip), None, "unknown IP fails open");
 }
 
-/// **INT-007: Unknown IPs fail open (allowed).**
-#[test]
-fn test_as_filter_unknown_ip_fails_open() {
-    let entries = vec![("10.0.0.0".parse::<IpAddr>().unwrap(), 8u8, 100u32)];
-    let table = AsLookupTable::from_entries(entries);
-    let f = AsDiversityFilter::new(table);
-
-    let unknown_ip: IpAddr = "192.168.1.1".parse().unwrap(); // not in table
-    assert!(f.is_allowed(&unknown_ip), "unknown IP should fail open");
-}
-
-/// **INT-007: AsLookupTable longest-prefix-match.**
+/// **INT-007: AsLookupTable resolves via longest-prefix-match.**
 #[test]
 fn test_as_lookup_table_longest_prefix() {
     let entries = vec![
@@ -91,19 +80,14 @@ fn test_as_lookup_table_longest_prefix() {
     ];
     let table = AsLookupTable::from_entries(entries);
 
-    // 10.1.x.x should match /16 (AS 200), not /8 (AS 100)
-    let ip: IpAddr = "10.1.1.1".parse().unwrap();
-    assert_eq!(table.lookup(&ip), Some(200));
-
-    // 10.2.x.x should match /8 (AS 100)
-    let ip2: IpAddr = "10.2.1.1".parse().unwrap();
-    assert_eq!(table.lookup(&ip2), Some(100));
-}
-
-/// **INT-007: ServiceState has as_filter field.**
-#[test]
-fn test_service_state_has_as_filter() {
-    fn _check_field(state: &dig_gossip::ServiceState) {
-        let _af = state.as_filter.lock().unwrap();
-    }
+    // 10.1.x.x matches the more-specific /16 (AS 200), not the /8 (AS 100).
+    assert_eq!(
+        table.lookup(&"10.1.1.1".parse::<IpAddr>().unwrap()),
+        Some(200)
+    );
+    // 10.2.x.x falls back to the /8 (AS 100).
+    assert_eq!(
+        table.lookup(&"10.2.1.1".parse::<IpAddr>().unwrap()),
+        Some(100)
+    );
 }

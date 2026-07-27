@@ -79,8 +79,7 @@ use crate::error::GossipError;
 use crate::types::config::GossipConfig;
 use crate::types::peer::{PeerConnectionWireMetrics, PeerId};
 use crate::types::reputation::{PeerReputation, PenaltyReason};
-use crate::util::as_lookup::AsDiversityFilter;
-use crate::util::ip_address::SubnetGroupFilter;
+use crate::util::as_lookup::AsLookupTable;
 
 /// Lifecycle state: service has been constructed but `start()` has not been called.
 /// Config is validated and TLS is loaded, but no tasks are running and no ports are bound.
@@ -337,6 +336,63 @@ impl PeerSlot {
     }
 }
 
+/// Which outbound diversity cap a candidate admission would violate (#1703).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutboundDiversityConflict {
+    /// **INT-006** — another outbound connection already occupies the candidate's `/16` group.
+    Subnet,
+    /// **INT-007** — another outbound connection already occupies the candidate's AS number.
+    As,
+}
+
+/// Outbound-diversity occupancy derived from the live peer map (#1703) — the SINGLE source of truth.
+///
+/// Returns the conflict, if any, that admitting a NEW outbound connection to `candidate_ip` under
+/// `new_peer_id` would create: `Some(Subnet)` when some OTHER slot (any `peer_id` but `new_peer_id`)
+/// is ALREADY an OUTBOUND connection in the candidate's `/16` group (INT-006), else `Some(As)` when
+/// one shares the candidate's AS number (INT-007, only when the BGP table classifies both IPs), else
+/// `None`.
+///
+/// Deriving occupancy from `peers` on demand — rather than from a parallel `HashSet` mutated on every
+/// connect/disconnect — is what makes the budget incapable of drifting out of agreement with the
+/// actual connections. A refcount-free side-set under-counts the moment two outbound peers share a
+/// group and one is removed/superseded (it deletes the shared group entry while the other peer still
+/// occupies it), wrongly re-admitting a second outbound into an occupied group; the map cannot lie
+/// about what it contains. `/16` grouping is pure ([`crate::util::ip_address::subnet_group`]); AS
+/// classification uses the immutable [`ServiceState::as_table`]. Caller MUST hold the `peers` lock
+/// across this check AND the subsequent insert so the check→insert is atomic (no TOCTOU where two
+/// concurrent net-new dials into the same empty group both pass).
+pub(crate) fn outbound_diversity_conflict(
+    peers: &HashMap<PeerId, PeerSlot>,
+    as_table: &AsLookupTable,
+    new_peer_id: PeerId,
+    candidate_ip: IpAddr,
+) -> Option<OutboundDiversityConflict> {
+    let candidate_group = crate::util::ip_address::subnet_group(&candidate_ip);
+    let occupies = |pid: &PeerId, slot: &PeerSlot| *pid != new_peer_id && slot.is_outbound();
+
+    // INT-006 first (the primary /16 guard), then INT-007 (AS), matching the historic precedence.
+    if peers
+        .iter()
+        .any(|(pid, slot)| occupies(pid, slot) && subnet_group_of(slot) == candidate_group)
+    {
+        return Some(OutboundDiversityConflict::Subnet);
+    }
+    if let Some(candidate_asn) = as_table.lookup(&candidate_ip) {
+        if peers.iter().any(|(pid, slot)| {
+            occupies(pid, slot) && as_table.lookup(&slot.remote().ip()) == Some(candidate_asn)
+        }) {
+            return Some(OutboundDiversityConflict::As);
+        }
+    }
+    None
+}
+
+/// The `/16` group of a peer slot's remote address.
+fn subnet_group_of(slot: &PeerSlot) -> u32 {
+    crate::util::ip_address::subnet_group(&slot.remote().ip())
+}
+
 /// The `Arc`-shared interior of [`GossipService`](super::gossip_service::GossipService)
 /// and [`GossipHandle`](super::gossip_handle::GossipHandle).
 ///
@@ -411,15 +467,16 @@ pub struct ServiceState {
     /// SPEC §8.1 — "Message cache: LRU capacity 1000, TTL 60s."
     pub message_cache: Mutex<crate::gossip::message_cache::MessageCache>,
 
-    /// **INT-006** — /16 subnet diversity filter for outbound connections.
-    /// Blocks candidates whose /16 group already has an outbound connection.
-    /// SPEC §6.4 item 3: "one outbound per IPv4 /16 subnet."
-    pub subnet_filter: Mutex<SubnetGroupFilter>,
-
-    /// **INT-007** — AS-level diversity filter for outbound connections.
-    /// Blocks candidates whose AS is already represented in outbound set.
-    /// SPEC §6.4 item 3: "AS-level diversity — one outbound per AS."
-    pub as_filter: Mutex<AsDiversityFilter>,
+    /// **INT-007** — immutable BGP prefix table for IP → AS-number classification (#1703).
+    ///
+    /// This is REFERENCE DATA only, never mutable occupancy state. Outbound diversity occupancy
+    /// (INT-006 /16, INT-007 AS) is derived on demand from the live [`Self::peers`] map — the single
+    /// source of truth — inside `connect_to`'s admission gate, never from a parallel side-set that
+    /// could drift out of agreement with the map (the #1703 set-vs-map under-count trap). `/16`
+    /// grouping needs no state ([`crate::util::ip_address::subnet_group`] is pure); AS grouping needs
+    /// this table to classify each peer's IP. Empty by default (no BGP data → AS check fails open,
+    /// `/16` is the sole guard) exactly as before.
+    pub(crate) as_table: AsLookupTable,
 
     /// Map of currently connected peers (stubs for tests, live for real connections).
     /// Keyed by [`PeerId`] (SHA256 of remote TLS public key for live peers, or
@@ -629,8 +686,7 @@ impl ServiceState {
             seen_messages: Mutex::new(LruCache::new(cap)),
             plumtree: Mutex::new(crate::gossip::plumtree::PlumtreeState::new()),
             message_cache: Mutex::new(crate::gossip::message_cache::MessageCache::new()),
-            subnet_filter: Mutex::new(SubnetGroupFilter::new()),
-            as_filter: Mutex::new(AsDiversityFilter::no_bgp_data()),
+            as_table: AsLookupTable::empty(),
             peers: Mutex::new(HashMap::new()),
             banned: Mutex::new(HashMap::new()),
             chia_ip_bans: Arc::new(tokio::sync::Mutex::new(ClientState::default())),
@@ -1151,6 +1207,141 @@ mod nat_identity_tests {
             ephemeral.peer_id(),
             advertised,
             "without injection the transport identity is ephemeral and cannot match the advertised id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod outbound_diversity_tests {
+    //! **#1703** — outbound diversity occupancy is DERIVED from the peer map (the single source of
+    //! truth), never a parallel side-set. These prove the pure [`outbound_diversity_conflict`] scan:
+    //! INT-006 (`/16`) and INT-007 (AS) enforcement, that the reconnecting identity is EXCLUDED from
+    //! its own occupancy, and that a non-outbound slot never consumes the outbound budget. The AS
+    //! (INT-007) branch is only reachable here — `con_1703_outbound_reconnect_tests` runs on loopback
+    //! with no BGP table, so this is where a loaded table exercises the AS path end to end.
+
+    use super::*;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().expect("valid SocketAddr")
+    }
+
+    fn outbound_stub(remote: SocketAddr) -> PeerSlot {
+        PeerSlot::Stub(StubPeer {
+            remote,
+            node_type: NodeType::FullNode,
+            is_outbound: true,
+        })
+    }
+
+    fn inbound_stub(remote: SocketAddr) -> PeerSlot {
+        PeerSlot::Stub(StubPeer {
+            remote,
+            node_type: NodeType::FullNode,
+            is_outbound: false,
+        })
+    }
+
+    /// Two ASes for INT-007 coverage: 10.0.0.0/8 → AS 100, 20.0.0.0/8 → AS 200.
+    fn as_table() -> AsLookupTable {
+        AsLookupTable::from_entries(vec![
+            ("10.0.0.0".parse().unwrap(), 8u8, 100u32),
+            ("20.0.0.0".parse().unwrap(), 8u8, 200u32),
+        ])
+    }
+
+    /// A peer map keyed the production way (`peer_id_for_addr`), one slot per given address.
+    fn map(slots: Vec<(SocketAddr, PeerSlot)>) -> HashMap<PeerId, PeerSlot> {
+        slots
+            .into_iter()
+            .map(|(a, slot)| (peer_id_for_addr(a), slot))
+            .collect()
+    }
+
+    /// **INT-006:** a net-new identity in a `/16` some OTHER outbound slot occupies is refused.
+    #[test]
+    fn refuses_new_identity_sharing_an_occupied_slash16() {
+        let occupant = addr("10.5.0.1:9444");
+        let peers = map(vec![(occupant, outbound_stub(occupant))]);
+        let candidate = addr("10.5.9.9:9444"); // same /16 (10.5), distinct address → distinct id
+        assert_eq!(
+            outbound_diversity_conflict(
+                &peers,
+                &AsLookupTable::empty(),
+                peer_id_for_addr(candidate),
+                candidate.ip(),
+            ),
+            Some(OutboundDiversityConflict::Subnet),
+        );
+    }
+
+    /// A different `/16` with no shared AS is admitted (no conflict).
+    #[test]
+    fn admits_new_identity_in_a_free_group() {
+        let occupant = addr("10.5.0.1:9444");
+        let peers = map(vec![(occupant, outbound_stub(occupant))]);
+        let candidate = addr("30.1.1.1:9444"); // different /16, unknown AS
+        assert_eq!(
+            outbound_diversity_conflict(
+                &peers,
+                &AsLookupTable::empty(),
+                peer_id_for_addr(candidate),
+                candidate.ip(),
+            ),
+            None,
+        );
+    }
+
+    /// The reconnecting identity is EXCLUDED from its own occupancy: a same-`peer_id` outbound
+    /// reconnect in the `/16` it already holds is not a conflict (this is what lets a genuine reconnect
+    /// supersede without tripping the cap).
+    #[test]
+    fn excludes_the_reconnecting_identity_from_its_own_group() {
+        let held = addr("10.5.0.1:9444");
+        let pid = peer_id_for_addr(held);
+        let peers: HashMap<PeerId, PeerSlot> =
+            std::iter::once((pid, outbound_stub(held))).collect();
+        let candidate = addr("10.5.9.9:9444"); // same /16 as the slot held under `pid`
+        assert_eq!(
+            outbound_diversity_conflict(&peers, &AsLookupTable::empty(), pid, candidate.ip()),
+            None,
+            "the identity already holding the group must not conflict with itself",
+        );
+    }
+
+    /// **INT-007:** a DIFFERENT `/16` but the SAME AS as an existing outbound is refused — isolating
+    /// the AS branch (the `/16` scan finds nothing, the AS scan fires).
+    #[test]
+    fn refuses_new_identity_sharing_an_occupied_as_in_a_different_slash16() {
+        let occupant = addr("10.1.0.1:9444"); // /16 10.1, AS 100
+        let peers = map(vec![(occupant, outbound_stub(occupant))]);
+        let candidate = addr("10.200.0.1:9444"); // /16 10.200 (different), still AS 100
+        assert_eq!(
+            outbound_diversity_conflict(
+                &peers,
+                &as_table(),
+                peer_id_for_addr(candidate),
+                candidate.ip(),
+            ),
+            Some(OutboundDiversityConflict::As),
+        );
+    }
+
+    /// An INBOUND slot never occupies the OUTBOUND budget — a net-new outbound in its `/16` is
+    /// admitted (the address-shared-inbound-slot eclipse bypass is closed).
+    #[test]
+    fn inbound_slot_does_not_occupy_the_outbound_budget() {
+        let inbound = addr("10.5.0.1:9444");
+        let peers = map(vec![(inbound, inbound_stub(inbound))]);
+        let candidate = addr("10.5.9.9:9444"); // same /16, but the occupant is INBOUND
+        assert_eq!(
+            outbound_diversity_conflict(
+                &peers,
+                &AsLookupTable::empty(),
+                peer_id_for_addr(candidate),
+                candidate.ip(),
+            ),
+            None,
         );
     }
 }

@@ -173,3 +173,69 @@ Durable, high-signal realizations (not a change diary).
   `Send`. Closing the displaced peer is an `.await`; scope the `peers` guard in a `{ … }` block that
   returns the superseded slot (an explicit `drop(peers)` before the await did NOT satisfy the auto-Send
   analysis — the block scope did).
+
+## Outbound reconnect symmetry — the coupled diversity-filter self-block (#1703, mirror of #1691)
+
+- The DuplicateConnection reject was NOT the only thing blocking an outbound re-dial. `connect_to` has
+  TWO stale-slot blockers, and both fire before the newest-wins insert can supersede: (1) the
+  pre-dial address-level `DuplicateConnection` reject, and (2) the INT-006 /16 + INT-007 AS diversity
+  filters. On a dropped outbound link the stale slot survives AND its /16+AS stay registered in the
+  filters (an abrupt drop never calls `remove_outbound`), so even after removing the duplicate reject a
+  same-`/16` re-dial (e.g. any loopback re-dial — `subnet_group(127.0.0.1)` has no bypass) is refused
+  with `ConnectionFiltered`. Fixing only the duplicate reject leaves outbound reconnect still broken in
+  production. The two are the SAME stale-slot root; both must be handled for item 1 to actually work.
+- ECLIPSE-ADMISSION TRAP (caught by the adversarial+security gate — the address heuristic is unsafe):
+  a first attempt keyed the diversity bypass on address (`peers.values().any(|s| s.remote()==addr)`).
+  That is exploitable. The outbound diversity budget is populated ONLY by outbound `add_outbound`; an
+  INBOUND Live slot or a Nat slot (whose `remote` comes from attacker-influenced `RespondPeers`) sits
+  in the peer map at an address WITHOUT consuming that budget. So "a slot exists at addr" does NOT imply
+  "addr already consumes a diversity slot": with an outbound already filling /16 5.6, a Nat slot at
+  5.6.7.8, a dial to 5.6.7.8 would be treated as a reconnect, bypass INT-006, handshake to a NET-NEW
+  peer_id, and `insert` a SECOND outbound Live in /16 5.6 (supersedes nothing) — exceeding
+  one-per-/16//AS and widening an eclipse. Restricting to `is_outbound() && remote()==addr` is ALSO
+  insufficient (different-peer_id-same-address still inserts a net-new key → map growth + 2 outbound).
+- CORRECT FIX (verified-identity gate): decide diversity on the POST-handshake verified `peer_id`, not
+  the pre-handshake address. After the handshake, `is_outbound_reconnect =
+  matches!(peers.get(&peer_id), Some(s) if s.is_outbound())`. If NOT an outbound reconnect (net-new
+  identity, or an admission replacing a non-outbound slot at that address) → net-new outbound occupancy
+  → enforce INT-006/INT-007 against the current outbound budget, else close the stream + return the
+  same `ConnectionFiltered` error. If it IS an outbound reconnect → its group/AS is already counted →
+  skip the check and supersede. The pre-handshake path keeps ONLY the max_connections check.
+- SET-vs-MAP UNDER-COUNT TRAP (caught by the full trio re-gate — the round-4 `remove_outbound` fix was
+  itself unsafe): the `SubnetGroupFilter`/`AsDiversityFilter` were refcount-free `HashSet`s. Round-4
+  added `remove_outbound`-on-supersede to release a vacated group; but a plain set has no refcount, so
+  removing a group entry when ANOTHER live outbound still occupies it UNDER-COUNTS — the set reports the
+  group free while the map still holds an outbound there, and a later net-new dial is wrongly admitted =
+  2 outbound in one /16 (the exact INT-006 cap). Exploit needs only `connect_to`s: P1→G_a, P2→G_b;
+  redial P1→G_b (reconnect, gate skipped; `remove_outbound(G_a)`+`add_outbound(G_b)`); redial P2→G_c
+  (`remove_outbound(G_b)` but P1 still in G_b!) → set loses G_b → net-new R dials G_b → admitted.
+- FINAL FIX (single source of truth = the peer map): DELETE the side-set occupancy entirely
+  (`SubnetGroupFilter`, `AsDiversityFilter`, the `subnet_filter`/`as_filter` `ServiceState` fields, and
+  all `add_outbound`/`remove_outbound`/`is_allowed` calls in `connect_to`+`disconnect`). Derive
+  occupancy on demand from `peers`: `state::outbound_diversity_conflict(peers, as_table, new_peer_id,
+  candidate_ip)` scans OUTBOUND slots (excluding `new_peer_id`) for a same-`/16` (INT-006) or same-AS
+  (INT-007) occupant. Keep only an immutable `as_table: AsLookupTable` on `ServiceState` for AS
+  classification (empty by default → AS fails open, same as before). The check + insert run under ONE
+  `peers`-lock hold so the check→insert is atomic (closes the concurrent-net-new-dial TOCTOU). Inserting
+  / removing map slots IS the accounting — no bookkeeping on admit/supersede/disconnect. A refcount-free
+  parallel set of a map's contents is an anti-pattern for security-critical caps: derive, don't mirror.
+- DEFERRED (#1703 item 2): a same-`peer_id` outbound reconnect that MOVES into a DIFFERENT already-
+  occupied group is not re-refused (a single verified identity reconnecting is not an eclipse-widening
+  distinct identity, and map-derived accounting means a same-identity migration can't corrupt what a
+  later net-new dial sees); reconciled by the departed-peer reaper.
+- The `SubnetGroupFilter`/`AsDiversityFilter` structs' old unit tests (dsc_010/dsc_011/int_006/int_007)
+  were repointed to the retained pure classifiers (`subnet_group`, `AsLookupTable::lookup`); the
+  end-to-end map-derived enforcement is covered in `con_1703_outbound_reconnect_tests`.
+- Max-connections stays ALWAYS enforced (pre-handshake, never bypassed): a supersede replaces a slot,
+  so at capacity a reconnect whose stale slot occupies the last slot returns `MaxConnectionsReached` —
+  acceptable; the departed-peer reaper (#1703 item 2) is the complement.
+- The outbound insert ALREADY carried the #1691 generation + keepalive-AbortHandle wiring (added
+  defensively by the #1691 lane), so no new generation plumbing was needed — the same
+  `disconnect_after_keepalive_failure` / `apply_inbound_rate_limit_violation` compare-and-remove guards
+  cover the outbound-inserted slot (same `peers` map, same `LiveSlot`). This lane only had to remove
+  the two rejects and make the insert-supersede the primary path.
+- Test note: restarting a `GossipService` "server" at the same `listen_addr` flakes with EADDRINUSE
+  (os error 98) — the accepted inbound socket sits in TIME_WAIT on the listen port and the service does
+  not set `SO_REUSEADDR`. The deterministic re-dial-to-a-live-server tests drive the identical guard
+  (the surviving stale slot is indistinguishable at `connect_to` from a dropped-link slot), so a
+  server-restart test adds no coverage — dropped for reliability.

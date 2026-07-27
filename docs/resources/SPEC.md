@@ -1385,6 +1385,46 @@ invariants:
 This restores reconnection for a bounced peer (upgrade/crash/service restart); before it, the stale
 slot refused every reconnect and the peer's subsequent reads 404'd (observed on the #1640 fleet).
 
+**Outbound symmetry (normative; #1703).** The same newest-wins policy holds for the OUTBOUND dial
+path (`GossipHandle::connect_to`), not only the inbound listener. A dropped outbound link leaves this
+node's slot for that peer in the map (again, no reaping), so `connect_to` MUST NOT refuse a re-dial to
+a peer whose slot survives (no `DuplicateConnection`): the freshly mTLS-authenticated outbound session
+supersedes the stale slot at insert time (keyed by the handshake-verified `peer_id`, `HashMap::insert`
+replace-not-grow), aborts the displaced slot's keepalive, and `Peer::close()`s it — identical to the
+inbound supersede. The invariants (cert-gated displacement, map-boundedness, unchanged ban/penalty
+handling, session-generation guard against stale-session eviction) and the **always-enforced
+max-connections admission** apply unchanged.
+
+The outbound diversity budget (one-outbound-per-/16 INT-006, one-per-AS INT-007) MUST be derived from
+the **live peer map — the single source of truth — never a parallel occupancy set**, and decided on
+the **handshake-verified identity, NOT the pre-handshake dialed address**. Two rationales, both
+normative:
+
+- *Single source of truth.* Outbound `/16`+AS occupancy MUST be computed on demand by scanning the
+  peer map (each OUTBOUND slot's `remote()` classified to its `/16` group via `subnet_group` and, when
+  a BGP table is loaded, to its AS number), NOT tracked in a separate mutable `HashSet` mutated on
+  connect/disconnect. A refcount-free side-set drifts out of agreement with the map: when two outbound
+  peers share a group and one is removed or superseded, an unconditional "remove group" deletes the
+  entry while the other peer still occupies it — an UNDER-COUNT that then re-admits a second outbound
+  into the occupied group, defeating the cap. The map cannot under-count what it contains.
+- *Verified identity, not address.* A peer-map slot sharing the dialed address may be an INBOUND slot
+  or a Nat slot (whose address is sourced from attacker-influenced `RespondPeers`) that does NOT occupy
+  this node's outbound budget; deciding on address would let a peer place a second outbound in an
+  already-full group and widen an eclipse.
+
+Therefore, ATOMICALLY under one hold of the `peers` lock (the same hold that performs the insert, so
+two concurrent net-new dials into the same empty group cannot both pass): if the map already holds an
+**outbound** slot under the verified `peer_id`, the admission is a genuine outbound reconnect whose
+group/AS the map already counts (it is excluded from the scan) — the diversity check is skipped and
+the slot is superseded. Otherwise (a net-new identity, or an admission that would replace a
+non-outbound slot at that address) it is net-new outbound occupancy and MUST have zero other outbound
+slots in its `/16` (INT-006) or AS (INT-007) in the map, else be refused (the completed handshake
+stream is closed and a `ConnectionFiltered` error returned). No add/remove bookkeeping runs on
+admit/supersede/disconnect — inserting and removing map slots IS the accounting. (A same-identity
+outbound reconnect that MOVES into a different, already-occupied group is reconciled by the
+departed-peer reaper, #1703 item 2.) Without the outbound path, a node could never re-establish a
+dropped outbound link to a peer until the stale slot was cleared.
+
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
 **ALL peer-to-peer connections MUST use mutual TLS (mTLS).** Both the client and server present certificates and verify each other. This is a hard security requirement — unencrypted connections and server-only TLS are never permitted for P2P.
