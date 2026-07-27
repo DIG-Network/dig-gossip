@@ -270,6 +270,15 @@ async fn map_derived_occupancy_refuses_new_identity_when_a_seeded_outbound_holds
         .await
         .expect("seed an outbound slot occupying /16 127.0 in the peer map");
 
+    // The seeded occupant must be present right up to the dial — the test config uses `peer_pool: None`
+    // so no background loop touches the map, but assert it so any future regression that drops the
+    // occupant fails LOUDLY here rather than silently weakening the INT-006 refusal below.
+    assert_eq!(
+        client_h.__stub_filter_count_for_tests(None, true).await,
+        1,
+        "the seeded outbound occupant must hold /16 127.0 when the net-new dial is made"
+    );
+
     // Dial the listener: a real handshake yields its net-new verified identity, in the /16 127.0 the
     // seeded outbound slot already occupies. Map-derived occupancy must REFUSE (INT-006). On round-4
     // the empty side-set admitted it — a second outbound in the group.
