@@ -2,6 +2,22 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## The outbound /16+AS eclipse cap must gate the AUTO-POOL adoption path, not only manual connect_to (#1710)
+
+- The INT-006 (/16) + INT-007 (AS) outbound diversity caps shipped in v0.17.2 were enforced ONLY in
+  `connect_to` (the operator-initiated dial). The live auto-peering path — pool maintenance →
+  `HandleDialer::dial` → `connect_via_nat_full_ladder` → `adopt_nat_connection` — inserted peers with
+  only self/ban/duplicate-`peer_id`/max_connections checks, silently skipping the caps. That auto path
+  is the ACTUAL attacker-influenceable surface (its candidates come from `RespondPeers`), so gating only
+  the manual dial left the eclipse caps trivially bypassable.
+- Fix: `adopt_nat_connection` calls the SAME `outbound_diversity_conflict` gate under the same held
+  `peers` lock, immediately before the insert (check→insert atomic, no TOCTOU).
+- Key asymmetry vs `connect_to`: adoption is ALWAYS net-new occupancy, so the gate is UNCONDITIONAL
+  there — no reconnect-exemption branch. `adopt_nat_connection` already refuses a duplicate `peer_id`
+  outright (returns `DuplicateConnection` before the gate), so every connection that reaches the gate is
+  a net-new identity. The reconnect exemption exists only in `connect_to`, which may re-dial an endpoint
+  whose stale slot survives a dropped link (#1703).
+
 ## IPv4-mapped IPv6 must be canonicalized BEFORE subnet/AS grouping, or the /16 eclipse cap is dodgeable (#1709)
 
 - `subnet_group` keys IPv6 by its first 4 bytes. An IPv4-mapped IPv6 address `::ffff:a.b.c.d` has

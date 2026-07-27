@@ -1429,6 +1429,18 @@ outbound reconnect that MOVES into a different, already-occupied group is reconc
 departed-peer reaper, #1703 item 2.) Without the outbound path, a node could never re-establish a
 dropped outbound link to a peer until the stale slot was cleared.
 
+This outbound `/16`+AS diversity gate is enforced on **EVERY** path that adds an outbound peer, not
+only the operator-initiated dial. Both `GossipHandle::connect_to` (manual dial) AND
+`GossipHandle::adopt_nat_connection` (the AUTO-POOL adoption path: pool maintenance → `HandleDialer::dial`
+→ `connect_via_nat_full_ladder` → adopt) MUST apply the identical `outbound_diversity_conflict` check
+under the same held `peers` lock immediately before the insert. The auto-pool path is in fact the
+attacker-influenceable surface — its candidates originate from `RespondPeers` — so gating only the
+manual dial would leave the eclipse caps trivially bypassable via automatic peering. On the adoption
+path the check is UNCONDITIONAL: adoption already refuses a duplicate `peer_id` outright, so every
+adopted connection is a net-new identity = net-new outbound occupancy, and there is no
+reconnect-exemption branch (the exemption applies only to `connect_to`, which may re-dial an endpoint
+whose stale slot survives).
+
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
 **ALL peer-to-peer connections MUST use mutual TLS (mTLS).** Both the client and server present certificates and verify each other. This is a hard security requirement — unencrypted connections and server-only TLS are never permitted for P2P.
