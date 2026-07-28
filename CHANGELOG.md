@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.5] - 2026-07-28
+
+### Bug Fixes
+- **con:** Exempt relayed tier from /16+AS cap + bound relayed outbound (#1716)
+
 ## [0.17.4] - 2026-07-28
 
 ### Bug Fixes
