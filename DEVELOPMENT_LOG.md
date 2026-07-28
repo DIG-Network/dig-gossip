@@ -434,3 +434,5 @@ check the accept-loop admission gates first.
   a false-green. RED was proven: removing the `>= DIG_WIRE_BAND_START check_dig_extension` branch makes
   the in-crate tests fail (21st/11th frame admitted via the 100/min default). Lesson: a regression test
   for a `pub(crate)` helper belongs in-crate; never mirror the code-under-test in an external test.
+
+<!-- #1760 B: enforce a per-change address (+host-len) cap in holdings_announce so the opcode-222 128 KiB frame cap is provably sufficient. Filled in by the lane. -->
