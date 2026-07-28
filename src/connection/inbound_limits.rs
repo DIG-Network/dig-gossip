@@ -88,6 +88,24 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
         crate::service::store_melted::STORE_MELTED,
         RateLimit::new(10.0, 4096.0, None),
     );
+    // #1720 — holdings-announce (opcode 222) is a signed, periodic public-discovery broadcast that
+    // any internet host can send, and its P-256 signature verify (`verify_holdings_announce`) runs on
+    // the decoded frame. Without an explicit row it fell through to `default_settings` (100 frames/min,
+    // 1 MiB) — bounding that expensive verify only by accident. Give it a deliberate row keyed by the
+    // raw opcode (222 is a `ProtocolMessageTypes` variant in the vendored fork, not a `DigMessageType`;
+    // the `dig_wire` map is `u8 -> RateLimit`, so the bound applies uniformly). Sized larger than 221:
+    // - `max_size` 128 KiB fits a full legit `MAX_CHANGES` (256) re-announce — each key served at a fat
+    //   4-address, 64-byte-host candidate set encodes to ~79 KiB (256×315 B + ~251 B framing), so 128 KiB
+    //   leaves >60% headroom and never clips a real provider's full-holdings frame. Far below the 1 MiB
+    //   default (8x tighter).
+    // - `freq` 20/min is ~2x the 221 anchor (10/min): a provider re-announces its whole holdings in ONE
+    //   frame, so steady state is minutes apart; 20/min allows legit burst re-announces (a 0→N peer
+    //   transition plus a cluster of holdings-change events) while capping a hostile conn at 20 P-256
+    //   verifies/min/conn — 5x below the 100/min default.
+    m.insert(
+        crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
+        RateLimit::new(20.0, 131_072.0, None),
+    );
     m
 }
 

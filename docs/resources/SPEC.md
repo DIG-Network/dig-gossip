@@ -598,6 +598,13 @@ free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is ex
   to everyone, so `classify_broadcast(HoldingsAnnounce) = Plumtree` (eager/lazy flood) at
   **Bulk** priority. The transport `seen_set` dedups by the announcement bytes; a later
   `seq` from the same provider supersedes an earlier one.
+- **Inbound rate limit (CON-005, #1720).** Opcode 222 carries a DELIBERATE `dig_wire` row —
+  `frequency = 20`/min, `max_size = 131072` (128 KiB) — NOT the loose `default_settings`
+  (100 frames/min, 1 MiB) it would otherwise fall through to. The row bounds the expensive
+  post-decode P-256 verify a hostile peer can force: `max_size` fits a full legit
+  `MAX_CHANGES` (256) re-announce (~79 KiB with a fat 4-address candidate set) with headroom
+  so a real provider is never clipped, while `frequency` (~2x the 221 anchor of 10/min) caps
+  a connection at 20 signature verifies/min.
 - **§5.4-EXEMPT (signed + mTLS, NOT recipient-sealed).** It carries no recipient-specific
   content — it is a public all-peers broadcast, exactly the L2 consensus-gossip carve-out
   (NC-1) — so it is mTLS-authenticated and signed but NOT end-to-end sealed to a recipient

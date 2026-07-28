@@ -363,4 +363,21 @@ check the accept-loop admission gates first.
   ~1-in-4 before). Note: bucket collision is CORRECT Chia address-book behaviour under a random key —
   the bug was the test assuming a random-keyed seed of N addresses always retains exactly N.
 
-<!-- #1720: give opcode 222 (HoldingsAnnounce) an explicit inbound rate-limit row (was falling through to default). Filled in by the lane. -->
+- **CON-005 / #1720 — opcode 222 (HoldingsAnnounce) inbound rate-limit row.** 222 is reachable by any
+  internet host (`rustls_inbound.rs` accepts any self-signed cert) and its P-256 signature verify
+  (`verify_holdings_announce`) runs on the DECODED frame — so the expensive work was bounded only by
+  the accidental `default_settings` fall-through (100 frames/min, 1 MiB) because it had no `dig_wire`
+  row. Added a deliberate row: `RateLimit::new(20.0, 131_072.0, None)`. Sizing arithmetic (from the
+  actual `HoldingsAnnounce::encode`): a legit full `MAX_CHANGES`=256 re-announce, each key served at a
+  fat 4-address candidate set with 64-byte hosts, encodes to per-Add `1+32+2 + 4×(2+64+2) + 8 = 315`
+  bytes → `256×315 = 80 640` + ~280 B framing (`peer_id 66 + spki 122 + seq 8 + announced_at 8 +
+  change_count 2 + sig 74`) ≈ **79 KiB**. So `max_size = 128 KiB` leaves >60% headroom and NEVER clips
+  a real provider's full-holdings frame (which would break the discovery flywheel), yet is 8× tighter
+  than the 1 MiB default. `frequency = 20`/min is ~2× the 221 (STORE_MELTED) anchor of 10/min: a
+  provider re-announces its WHOLE holdings in one frame so steady-state cadence is minutes apart; 20/min
+  covers legit bursts (a 0→N peer transition plus a cluster of holdings-change events) while capping a
+  hostile connection at 20 signature verifies/min (vs 100 under the default). Gotcha: the live inbound
+  bridge (`handle_message`) does not yet consult `dig_wire` for 220-band `ProtocolMessageTypes` variants
+  — the `dig_wire` table is the centralized, unit-tested CON-005 source of truth (exercised via
+  `check_dig_extension`), wired to the live path when a raw-DIG-frame ingress lands (see the
+  `inbound_limits.rs` module docs). This row mirrors the #1316 STORE_MELTED (221) precedent.
