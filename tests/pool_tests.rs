@@ -102,21 +102,41 @@ async fn adopting_nat_connections_fills_the_pool_and_reports_stats() {
     svc.stop().await.expect("stop");
 }
 
+/// The pool holds exactly ONE slot per `peer_id`, and a second session for that identity SUPERSEDES
+/// the first (newest-wins, #1762) instead of being refused.
+///
+/// This test asserted the refusal until #1762: a held slot carries no liveness value, so refusing on
+/// `contains_key` let a dead relayed circuit block the direct adoption that worked. What dedup must
+/// mean is that the map does not GROW — asserted here on the resulting membership and address, which
+/// distinguishes a real supersede from an `Ok` that quietly kept the first slot.
 #[tokio::test]
-async fn pool_dedups_by_peer_id() {
+async fn pool_keeps_one_slot_per_peer_id_and_the_newest_session_wins() {
     let (svc, handle, _dir) = running_handle_with_pool(1, 4, 8).await;
 
     let (c1, s1) = loopback_nat_conn([7; 32], addr(9001));
-    let _pid = handle.adopt_nat_connection(c1).await.expect("first adopt");
+    let pid = handle.adopt_nat_connection(c1).await.expect("first adopt");
 
-    // Same peer_id, different address — must be refused as a duplicate (pool dedups by peer_id).
+    // Same peer_id, different address — admitted, superseding the first slot.
     let (c2, s2) = loopback_nat_conn([7; 32], addr(9002));
-    let err = handle.adopt_nat_connection(c2).await;
-    assert!(
-        matches!(err, Err(dig_gossip::GossipError::DuplicateConnection(_))),
-        "same peer_id must be rejected as a duplicate, got {err:?}"
+    handle
+        .adopt_nat_connection(c2)
+        .await
+        .expect("a second session for the same identity supersedes the first (#1762)");
+
+    assert_eq!(
+        handle.pool_stats().connected,
+        1,
+        "one slot per peer_id — re-adoption must not grow the pool"
     );
-    assert_eq!(handle.pool_stats().connected, 1);
+    assert_eq!(
+        handle
+            .connected_pool_peers()
+            .into_iter()
+            .find(|(id, _, _)| *id == pid)
+            .map(|(_, a, _)| a),
+        Some(addr(9002)),
+        "the pool must report the NEWEST session's address"
+    );
 
     let _ = (s1, s2);
     svc.stop().await.expect("stop");
