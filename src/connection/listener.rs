@@ -77,7 +77,7 @@ use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use tokio_tungstenite::MaybeTlsStream;
-use tokio_tungstenite::{accept_async, WebSocketStream};
+use tokio_tungstenite::{accept_async_with_config, WebSocketStream};
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 use crate::connection::outbound::network_id_handshake_string;
@@ -366,7 +366,9 @@ async fn handle_inbound_rustls_inner(
     // Step 6: WebSocket upgrade over the server rustls stream. The server-side stream cannot inhabit
     // the `#[non_exhaustive]` client `MaybeTlsStream`, so we hand the raw stream to `accept_async`
     // and later build the `Peer` via `Peer::from_server_websocket` (see `negotiate_inbound_over_ws`).
-    let ws = accept_async(tls).await.map_err(ws_err)?;
+    let ws = accept_async_with_config(tls, Some(crate::connection::ws_config()))
+        .await
+        .map_err(ws_err)?;
 
     // Step 7: Chia handshake negotiation, address-manager registration, peer insertion.
     negotiate_inbound_over_ws(state, remote_addr, ws, peer_id).await
@@ -384,7 +386,7 @@ async fn handle_inbound_rustls_inner(
 /// 4. **Ban check** — reject peers in the [`ServiceState::banned`] set.
 /// 5. **Reconnect admission** — no duplicate reject; a same-`peer_id` restart supersedes the
 ///    stale slot at insert time (newest-wins, mTLS-gated — #1691).
-/// 6. **WebSocket upgrade** — [`accept_async`] over the TLS stream.
+/// 6. **WebSocket upgrade** — [`accept_async_with_config`] (bounded [`ws_config`](crate::connection::ws_config)) over the TLS stream.
 /// 7. **Chia handshake** — delegated to [`negotiate_inbound_over_ws`].
 ///
 /// # Errors
@@ -435,9 +437,12 @@ async fn handle_inbound_native_inner(
     // Step 6: WebSocket upgrade over the now-established TLS stream.
     // We wrap the `native_tls` stream in `MaybeTlsStream::NativeTls` so the type matches
     // what `Peer::from_websocket` expects downstream.
-    let ws = accept_async(MaybeTlsStream::NativeTls(tls))
-        .await
-        .map_err(ws_err)?;
+    let ws = accept_async_with_config(
+        MaybeTlsStream::NativeTls(tls),
+        Some(crate::connection::ws_config()),
+    )
+    .await
+    .map_err(ws_err)?;
 
     // Step 7: Chia handshake negotiation, address-manager registration, peer insertion.
     negotiate_inbound_over_ws(state, remote_addr, ws, peer_id).await
