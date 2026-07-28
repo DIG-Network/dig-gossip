@@ -330,3 +330,5 @@ check the accept-loop admission gates first.
   server-restart test adds no coverage — dropped for reliability.
 
 <!-- #34: transport memory-ceiling hardening (tighten WS message cap 32->8 MiB; document the two-gate aggregate bound). Filled in by the harden lane. -->
+
+<!-- #36: expose tungstenite Capacity(MessageTooLong) distinctly from ws_err + deterministic transport-rejection test. Filled in by the lane. -->
