@@ -353,6 +353,17 @@ can each hold an in-flight WS read buffer is itself bounded by two accept-loop a
 so the AGGREGATE in-flight transport-buffer memory is bounded at `(max_connections + max_inflight_handshakes) × WS_MAX_MESSAGE_BYTES ≈ 2 GiB`
 (defaults), regardless of peer count. Both handshake directions share the one `ws_config()` source of truth so the caps cannot drift apart.
 
+When the transport refuses an over-cap frame/message, tungstenite surfaces it as
+`Error::Capacity(CapacityError::MessageTooLong { size, max_size })`. The inbound accept-loop error
+mapper (`connection::listener::ws_err`) classifies this distinctly via
+`is_transport_capacity_rejection` — emitting a `tracing::warn!` (target `dig_gossip::listener`)
+that names it a transport capacity rejection tied to [`WS_MAX_MESSAGE_BYTES`] (#10) — before
+collapsing it, like every other transport error, into `ClientError::Io` (the external
+`dig_peer_protocol::ClientError` has no WebSocket variant). The classification is pinned by a
+deterministic in-crate unit test (`ws_err_classifies_transport_capacity_rejection`) that constructs
+the synthetic `Capacity` error directly; a socket-level test cannot deterministically distinguish a
+transport-layer rejection from an app-layer one because both surface to the client as a connection close.
+
 **Peer selection / outbound dial candidate ordering:**
 - [`AddressManager::select_peer`] itself is a Bitcoin/Chia-style single-address weighted-random
   draw over the whole address book and is family-blind by design (this is unchanged — the
