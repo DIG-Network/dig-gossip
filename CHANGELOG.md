@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.11] - 2026-07-28
+
+### Bug Fixes
+- **con:** Enforce 220-band (221/222) inbound rate limits on the live gate (#1720)
+
 ## [0.17.10] - 2026-07-28
 
 ### Testing
