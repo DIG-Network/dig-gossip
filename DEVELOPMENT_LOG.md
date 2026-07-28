@@ -22,6 +22,17 @@ DETERMINISTICALLY isolate a transport-layer rejection from an application-layer 
 to the client as a connection close), so the regression is pinned by asserting the bounded-cap
 contract (`ws_config()` values + exported consts bounded below 64 MiB, above the 4 MiB app cap).
 
+## The per-message WS cap is bounded in aggregate by the accept-loop admission gates — tighten it anyway (#34)
+
+The #10 residual note ('32 MiB × N concurrent = no aggregate ceiling') is stale. Inbound concurrency is bounded
+by TWO accept-loop gates: `max_connections` (default 50, `listener.rs` registered-peer cap) and the audit-#179
+`max_inflight_handshakes` Semaphore (default 200, permit taken BEFORE the handshake task spawns, `listener.rs`),
+so the aggregate in-flight WS-buffer ceiling was already bounded at `(50+200) × 32 MiB ≈ 8 GiB` — not unbounded.
+#34 tightened `WS_MAX_MESSAGE_BYTES` 32→8 MiB (and frame 16→8 MiB), still 2× the 4 MiB `MAX_BUFFERED_BYTES`
+legit-payload ceiling, cutting the aggregate 4× → ≈ 2 GiB with zero effect on legit traffic. Lesson: a 'no
+aggregate bound' worry on a per-connection cap is only real if concurrent-connection count is itself unbounded —
+check the accept-loop admission gates first.
+
 ## Where the REAL outbound dialer lives — `parallel_connect_batch` was never it (#1715)
 
 - `node_discovery::parallel_connect_batch` (a DSC-009 "Phase 3" stub) was removed in v0.17.6: it never
