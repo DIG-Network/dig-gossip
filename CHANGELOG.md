@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.6] - 2026-07-28
+
+### Chores
+- **con:** Remove dead parallel_connect_batch, cfg-gate stub hook, pin Nat-drop teardown test
+
 ## [0.17.5] - 2026-07-28
 
 ### Bug Fixes
