@@ -341,3 +341,5 @@ check the accept-loop admission gates first.
   tungstenite 0.24) and asserts it classifies while `AlreadyClosed`/`Io` do not. `ClientError` lives
   in the external `dig_peer_protocol` crate (no WS variant, cross-crate blast radius), so the
   classifier route keeps the return type `ClientError::Io` unchanged rather than adding an enum arm.
+
+<!-- #9: de-flake gathered_pool_candidates_respect_local_stack_intersection (real-socket/lifecycle contention under full-parallel cargo test). Filled in by the de-flake lane. -->
