@@ -31,7 +31,11 @@ use dig_gossip::{
 /// Mirror of the crate-private `connection::inbound_limits::inbound_gate_allows` — the live inbound
 /// admission gate. `inbound_gate_allows` is `pub(crate)`, so these integration tests exercise the
 /// EXACT combination it wraps: the Chia base bound plus, for the DIG 220-band, the `dig_wire` bound.
-/// A change to the production gate that diverged from this would surface as a behaviour mismatch here.
+///
+/// AUTHORITATIVE regression guard: the in-crate `connection::inbound_limits::tests` module calls the
+/// REAL `inbound_gate_allows`. These external mirror tests are a SECONDARY check — a mirror cannot
+/// detect a broken production gate (it re-implements the branch it claims to guard), so it must never
+/// be the only test of the 220-band live path.
 fn live_gate_allows(lim: &mut RateLimiter, msg: &Message) -> bool {
     if !lim.handle_message(msg) {
         return false;

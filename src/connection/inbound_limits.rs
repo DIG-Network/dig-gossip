@@ -170,3 +170,64 @@ pub fn gossip_inbound_rate_limits() -> RateLimits {
 pub fn new_inbound_rate_limiter(rate_limit_factor: f64) -> RateLimiter {
     RateLimiter::new(true, 60, rate_limit_factor, gossip_inbound_rate_limits())
 }
+
+#[cfg(test)]
+mod tests {
+    //! In-crate regression tests for the 220-band live gate (#1720, #1316).
+    //!
+    //! These call the REAL [`inbound_gate_allows`] (reachable in-crate because it is `pub(crate)`),
+    //! NOT a hand-copied mirror. This is the authoritative regression guard: if the production gate
+    //! ever drops its `>= DIG_WIRE_BAND_START` `check_dig_extension` branch and reverts to
+    //! `handle_message`-only, a 220-band flood would fall through to the loose 100/min
+    //! `default_settings` and these tests go RED (proven by reverting the branch). The external
+    //! mirror in `tests/con_005_tests.rs` cannot detect that regression and is only a secondary check.
+
+    use dig_peer_protocol::{Bytes, ProtocolMessageTypes};
+
+    use super::*;
+
+    /// Real 222 (HoldingsAnnounce) flood: the live gate admits the first 20 (the `dig_wire` row) and
+    /// rejects the 21st, driven through the REAL [`inbound_gate_allows`]. Without the 220-band branch
+    /// this admits the 21st via the 100/min default, so the test pins that branch to production.
+    #[test]
+    fn real_gate_bounds_holdings_announce_222() {
+        let announce_frame = || Message {
+            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            id: None,
+            data: Bytes::new(vec![0u8; 1024]), // well under the 128 KiB max_size
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        for i in 0..20 {
+            assert!(
+                inbound_gate_allows(&mut guard, &announce_frame()),
+                "frame {i} within the 20/min holdings-announce cap must pass the REAL gate"
+            );
+        }
+        assert!(
+            !inbound_gate_allows(&mut guard, &announce_frame()),
+            "21st holdings-announce (222) must be rejected by the REAL inbound_gate_allows (#1720)"
+        );
+    }
+
+    /// Real 221 (StoreMelted, fixed `ENCODED_LEN` = 164 B) flood: the live gate admits the first 10
+    /// (the `dig_wire` row) and rejects the 11th, driven through the REAL [`inbound_gate_allows`].
+    #[test]
+    fn real_gate_bounds_store_melted_221() {
+        let melted_frame = || Message {
+            msg_type: ProtocolMessageTypes::StoreMelted,
+            id: None,
+            data: Bytes::new(vec![0u8; 164]), // fixed StoreMeltedAnnounce ENCODED_LEN
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        for i in 0..10 {
+            assert!(
+                inbound_gate_allows(&mut guard, &melted_frame()),
+                "frame {i} within the 10/min store-melted cap must pass the REAL gate"
+            );
+        }
+        assert!(
+            !inbound_gate_allows(&mut guard, &melted_frame()),
+            "11th store-melted (221) must be rejected by the REAL inbound_gate_allows (#1316)"
+        );
+    }
+}

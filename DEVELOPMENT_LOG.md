@@ -395,3 +395,10 @@ check the accept-loop admission gates first.
   infrequent broadcast). 222 legit max ≈79 KiB < 128 KiB and 20/min > steady re-announce cadence, so
   legit traffic is not dropped. `<220` traffic is unchanged (base bound alone). Gate order preserved:
   the limiter runs BEFORE the `tx.send` that feeds the downstream P-256 verify.
+- #1720 regression-test integrity: the 220-band live-gate rate-limit regression test now pins the
+  REAL `pub(crate) connection::inbound_limits::inbound_gate_allows` via an in-crate `#[cfg(test)]`
+  module, NOT a hand-copied mirror. A mirror in an external test crate (`tests/con_005_tests.rs`)
+  re-implements the branch it claims to guard, so it stays green even if production drops the branch —
+  a false-green. RED was proven: removing the `>= DIG_WIRE_BAND_START check_dig_extension` branch makes
+  the in-crate tests fail (21st/11th frame admitted via the 100/min default). Lesson: a regression test
+  for a `pub(crate)` helper belongs in-crate; never mirror the code-under-test in an external test.
