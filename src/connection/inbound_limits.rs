@@ -13,20 +13,69 @@
 //! Inbound frames are delivered on the per-connection `mpsc` from [`Peer::from_websocket`]; **DIG**
 //! enforces [`RateLimiter::handle_message`] here **before** forwarding to the broadcast hub.
 //!
-//! ## DIG wire types (`200..=219` subset here)
+//! ## DIG wire types (`dig_wire` map)
 //!
-//! [`crate::types::dig_messages::DigMessageType`] discriminants are **not** [`ProtocolMessageTypes`]
-//! variants in `chia-protocol` 0.26, so they cannot appear in [`dig_peer_protocol::RateLimits`] `tx` /
-//! `other` maps. We attach them to [`RateLimits::dig_wire`](dig_peer_protocol::RateLimits::dig_wire)
-//! (vendored `chia-sdk-client`) and validate with [`RateLimiter::check_dig_extension`] when a future
-//! ingress path decodes raw DIG frames. Today’s integration path only sees Chia [`Message`] values;
-//! the extension table is still installed so limits are centralized and unit-tested per CON-005.
+//! [`crate::types::dig_messages::DigMessageType`] discriminants (`200..=219`) are **not**
+//! [`ProtocolMessageTypes`] variants in `chia-protocol` 0.26, so they cannot appear in
+//! [`dig_peer_protocol::RateLimits`] `tx` / `other` maps. But the **220-band** opcodes —
+//! `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720) — ARE `ProtocolMessageTypes`
+//! variants and DO arrive on the live wire as Chia [`Message`] values. Either way their bound lives
+//! in [`RateLimits::dig_wire`](dig_peer_protocol::RateLimits::dig_wire) (vendored `chia-sdk-client`),
+//! which [`RateLimiter::handle_message`] never reads.
+//!
+//! [`inbound_gate_allows`] closes that gap: the live forwarders call it (not `handle_message`
+//! directly), and for 220-band frames it additionally requires the [`RateLimiter::check_dig_extension`]
+//! pass — so the 221/222 rows are **enforced on the live path**, not merely unit-tested. Below the
+//! band, `handle_message` remains the whole gate (unchanged behaviour).
 
 use std::collections::HashMap;
 
-use dig_peer_protocol::{RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
+use dig_peer_protocol::{Message, RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
 
 use crate::types::dig_messages::DigMessageType;
+
+/// The first opcode of the DIG 220..=255 wire band.
+///
+/// Opcodes in this band (e.g. `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720)) ARE
+/// `chia_protocol::ProtocolMessageTypes` variants — so they arrive as real Chia [`Message`] values —
+/// but their bound lives in [`RateLimits::dig_wire`], which [`RateLimiter::handle_message`] never
+/// reads. The live ingress gate therefore has to consult [`RateLimiter::check_dig_extension`] for
+/// them explicitly; see [`inbound_gate_allows`].
+const DIG_WIRE_BAND_START: u8 = 220;
+
+/// The single inbound admission gate every live forwarder runs on each received frame, BEFORE the
+/// frame is broadcast to the service (and thus before the downstream P-256 verify).
+///
+/// It combines the two rate-limit checks under the caller's existing [`RateLimiter`] guard — one
+/// lock, no TOCTOU:
+///
+/// 1. [`RateLimiter::handle_message`] — the Chia `default_settings`/`tx`/`other` bound keyed by
+///    [`ProtocolMessageTypes`](dig_peer_protocol::ProtocolMessageTypes).
+/// 2. For frames in the DIG wire band (opcode `>= DIG_WIRE_BAND_START`), ALSO
+///    [`RateLimiter::check_dig_extension`] keyed by the raw opcode.
+///
+/// **Why both for the 220 band:** 221/222 ARE Chia `Message` variants, but `handle_message` has no
+/// `tx`/`other` row for them, so it falls through to the loose `default_settings` (100 frames/min,
+/// 1 MiB) and their deliberate [`dig_extension_rate_limits_map`] rows (#1316, #1720) would never
+/// bind on the live wire. Requiring the `check_dig_extension` pass in addition is what makes those
+/// rows actually enforced. Frames below the band are decided by `handle_message` alone (unchanged).
+///
+/// A frame is admitted only if EVERY applicable check passes.
+pub(crate) fn inbound_gate_allows(guard: &mut RateLimiter, msg: &Message) -> bool {
+    // Always apply the Chia base bound first (and unconditionally, so its counters advance).
+    if !guard.handle_message(msg) {
+        return false;
+    }
+
+    let opcode = msg.msg_type as u8;
+    if opcode >= DIG_WIRE_BAND_START {
+        // DIG 220-band frame: its real bound lives in `dig_wire`, so require that pass too.
+        guard.check_dig_extension(opcode, msg.data.len() as u32)
+    } else {
+        // Below the band: the base bound is the whole gate.
+        true
+    }
+}
 
 /// Table from [`CON-005.md`](../../../docs/requirements/domains/connection/specs/CON-005.md) §DIG Extension Rate Limits.
 ///

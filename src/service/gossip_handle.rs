@@ -995,7 +995,9 @@ impl GossipHandle {
                     while let Some(msg) = inbound_rx.recv().await {
                         let allowed = lim_fwd
                             .lock()
-                            .map(|mut g| g.handle_message(&msg))
+                            .map(|mut g| {
+                                crate::connection::inbound_limits::inbound_gate_allows(&mut g, &msg)
+                            })
                             .unwrap_or(true);
                         if !allowed {
                             apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);

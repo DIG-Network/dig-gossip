@@ -376,8 +376,22 @@ check the accept-loop admission gates first.
   than the 1 MiB default. `frequency = 20`/min is ~2× the 221 (STORE_MELTED) anchor of 10/min: a
   provider re-announces its WHOLE holdings in one frame so steady-state cadence is minutes apart; 20/min
   covers legit bursts (a 0→N peer transition plus a cluster of holdings-change events) while capping a
-  hostile connection at 20 signature verifies/min (vs 100 under the default). Gotcha: the live inbound
-  bridge (`handle_message`) does not yet consult `dig_wire` for 220-band `ProtocolMessageTypes` variants
-  — the `dig_wire` table is the centralized, unit-tested CON-005 source of truth (exercised via
-  `check_dig_extension`), wired to the live path when a raw-DIG-frame ingress lands (see the
-  `inbound_limits.rs` module docs). This row mirrors the #1316 STORE_MELTED (221) precedent.
+  hostile connection at 20 signature verifies/min (vs 100 under the default). This row mirrors the
+  #1316 STORE_MELTED (221) precedent.
+- **CON-005 / #1720 (follow-up) — the 221/222 rows were a NO-OP on the live wire; now enforced via a
+  combined gate.** Enforcement-gap finding: the live inbound forwarders
+  (`connection/listener.rs`, `service/gossip_handle.rs`) called ONLY `RateLimiter::handle_message`,
+  which reads `default_settings`/`tx`/`other` (keyed by `ProtocolMessageTypes`) and NEVER the
+  `dig_wire` map. 221/222 ARE `ProtocolMessageTypes` variants but have no `tx`/`other` row, so they
+  fell through to the loose `default_settings` — meaning both the #1316 (221) and #1720 (222) rows
+  were a unit-tested source of truth NOT bound at runtime (`check_dig_extension`, the only `dig_wire`
+  reader, was called nowhere in `src/`). Fix: extracted ONE shared gate
+  `connection::inbound_limits::inbound_gate_allows(guard, msg)` (also killing the duplicated inline
+  gate — a §2.5 DRY fix) that, under the SINGLE existing `MutexGuard` (no second lock, no TOCTOU —
+  the two methods count in disjoint maps `message_counts` vs `dig_message_counts`), runs
+  `handle_message` AND, for opcodes `>= 220`, ALSO requires `check_dig_extension(opcode, len)`. Both
+  forwarders now call it. Behaviour change to call out: this makes 221's #1316 row go LIVE for the
+  first time too — safe (StoreMelted is a fixed 164 B, 25× under its 4096 B cap; 10/min ample for an
+  infrequent broadcast). 222 legit max ≈79 KiB < 128 KiB and 20/min > steady re-announce cadence, so
+  legit traffic is not dropped. `<220` traffic is unchanged (base bound alone). Gate order preserved:
+  the limiter runs BEFORE the `tx.send` that feeds the downstream P-256 verify.
