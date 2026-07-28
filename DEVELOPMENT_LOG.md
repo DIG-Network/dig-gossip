@@ -317,3 +317,5 @@ contract (`ws_config()` values + exported consts bounded below 64 MiB, above the
   not set `SO_REUSEADDR`. The deterministic re-dial-to-a-live-server tests drive the identical guard
   (the surviving stale slot is indistinguishable at `connect_to` from a dropped-link slot), so a
   server-restart test adds no coverage — dropped for reliability.
+
+<!-- #34: transport memory-ceiling hardening (tighten WS message cap 32->8 MiB; document the two-gate aggregate bound). Filled in by the harden lane. -->
