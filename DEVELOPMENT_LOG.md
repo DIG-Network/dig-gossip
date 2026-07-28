@@ -341,3 +341,24 @@ check the accept-loop admission gates first.
   tungstenite 0.24) and asserts it classifies while `AlreadyClosed`/`Io` do not. `ClientError` lives
   in the external `dig_peer_protocol` crate (no WS variant, cross-crate blast radius), so the
   classifier route keeps the return type `ClientError::Io` unchanged rather than adding an enum arm.
+
+- **#9 — the pool-candidate intersection flake was randomized bucket-key COLLISION, not socket
+  contention.** `gathered_pool_candidates_respect_local_stack_intersection` (+ its two siblings)
+  intermittently failed at `assert_eq!(stats().known_addresses, seeded.len())` under full-parallel
+  `cargo test`. The suspected cause (real-listener/accept-loop lifecycle contention) was a red
+  herring: `test_gossip_config` sets `peer_pool: None` + empty DNS introducers, so `start()` spawns
+  only the accept loop and NOTHING mutates the address book after seeding — the count assertion is
+  not a background-loop race. The actual mechanism: `AddressManager` seeds its bucket-hash `key` from
+  `rand::thread_rng().fill_bytes` (Chia `randbits(256)`), so new-table bucket placement is random per
+  instance; with a small fixture set two seeded addresses occasionally hash to the same
+  `(bucket, position)` slot and the later one evicts the earlier, so `size()` returns N-1. It looked
+  "parallel-only" purely because a full run re-executes the test many times with fresh RNG states,
+  surfacing the ~1-in-4 unlucky key. Fix (hermetic, non-masking): (1) a `#[doc(hidden)]`
+  `AddressManager::__set_fixed_bucket_key_for_tests` pins a fixed key from
+  `__seed_address_book_for_tests` BEFORE the first add, making seeding collision-free + reproducible
+  so every exact-count assertion stays valid; (2) the three tests now exercise the seed +
+  injected-stack gather over a `GossipService::__handle_without_start_for_tests()` handle instead of
+  `start()`/`stop()`, binding no loopback socket and spawning no task (defense-in-depth: removes the
+  unnecessary real-socket ceremony too). Verified: 25/25 green at `--test-threads=16` (was flaky
+  ~1-in-4 before). Note: bucket collision is CORRECT Chia address-book behaviour under a random key —
+  the bug was the test assuming a random-keyed seed of N addresses always retains exactly N.

@@ -174,6 +174,24 @@ impl GossipService {
         Ok(Self { inner })
     }
 
+    /// Test-only: obtain a [`GossipHandle`] over the constructed state **without** starting the
+    /// service — no TCP `bind`, no accept-loop or maintenance task spawned.
+    ///
+    /// The address-book test hooks ([`GossipHandle::__seed_address_book_for_tests`],
+    /// [`GossipHandle::__pool_gathered_candidates_with_stack_for_tests`]) and [`GossipHandle::stats`]
+    /// read shared state that exists immediately after [`GossipService::new`]; none of them touch the
+    /// listener or any background task. Exercising them over this un-started handle makes those tests
+    /// HERMETIC — they neither bind a loopback socket nor spawn tasks, so they cannot flake under the
+    /// socket/task resource pressure of a full-parallel `cargo test` run (the address book here is
+    /// mutated only by the caller's explicit seed, never by a background loop). Never a public
+    /// contract; real callers always go through [`start`](Self::start).
+    #[doc(hidden)]
+    pub fn __handle_without_start_for_tests(&self) -> GossipHandle {
+        GossipHandle {
+            inner: self.inner.clone(),
+        }
+    }
+
     /// Transition the service from *constructed* to *running* and return a [`GossipHandle`].
     ///
     /// # What happens (SPEC §3.2 — Lifecycle)

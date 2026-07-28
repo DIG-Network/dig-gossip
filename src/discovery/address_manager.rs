@@ -802,6 +802,27 @@ impl Default for AddressManager {
 }
 
 impl AddressManager {
+    /// Test-only: pin the bucket-hash `key` to a FIXED value so bucket placement — and therefore
+    /// collision/eviction outcomes — is DETERMINISTIC across runs.
+    ///
+    /// Production seeds `key` from `randbits(256)` ([`Self::new_inner_random_key`]), which is correct
+    /// for real use but makes the exact retained count after seeding a small fixture set
+    /// non-deterministic: with a random key two seeded addresses can occasionally hash to the same
+    /// new-table `(bucket, position)` slot, so the later one evicts the earlier and `size()` comes
+    /// back one short. That is the root cause of the dig-gossip #9 flake — an `assert_eq!(size, N)`
+    /// after seeding N addresses passes on most keys but fails on the unlucky ones. Pinning the key
+    /// before seeding removes the randomness so the seed is collision-free and reproducible. Must be
+    /// called on an EMPTY manager (before any address is added); never a public contract.
+    #[doc(hidden)]
+    pub fn __set_fixed_bucket_key_for_tests(&self, key: [u8; 32]) {
+        let mut inner = self.inner.lock().expect("address manager mutex poisoned");
+        debug_assert!(
+            inner.map_info.is_empty(),
+            "__set_fixed_bucket_key_for_tests must run before any address is seeded"
+        );
+        inner.key = key;
+    }
+
     fn new_inner_random_key(peers_file_path: PathBuf) -> Self {
         let mut key = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut key);
