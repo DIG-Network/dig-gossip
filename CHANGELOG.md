@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.10] - 2026-07-28
+
+### Testing
+- **con:** De-flake gathered_pool_candidates_respect_local_stack_intersection (#9)
+
 ## [0.17.9] - 2026-07-28
 
 ### Testing
