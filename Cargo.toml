@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.17.5"
+version = "0.17.6"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -212,6 +212,10 @@ unicode-general-category = "1.1"
 # — the same kind a node generates on first run — so peer_id derivation + the mux transport are tested
 # against a REAL certificate with NO real network.
 rcgen = "0.13"
+# Self dev-dependency: enables the `test-util` feature for the crate's own test/doctest builds so
+# the cfg-gated test hooks (e.g. `__connect_stub_peer_with_direction`) are compiled for integration
+# tests WITHOUT leaking into the production library. Standard Cargo idiom for test-only lib features.
+dig-gossip = { path = ".", features = ["test-util"] }
 
 [features]
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
@@ -246,6 +250,11 @@ dandelion = []
 
 # Tor / SOCKS5 — opt-in only (not in `default`).
 tor = ["dep:arti-client", "dep:tokio-socks"]
+
+# Test-only helpers compiled into the library (e.g. the `__connect_stub_peer_with_direction` stub
+# hook). NEVER enabled by `default`; the crate's own integration tests turn it on via the self
+# dev-dependency below, and unit tests get it for free through `cfg(test)`.
+test-util = []
 
 # CON-002 integration tests dial `wss://` with the same TLS stack as production defaults.
 [[test]]

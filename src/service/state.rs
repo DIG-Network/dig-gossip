@@ -295,7 +295,9 @@ pub(crate) fn peer_id_from_hex(id: &str) -> Option<PeerId> {
 /// variant is the only way to reach the handle, preventing accidental sends to the wrong transport.
 #[derive(Debug)]
 pub(crate) enum PeerSlot {
-    /// Synthetic peer for unit testing (no network resource).
+    /// Synthetic peer for unit testing (no network resource). Constructed only by the cfg-gated
+    /// `connect_stub_inner` test hook (#1718); never instantiated in the production library.
+    #[cfg_attr(not(any(test, feature = "test-util")), allow(dead_code))]
     Stub(StubPeer),
     /// Real TLS peer with a `chia-sdk-client` [`Peer`] handle.
     Live(LiveSlot),
@@ -1399,5 +1401,70 @@ mod outbound_diversity_tests {
             None,
             "a relayed candidate must skip the direct-tier /16 cap",
         );
+    }
+}
+
+#[cfg(test)]
+mod nat_slot_teardown_tests {
+    //! **#1717** — pin the drop→teardown invariant for a [`PeerSlot::Nat`]. When a Nat slot is
+    //! displaced/dropped, the underlying `dig-nat` mux session MUST self-terminate: the driver task
+    //! ends the moment its sole `cmd_tx` (owned through the slot's [`NatPeerConnection`]) drops, so no
+    //! ghost session is left holding the transport. A future dig-nat refactor that broke this tie would
+    //! leak sessions silently; this test makes that a red build.
+
+    use super::*;
+
+    /// Build a loopback-backed [`NatSlot`] and return it alongside a [`ClosedHandle`] observing its
+    /// mux session's transport, plus the server end kept alive so ONLY the slot drop can trigger the
+    /// close (not the peer end dropping). Mirrors the `nat_transport_tests::loopback_nat_connection`
+    /// harness — a real yamux session over a duplex, no TLS, no network.
+    fn seeded_nat_slot(
+        remote: SocketAddr,
+    ) -> (PeerSlot, dig_nat::ClosedHandle, dig_nat::PeerSession) {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server = dig_nat::PeerSession::server(server_io);
+
+        let session = dig_nat::PeerSession::client(client_io);
+        let closed = session.closed_handle();
+        let inner = dig_nat::PeerConnection {
+            peer_id: dig_nat::PeerId::from_bytes([0x11; 32]),
+            method: dig_nat::TraversalKind::Direct,
+            remote_addr: remote,
+            // No BLS binding over a loopback duplex (#1204 field on dig-nat's PeerConnection).
+            peer_bls_pub: None,
+            session,
+        };
+        let slot = PeerSlot::Nat(NatSlot {
+            conn: crate::nat::NatPeerConnection::new(inner),
+            remote,
+            is_outbound: true,
+            method: dig_nat::TraversalKind::Direct,
+        });
+        (slot, closed, server)
+    }
+
+    /// Dropping a `PeerSlot::Nat` closes its `dig-nat` mux session within a short bound (the drop→close
+    /// tie is synchronous up to the background `poll_close`) — the #1703 item-4 / #1717 invariant.
+    #[tokio::test]
+    async fn dropping_a_nat_slot_tears_down_the_mux_session() {
+        let remote: SocketAddr = "203.0.113.9:9444".parse().unwrap();
+        let (slot, closed, _server) = seeded_nat_slot(remote);
+
+        // While the slot (and thus the session's sole `cmd_tx`) is held, the session stays open.
+        assert!(
+            !closed.is_closed(),
+            "the mux session must stay open while the Nat slot is held",
+        );
+
+        // Displace/drop the slot — the sole owner of the mux command channel. The dig-nat driver must
+        // self-terminate and resolve the ClosedHandle; a leaked (ghost) session would never close and
+        // this would time out.
+        drop(slot);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), closed.closed())
+            .await
+            .expect(
+                "dropping the Nat slot must close its dig-nat mux session (no ghost-session leak)",
+            );
     }
 }
