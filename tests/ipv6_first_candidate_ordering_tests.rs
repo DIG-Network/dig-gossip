@@ -159,7 +159,10 @@ async fn gathered_pool_candidates_are_ipv6_first() {
     let _ = common::generate_test_certs(dir.path());
     let cfg = common::test_gossip_config(dir.path());
     let svc = dig_gossip::GossipService::new(cfg).expect("new");
-    let handle = svc.start().await.expect("start");
+    // Hermetic: exercise the seed + injected-stack gather hooks over an un-started handle — neither
+    // touches the listener or any background task, so the test binds no loopback socket and spawns
+    // no task and cannot flake under full-parallel `cargo test` resource pressure (dig-gossip #9).
+    let handle = svc.__handle_without_start_for_tests();
 
     // Seed a deliberately IPv4-heavy-first address book so a family-blind draw would very likely
     // surface IPv4 candidates before IPv6 ones absent the fix.
@@ -219,8 +222,6 @@ async fn gathered_pool_candidates_are_ipv6_first() {
         saw_ipv4,
         "expected at least one draw to include an IPv4 candidate (fallback retained)"
     );
-
-    let _ = svc.stop().await;
 }
 
 /// G1 end-to-end: on an IPv4-only host, a mixed address book yields ONLY IPv4 pool candidates -- the
@@ -231,7 +232,9 @@ async fn gathered_pool_candidates_respect_local_stack_intersection() {
     let _ = common::generate_test_certs(dir.path());
     let cfg = common::test_gossip_config(dir.path());
     let svc = dig_gossip::GossipService::new(cfg).expect("new");
-    let handle = svc.start().await.expect("start");
+    // Hermetic (dig-gossip #9): no real bind / no accept loop — the address book is mutated only by
+    // the explicit seed below, so `known_addresses` and the injected-stack gather are deterministic.
+    let handle = svc.__handle_without_start_for_tests();
 
     let seeded = [
         ("203.0.113.1".to_string(), 9444),
@@ -254,8 +257,6 @@ async fn gathered_pool_candidates_respect_local_stack_intersection() {
             );
         }
     }
-
-    let _ = svc.stop().await;
 }
 
 /// Regression: an all-IPv6 address book on a dual-stack host must still yield gathered pool
@@ -266,7 +267,8 @@ async fn ipv6_hosts_survive_pool_candidate_gathering() {
     let _ = common::generate_test_certs(dir.path());
     let cfg = common::test_gossip_config(dir.path());
     let svc = dig_gossip::GossipService::new(cfg).expect("new");
-    let handle = svc.start().await.expect("start");
+    // Hermetic (dig-gossip #9): un-started handle — no real listener bind, no background task.
+    let handle = svc.__handle_without_start_for_tests();
 
     let seeded = [
         ("2001:db8::1".to_string(), 9444),
@@ -293,6 +295,4 @@ async fn ipv6_hosts_survive_pool_candidate_gathering() {
         "every IPv6-only seeded address should be gathered as a dialable candidate: {seen:?}"
     );
     assert!(seen.iter().all(|a| a.is_ipv6()));
-
-    let _ = svc.stop().await;
 }

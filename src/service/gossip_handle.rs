@@ -1531,6 +1531,16 @@ impl GossipHandle {
     /// book and observe the `__pool_gathered_candidates_with_stack_for_tests` hook ordering deterministically.
     #[doc(hidden)]
     pub fn __seed_address_book_for_tests(&self, peers: &[(String, u16)]) {
+        // Pin the address manager's bucket-hash key to a FIXED value FIRST so the new-table bucket
+        // placement is deterministic. The production key is random (`randbits(256)`), which can make
+        // two seeded addresses collide into one bucket slot on unlucky runs — the later address then
+        // evicts the earlier and `size()` comes back short, the root cause of the dig-gossip #9
+        // flake. A fixed key makes seeding collision-free + reproducible (verified for the test
+        // fixtures). Safe here because the seed is the manager's first mutation (empty book).
+        const FIXED_TEST_BUCKET_KEY: [u8; 32] = [0x11; 32];
+        self.inner
+            .address_manager
+            .__set_fixed_bucket_key_for_tests(FIXED_TEST_BUCKET_KEY);
         let src = PeerInfo {
             host: "127.0.0.1".to_string(),
             port: 0,
