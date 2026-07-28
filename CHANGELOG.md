@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.7] - 2026-07-28
+
+### Bug Fixes
+- **transport:** Bound WS max_message_size/max_frame_size (#10)
+
 ## [0.17.6] - 2026-07-28
 
 ### Chores
