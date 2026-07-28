@@ -367,9 +367,23 @@ pub(crate) fn outbound_diversity_conflict(
     as_table: &AsLookupTable,
     new_peer_id: PeerId,
     candidate_ip: IpAddr,
+    candidate_is_relayed: bool,
 ) -> Option<OutboundDiversityConflict> {
+    // #1716: a RELAYED candidate has no routable address to key on — its `remote_addr` is the RELAY
+    // endpoint (dig-nat by design), not the peer's own IP. The /16//AS cap therefore gives ZERO
+    // eclipse value on that tier (every relayed peer shares the relay's /16), while wrongly collapsing
+    // all relayed peers into one group. The relayed tier is instead bounded by `max_relayed_outbound`
+    // at the adoption call site; skip the direct-tier diversity cap here.
+    if candidate_is_relayed {
+        return None;
+    }
     let candidate_group = crate::util::ip_address::subnet_group(&candidate_ip);
-    let occupies = |pid: &PeerId, slot: &PeerSlot| *pid != new_peer_id && slot.is_outbound();
+    // A RELAYED slot's `remote()` is the relay endpoint, not a real peer address, so it must NOT count
+    // as occupying its relay-IP's /16//AS group — otherwise a single relayed peer would wrongly block a
+    // DIRECT candidate that happens to share the relay's /16 (the second half of the #1716 bug).
+    let occupies = |pid: &PeerId, slot: &PeerSlot| {
+        *pid != new_peer_id && slot.is_outbound() && !is_relayed(slot)
+    };
 
     // INT-006 first (the primary /16 guard), then INT-007 (AS), matching the historic precedence.
     if peers
@@ -391,6 +405,17 @@ pub(crate) fn outbound_diversity_conflict(
 /// The `/16` group of a peer slot's remote address.
 fn subnet_group_of(slot: &PeerSlot) -> u32 {
     crate::util::ip_address::subnet_group(&slot.remote().ip())
+}
+
+/// Whether a slot is a `dig-nat` peer reached over the RELAYED transport
+/// ([`TraversalKind::Relayed`](dig_nat::TraversalKind)).
+///
+/// A relayed slot's [`remote()`](PeerSlot::remote) is the RELAY endpoint, not the peer's own routable
+/// address, so it carries no meaningful /16//AS group (#1716). Used both to exclude relayed slots from
+/// the direct-tier diversity occupancy scan and to count relayed outbound slots against the separate
+/// [`max_relayed_outbound`](crate::service::peer_pool::max_relayed_outbound) cap.
+pub(crate) fn is_relayed(slot: &PeerSlot) -> bool {
+    matches!(slot, PeerSlot::Nat(n) if matches!(n.method, dig_nat::TraversalKind::Relayed))
 }
 
 /// The `Arc`-shared interior of [`GossipService`](super::gossip_service::GossipService)
@@ -1270,6 +1295,7 @@ mod outbound_diversity_tests {
                 &AsLookupTable::empty(),
                 peer_id_for_addr(candidate),
                 candidate.ip(),
+                false,
             ),
             Some(OutboundDiversityConflict::Subnet),
         );
@@ -1287,6 +1313,7 @@ mod outbound_diversity_tests {
                 &AsLookupTable::empty(),
                 peer_id_for_addr(candidate),
                 candidate.ip(),
+                false,
             ),
             None,
         );
@@ -1303,7 +1330,13 @@ mod outbound_diversity_tests {
             std::iter::once((pid, outbound_stub(held))).collect();
         let candidate = addr("10.5.9.9:9444"); // same /16 as the slot held under `pid`
         assert_eq!(
-            outbound_diversity_conflict(&peers, &AsLookupTable::empty(), pid, candidate.ip()),
+            outbound_diversity_conflict(
+                &peers,
+                &AsLookupTable::empty(),
+                pid,
+                candidate.ip(),
+                false
+            ),
             None,
             "the identity already holding the group must not conflict with itself",
         );
@@ -1322,6 +1355,7 @@ mod outbound_diversity_tests {
                 &as_table(),
                 peer_id_for_addr(candidate),
                 candidate.ip(),
+                false,
             ),
             Some(OutboundDiversityConflict::As),
         );
@@ -1340,8 +1374,30 @@ mod outbound_diversity_tests {
                 &AsLookupTable::empty(),
                 peer_id_for_addr(candidate),
                 candidate.ip(),
+                false,
             ),
             None,
+        );
+    }
+
+    /// **#1716:** a RELAYED candidate is EXEMPT from the /16//AS cap even when an outbound slot already
+    /// occupies the candidate's (relay-endpoint) /16 — the relay IP carries no peer address, so the
+    /// direct-tier cap is skipped and the relayed tier is bounded separately at the adoption site.
+    #[test]
+    fn relayed_candidate_is_exempt_from_the_slash16_cap() {
+        let occupant = addr("10.5.0.1:9444");
+        let peers = map(vec![(occupant, outbound_stub(occupant))]);
+        let candidate = addr("10.5.9.9:9444"); // shares the occupant's /16 (would be Subnet if direct)
+        assert_eq!(
+            outbound_diversity_conflict(
+                &peers,
+                &AsLookupTable::empty(),
+                peer_id_for_addr(candidate),
+                candidate.ip(),
+                true, // relayed → exempt
+            ),
+            None,
+            "a relayed candidate must skip the direct-tier /16 cap",
         );
     }
 }

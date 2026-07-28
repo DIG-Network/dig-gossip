@@ -899,11 +899,14 @@ impl GossipHandle {
             let conflict = if is_outbound_reconnect {
                 None
             } else {
+                // A direct TLS dial always inserts `PeerSlot::Live` with a real remote (#1716):
+                // never relayed, so the full /16//AS diversity cap applies.
                 crate::service::state::outbound_diversity_conflict(
                     &peers,
                     &self.inner.as_table,
                     peer_id,
                     addr.ip(),
+                    false,
                 )
             };
             match conflict {
@@ -1246,11 +1249,30 @@ impl GossipHandle {
             // MUST satisfy the caps. Occupancy is derived from `peers` (the #1703 single source of
             // truth); this gate + the insert run under the SAME `peers`-lock hold, so the check→insert
             // is atomic (no TOCTOU where two concurrent net-new adoptions into an empty group both pass).
-            if let Some(kind) = crate::service::state::outbound_diversity_conflict(
+            let candidate_is_relayed = matches!(method, dig_nat::TraversalKind::Relayed);
+            if candidate_is_relayed {
+                // #1716 (INT-006a): the relayed tier is EXEMPT from the /16//AS cap (the relay
+                // endpoint carries no peer address) and is instead bounded by `max_relayed_outbound`,
+                // so a relayed-Sybil flood cannot occupy the whole outbound budget. Counted + enforced
+                // under the same `peers`-lock hold as the insert below (atomic, no TOCTOU).
+                let relayed_outbound = peers
+                    .values()
+                    .filter(|s| crate::service::state::is_relayed(s) && s.is_outbound())
+                    .count();
+                let cap = crate::service::peer_pool::max_relayed_outbound(
+                    self.inner.config.target_outbound_count,
+                );
+                if relayed_outbound >= cap {
+                    return Err(GossipError::ConnectionFiltered(format!(
+                        "INT-006a: relayed outbound cap reached ({cap})"
+                    )));
+                }
+            } else if let Some(kind) = crate::service::state::outbound_diversity_conflict(
                 &peers,
                 &self.inner.as_table,
                 peer_id,
                 remote.ip(),
+                false,
             ) {
                 let ip = remote.ip();
                 return Err(match kind {
