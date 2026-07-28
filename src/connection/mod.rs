@@ -36,16 +36,18 @@ pub const WS_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// before rejecting it at the transport layer (below any application-level envelope cap).
 ///
 /// tungstenite's default is **64 MiB**, which sits ABOVE every DIG application cap: a hostile
-/// peer could make the transport buffer up to 64 MiB per message before the dig-message
-/// envelope cap or the reassembler's per-stream cap ([`crate::MAX_BUFFERED_BYTES`] = 4 MiB)
-/// ever sees the bytes. We bound it to 32 MiB — generous headroom over the 4 MiB reassembler
-/// cap and the ~16 MiB envelope ceiling, yet half the tungstenite default — so an over-cap
-/// message is refused by the protocol layer, not amplified into a per-connection memory DoS.
+/// peer could make the transport buffer up to 64 MiB per message before the reassembler's
+/// per-stream cap ([`crate::MAX_BUFFERED_BYTES`] = 4 MiB) — or the dig-message envelope cap
+/// layered above it — ever sees the bytes. We bound it to 32 MiB: 8× headroom over the 4 MiB
+/// reassembler cap (the largest legitimate payload a single message carries in this crate), yet
+/// half the tungstenite default — so an over-cap message is refused by the protocol layer, not
+/// amplified into a per-connection memory DoS.
 pub const WS_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
-/// The single bounded [`WebSocketConfig`] every DIG WebSocket handshake uses — inbound accept
-/// paths ([`listener`]) and the outbound dial ([`outbound`]) alike (CON-002 / §5.2 transport
-/// hardening). One source of truth keeps the caps from drifting between directions.
+/// The single bounded [`WebSocketConfig`] every DIG WebSocket handshake uses — the two inbound
+/// accept paths ([`listener`]), the outbound peer dial ([`outbound`]), and the relay-discovery
+/// dial ([`crate::nat::discovery`]) alike (CON-002 / §5.2 transport hardening). One source of
+/// truth keeps the caps from drifting between directions and paths.
 ///
 /// Only the two size caps are tightened; all other tungstenite defaults (write buffering, RFC
 /// masking) are kept.

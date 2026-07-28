@@ -337,8 +337,9 @@ ordering preference.
   `IPV6_V6ONLY` is only meaningful for — and only touched for — an IPv6 bind address.
 
 **WebSocket transport size caps (CON-002 / §5.2 DoS hardening):** every WebSocket handshake —
-both inbound accept paths (`accept_async_with_config`) AND the outbound dial
-(`connect_async_tls_with_config`) — is constructed with a single explicit bounded
+the two inbound accept paths (`accept_async_with_config`), the outbound peer dial
+(`connect_async_tls_with_config`), AND the relay-discovery dial (`nat::discovery`,
+`connect_async_with_config`) — is constructed with a single explicit bounded
 `WebSocketConfig` (`connection::ws_config()`), NOT tungstenite's defaults. The caps are
 `max_message_size = 32 MiB` ([`WS_MAX_MESSAGE_BYTES`]) and `max_frame_size = 16 MiB`
 ([`WS_MAX_FRAME_BYTES`]). tungstenite's default `max_message_size` is **64 MiB**, which sits

@@ -10,8 +10,11 @@ application caps are SMALLER — the reassembler's per-stream buffer (`MAX_BUFFE
 and the dig-message envelope ceiling (~16 MiB) — and they only apply AFTER tungstenite has already
 buffered the whole message. So a hostile peer could make the transport allocate up to 64 MiB per
 message before any app-level cap said no. Fix: one shared `connection::ws_config()` with
-`max_message_size = 32 MiB` / `max_frame_size = 16 MiB`, wired into ALL THREE handshake sites (two
-inbound `accept_async_with_config`, one outbound `connect_async_tls_with_config`). Note tungstenite
+`max_message_size = 32 MiB` / `max_frame_size = 16 MiB`, wired into ALL FOUR handshake sites (two
+inbound `accept_async_with_config`, the outbound peer dial `connect_async_tls_with_config`, and the
+relay-discovery dial `nat::discovery::relay_get_peers` `connect_async_with_config` — the last is the
+highest-risk since the relay is explicitly untrusted, and it was easy to miss because it lives
+outside the `connection` module). Note tungstenite
 0.24's `WebSocketConfig` is NOT `#[non_exhaustive]` (a later version is), so `WebSocketConfig {
 max_message_size: .., max_frame_size: .., ..Default::default() }` is the clippy-clean constructor —
 avoids `field_reassign_with_default`. A socket-level "send an over-cap message" test cannot

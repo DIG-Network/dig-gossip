@@ -75,12 +75,14 @@ pub const MAX_RELAY_DISCOVERY_FRAMES: usize = 64;
 /// This is the discovery counterpart to `dig-nat`'s reservation loop (which only keeps a node
 /// reachable) — it actively PULLS the peer list, which the reservation loop does not do.
 ///
-/// **Audit #179 (MEDIUM finding 4):** the relay is untrusted (see module docs). Two independent
-/// bounds protect against a hostile/compromised relay: (1) the frame-read loop gives up with
-/// [`GossipError::RelayError`] after [`MAX_RELAY_DISCOVERY_FRAMES`] non-terminal frames rather
-/// than looping indefinitely on filler; (2) the accepted `peers` list is capped at
-/// [`crate::constants::MAX_PEERS_RECEIVED_PER_REQUEST`] — the SAME per-request cap node
-/// peer-exchange applies to `RespondPeers` — before being converted to [`PeerRecord`]s.
+/// **Audit #179 (MEDIUM finding 4) + #10:** the relay is untrusted (see module docs). Three
+/// independent bounds protect against a hostile/compromised relay: (1) the WebSocket handshake
+/// uses the bounded [`ws_config`](crate::connection::ws_config) (§5.2 / #10), so a single
+/// over-cap frame/message is refused at the transport before tungstenite buffers it; (2) the
+/// frame-read loop gives up with [`GossipError::RelayError`] after [`MAX_RELAY_DISCOVERY_FRAMES`]
+/// non-terminal frames rather than looping indefinitely on filler; (3) the accepted `peers` list
+/// is capped at [`crate::constants::MAX_PEERS_RECEIVED_PER_REQUEST`] — the SAME per-request cap
+/// node peer-exchange applies to `RespondPeers` — before being converted to [`PeerRecord`]s.
 #[cfg(feature = "relay")]
 pub async fn relay_get_peers(
     endpoint: &str,
@@ -91,9 +93,18 @@ pub async fn relay_get_peers(
     let peer_id_hex = peer_id_hex.into();
     let network_id = network_id.to_string();
     let work = async move {
-        let (ws, _resp) = tokio_tungstenite::connect_async(endpoint)
-            .await
-            .map_err(|e| GossipError::RelayError(format!("connect: {e}")))?;
+        // The relay is explicitly untrusted (see module docs), so bound the transport buffer with
+        // the shared bounded `ws_config()` — the same 32 MiB message / 16 MiB frame cap as every
+        // other DIG WS handshake (#10 / §5.2). Without it this dial would inherit tungstenite's
+        // 64 MiB default and a hostile relay could stream an over-cap frame before the frame-count
+        // guard or the JSON decode below ever runs.
+        let (ws, _resp) = tokio_tungstenite::connect_async_with_config(
+            endpoint,
+            Some(crate::connection::ws_config()),
+            false,
+        )
+        .await
+        .map_err(|e| GossipError::RelayError(format!("connect: {e}")))?;
         let (mut write, mut read) = ws.split();
 
         // RLY-001: register so the relay accepts our control messages (it rejects pre-register with
