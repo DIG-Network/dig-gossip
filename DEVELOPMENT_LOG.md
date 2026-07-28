@@ -362,3 +362,5 @@ check the accept-loop admission gates first.
   unnecessary real-socket ceremony too). Verified: 25/25 green at `--test-threads=16` (was flaky
   ~1-in-4 before). Note: bucket collision is CORRECT Chia address-book behaviour under a random key —
   the bug was the test assuming a random-keyed seed of N addresses always retains exactly N.
+
+<!-- #1720: give opcode 222 (HoldingsAnnounce) an explicit inbound rate-limit row (was falling through to default). Filled in by the lane. -->
