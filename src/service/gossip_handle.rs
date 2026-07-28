@@ -72,10 +72,14 @@ use crate::types::reputation::PenaltyReason;
 use crate::types::stats::{GossipStats, RelayStats};
 
 use super::state::{
-    apply_inbound_rate_limit_violation, peer_id_for_addr, record_live_peer_inbound_bytes,
+    apply_inbound_rate_limit_violation, record_live_peer_inbound_bytes,
     record_live_peer_outbound_bytes, sum_live_peer_wire_metrics, LiveSlot, PeerSlot, ServiceState,
     StubPeer,
 };
+// Only the cfg-gated `connect_stub_inner` test hook (#1718) derives a `peer_id` from a raw address;
+// the production peer keys come from the TLS-verified SPKI, so this import is test-only.
+#[cfg(any(test, feature = "test-util"))]
+use super::state::peer_id_for_addr;
 
 /// Map a DIG routing strategy that is neither fan-out nor unicast to its dispatch error (#1404).
 ///
@@ -1751,6 +1755,11 @@ impl GossipHandle {
         }
     }
 
+    /// Insert an ungated [`PeerSlot::Stub`] for a peer address (no real TLS/WSS handshake).
+    ///
+    /// Test-only: gated behind `cfg(any(test, feature = "test-util"))` so it is never compiled into
+    /// the production library. Its sole caller is [`Self::__connect_stub_peer_with_direction`].
+    #[cfg(any(test, feature = "test-util"))]
     async fn connect_stub_inner(
         &self,
         addr: std::net::SocketAddr,
@@ -1825,6 +1834,10 @@ impl GossipHandle {
     }
 
     /// Test hook: model an **inbound** stub (different [`NodeType`] / direction) without real TCP.
+    ///
+    /// Gated behind `cfg(any(test, feature = "test-util"))` so it is excluded from the production
+    /// library; integration tests enable the `test-util` feature (see `Cargo.toml`).
+    #[cfg(any(test, feature = "test-util"))]
     #[doc(hidden)]
     pub async fn __connect_stub_peer_with_direction(
         &self,

@@ -2,6 +2,17 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## Where the REAL outbound dialer lives — `parallel_connect_batch` was never it (#1715)
+
+- `node_discovery::parallel_connect_batch` (a DSC-009 "Phase 3" stub) was removed in v0.17.6: it never
+  dialed anything — it selected address-manager candidates and FAKED `ConnectResult::Success`, calling
+  `mark_good()` directly. No production code ever called it (only its own DSC-009/PRF-004 tests did).
+- The LIVE outbound auto-dialer is the pool-maintenance path: pool maintenance → `HandleDialer::dial`
+  → `connect_via_nat_full_ladder` → `adopt_nat_connection` (with the INT-006/007 diversity caps and the
+  relayed-tier bound, see #1710/#1716). Manual dials go through `GossipHandle::connect_to` →
+  `connection::outbound::connect_outbound_peer` (CON-001). Parallel/batched outbound (DSC-009) remains a
+  future roadmap item with no code — do NOT resurrect the simulation stub as if it were the dialer.
+
 ## The /16+AS eclipse cap is meaningless on the RELAYED tier — exempt it, bound the tier instead (#1716)
 
 - The v0.17.4 diversity gate keyed INT-006(/16) + INT-007(AS) on `conn.remote_addr()`. For a RELAYED
