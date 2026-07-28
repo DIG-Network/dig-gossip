@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.4] - 2026-07-28
+
+### Bug Fixes
+- **con:** Enforce outbound /16+AS diversity on the auto-pool adoption path (#1710)
+
 ## [0.17.3] - 2026-07-27
 
 ### Bug Fixes
