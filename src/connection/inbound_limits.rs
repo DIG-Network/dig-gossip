@@ -13,20 +13,69 @@
 //! Inbound frames are delivered on the per-connection `mpsc` from [`Peer::from_websocket`]; **DIG**
 //! enforces [`RateLimiter::handle_message`] here **before** forwarding to the broadcast hub.
 //!
-//! ## DIG wire types (`200..=219` subset here)
+//! ## DIG wire types (`dig_wire` map)
 //!
-//! [`crate::types::dig_messages::DigMessageType`] discriminants are **not** [`ProtocolMessageTypes`]
-//! variants in `chia-protocol` 0.26, so they cannot appear in [`dig_peer_protocol::RateLimits`] `tx` /
-//! `other` maps. We attach them to [`RateLimits::dig_wire`](dig_peer_protocol::RateLimits::dig_wire)
-//! (vendored `chia-sdk-client`) and validate with [`RateLimiter::check_dig_extension`] when a future
-//! ingress path decodes raw DIG frames. Today’s integration path only sees Chia [`Message`] values;
-//! the extension table is still installed so limits are centralized and unit-tested per CON-005.
+//! [`crate::types::dig_messages::DigMessageType`] discriminants (`200..=219`) are **not**
+//! [`ProtocolMessageTypes`] variants in `chia-protocol` 0.26, so they cannot appear in
+//! [`dig_peer_protocol::RateLimits`] `tx` / `other` maps. But the **220-band** opcodes —
+//! `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720) — ARE `ProtocolMessageTypes`
+//! variants and DO arrive on the live wire as Chia [`Message`] values. Either way their bound lives
+//! in [`RateLimits::dig_wire`](dig_peer_protocol::RateLimits::dig_wire) (vendored `chia-sdk-client`),
+//! which [`RateLimiter::handle_message`] never reads.
+//!
+//! [`inbound_gate_allows`] closes that gap: the live forwarders call it (not `handle_message`
+//! directly), and for 220-band frames it additionally requires the [`RateLimiter::check_dig_extension`]
+//! pass — so the 221/222 rows are **enforced on the live path**, not merely unit-tested. Below the
+//! band, `handle_message` remains the whole gate (unchanged behaviour).
 
 use std::collections::HashMap;
 
-use dig_peer_protocol::{RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
+use dig_peer_protocol::{Message, RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
 
 use crate::types::dig_messages::DigMessageType;
+
+/// The first opcode of the DIG 220..=255 wire band.
+///
+/// Opcodes in this band (e.g. `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720)) ARE
+/// `chia_protocol::ProtocolMessageTypes` variants — so they arrive as real Chia [`Message`] values —
+/// but their bound lives in [`RateLimits::dig_wire`], which [`RateLimiter::handle_message`] never
+/// reads. The live ingress gate therefore has to consult [`RateLimiter::check_dig_extension`] for
+/// them explicitly; see [`inbound_gate_allows`].
+const DIG_WIRE_BAND_START: u8 = 220;
+
+/// The single inbound admission gate every live forwarder runs on each received frame, BEFORE the
+/// frame is broadcast to the service (and thus before the downstream P-256 verify).
+///
+/// It combines the two rate-limit checks under the caller's existing [`RateLimiter`] guard — one
+/// lock, no TOCTOU:
+///
+/// 1. [`RateLimiter::handle_message`] — the Chia `default_settings`/`tx`/`other` bound keyed by
+///    [`ProtocolMessageTypes`](dig_peer_protocol::ProtocolMessageTypes).
+/// 2. For frames in the DIG wire band (opcode `>= DIG_WIRE_BAND_START`), ALSO
+///    [`RateLimiter::check_dig_extension`] keyed by the raw opcode.
+///
+/// **Why both for the 220 band:** 221/222 ARE Chia `Message` variants, but `handle_message` has no
+/// `tx`/`other` row for them, so it falls through to the loose `default_settings` (100 frames/min,
+/// 1 MiB) and their deliberate [`dig_extension_rate_limits_map`] rows (#1316, #1720) would never
+/// bind on the live wire. Requiring the `check_dig_extension` pass in addition is what makes those
+/// rows actually enforced. Frames below the band are decided by `handle_message` alone (unchanged).
+///
+/// A frame is admitted only if EVERY applicable check passes.
+pub(crate) fn inbound_gate_allows(guard: &mut RateLimiter, msg: &Message) -> bool {
+    // Always apply the Chia base bound first (and unconditionally, so its counters advance).
+    if !guard.handle_message(msg) {
+        return false;
+    }
+
+    let opcode = msg.msg_type as u8;
+    if opcode >= DIG_WIRE_BAND_START {
+        // DIG 220-band frame: its real bound lives in `dig_wire`, so require that pass too.
+        guard.check_dig_extension(opcode, msg.data.len() as u32)
+    } else {
+        // Below the band: the base bound is the whole gate.
+        true
+    }
+}
 
 /// Table from [`CON-005.md`](../../../docs/requirements/domains/connection/specs/CON-005.md) §DIG Extension Rate Limits.
 ///
@@ -88,6 +137,24 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
         crate::service::store_melted::STORE_MELTED,
         RateLimit::new(10.0, 4096.0, None),
     );
+    // #1720 — holdings-announce (opcode 222) is a signed, periodic public-discovery broadcast that
+    // any internet host can send, and its P-256 signature verify (`verify_holdings_announce`) runs on
+    // the decoded frame. Without an explicit row it fell through to `default_settings` (100 frames/min,
+    // 1 MiB) — bounding that expensive verify only by accident. Give it a deliberate row keyed by the
+    // raw opcode (222 is a `ProtocolMessageTypes` variant in the vendored fork, not a `DigMessageType`;
+    // the `dig_wire` map is `u8 -> RateLimit`, so the bound applies uniformly). Sized larger than 221:
+    // - `max_size` 128 KiB fits a full legit `MAX_CHANGES` (256) re-announce — each key served at a fat
+    //   4-address, 64-byte-host candidate set encodes to ~79 KiB (256×315 B + ~251 B framing), so 128 KiB
+    //   leaves >60% headroom and never clips a real provider's full-holdings frame. Far below the 1 MiB
+    //   default (8x tighter).
+    // - `freq` 20/min is ~2x the 221 anchor (10/min): a provider re-announces its whole holdings in ONE
+    //   frame, so steady state is minutes apart; 20/min allows legit burst re-announces (a 0→N peer
+    //   transition plus a cluster of holdings-change events) while capping a hostile conn at 20 P-256
+    //   verifies/min/conn — 5x below the 100/min default.
+    m.insert(
+        crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
+        RateLimit::new(20.0, 131_072.0, None),
+    );
     m
 }
 
@@ -102,4 +169,65 @@ pub fn gossip_inbound_rate_limits() -> RateLimits {
 /// [`crate::types::config::GossipConfig::peer_options`](crate::types::config::GossipConfig::peer_options).
 pub fn new_inbound_rate_limiter(rate_limit_factor: f64) -> RateLimiter {
     RateLimiter::new(true, 60, rate_limit_factor, gossip_inbound_rate_limits())
+}
+
+#[cfg(test)]
+mod tests {
+    //! In-crate regression tests for the 220-band live gate (#1720, #1316).
+    //!
+    //! These call the REAL [`inbound_gate_allows`] (reachable in-crate because it is `pub(crate)`),
+    //! NOT a hand-copied mirror. This is the authoritative regression guard: if the production gate
+    //! ever drops its `>= DIG_WIRE_BAND_START` `check_dig_extension` branch and reverts to
+    //! `handle_message`-only, a 220-band flood would fall through to the loose 100/min
+    //! `default_settings` and these tests go RED (proven by reverting the branch). The external
+    //! mirror in `tests/con_005_tests.rs` cannot detect that regression and is only a secondary check.
+
+    use dig_peer_protocol::{Bytes, ProtocolMessageTypes};
+
+    use super::*;
+
+    /// Real 222 (HoldingsAnnounce) flood: the live gate admits the first 20 (the `dig_wire` row) and
+    /// rejects the 21st, driven through the REAL [`inbound_gate_allows`]. Without the 220-band branch
+    /// this admits the 21st via the 100/min default, so the test pins that branch to production.
+    #[test]
+    fn real_gate_bounds_holdings_announce_222() {
+        let announce_frame = || Message {
+            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            id: None,
+            data: Bytes::new(vec![0u8; 1024]), // well under the 128 KiB max_size
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        for i in 0..20 {
+            assert!(
+                inbound_gate_allows(&mut guard, &announce_frame()),
+                "frame {i} within the 20/min holdings-announce cap must pass the REAL gate"
+            );
+        }
+        assert!(
+            !inbound_gate_allows(&mut guard, &announce_frame()),
+            "21st holdings-announce (222) must be rejected by the REAL inbound_gate_allows (#1720)"
+        );
+    }
+
+    /// Real 221 (StoreMelted, fixed `ENCODED_LEN` = 164 B) flood: the live gate admits the first 10
+    /// (the `dig_wire` row) and rejects the 11th, driven through the REAL [`inbound_gate_allows`].
+    #[test]
+    fn real_gate_bounds_store_melted_221() {
+        let melted_frame = || Message {
+            msg_type: ProtocolMessageTypes::StoreMelted,
+            id: None,
+            data: Bytes::new(vec![0u8; 164]), // fixed StoreMeltedAnnounce ENCODED_LEN
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        for i in 0..10 {
+            assert!(
+                inbound_gate_allows(&mut guard, &melted_frame()),
+                "frame {i} within the 10/min store-melted cap must pass the REAL gate"
+            );
+        }
+        assert!(
+            !inbound_gate_allows(&mut guard, &melted_frame()),
+            "11th store-melted (221) must be rejected by the REAL inbound_gate_allows (#1316)"
+        );
+    }
 }

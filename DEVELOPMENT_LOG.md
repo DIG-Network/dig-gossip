@@ -362,3 +362,43 @@ check the accept-loop admission gates first.
   unnecessary real-socket ceremony too). Verified: 25/25 green at `--test-threads=16` (was flaky
   ~1-in-4 before). Note: bucket collision is CORRECT Chia address-book behaviour under a random key —
   the bug was the test assuming a random-keyed seed of N addresses always retains exactly N.
+
+- **CON-005 / #1720 — opcode 222 (HoldingsAnnounce) inbound rate-limit row.** 222 is reachable by any
+  internet host (`rustls_inbound.rs` accepts any self-signed cert) and its P-256 signature verify
+  (`verify_holdings_announce`) runs on the DECODED frame — so the expensive work was bounded only by
+  the accidental `default_settings` fall-through (100 frames/min, 1 MiB) because it had no `dig_wire`
+  row. Added a deliberate row: `RateLimit::new(20.0, 131_072.0, None)`. Sizing arithmetic (from the
+  actual `HoldingsAnnounce::encode`): a legit full `MAX_CHANGES`=256 re-announce, each key served at a
+  fat 4-address candidate set with 64-byte hosts, encodes to per-Add `1+32+2 + 4×(2+64+2) + 8 = 315`
+  bytes → `256×315 = 80 640` + ~280 B framing (`peer_id 66 + spki 122 + seq 8 + announced_at 8 +
+  change_count 2 + sig 74`) ≈ **79 KiB**. So `max_size = 128 KiB` leaves >60% headroom and NEVER clips
+  a real provider's full-holdings frame (which would break the discovery flywheel), yet is 8× tighter
+  than the 1 MiB default. `frequency = 20`/min is ~2× the 221 (STORE_MELTED) anchor of 10/min: a
+  provider re-announces its WHOLE holdings in one frame so steady-state cadence is minutes apart; 20/min
+  covers legit bursts (a 0→N peer transition plus a cluster of holdings-change events) while capping a
+  hostile connection at 20 signature verifies/min (vs 100 under the default). This row mirrors the
+  #1316 STORE_MELTED (221) precedent.
+- **CON-005 / #1720 (follow-up) — the 221/222 rows were a NO-OP on the live wire; now enforced via a
+  combined gate.** Enforcement-gap finding: the live inbound forwarders
+  (`connection/listener.rs`, `service/gossip_handle.rs`) called ONLY `RateLimiter::handle_message`,
+  which reads `default_settings`/`tx`/`other` (keyed by `ProtocolMessageTypes`) and NEVER the
+  `dig_wire` map. 221/222 ARE `ProtocolMessageTypes` variants but have no `tx`/`other` row, so they
+  fell through to the loose `default_settings` — meaning both the #1316 (221) and #1720 (222) rows
+  were a unit-tested source of truth NOT bound at runtime (`check_dig_extension`, the only `dig_wire`
+  reader, was called nowhere in `src/`). Fix: extracted ONE shared gate
+  `connection::inbound_limits::inbound_gate_allows(guard, msg)` (also killing the duplicated inline
+  gate — a §2.5 DRY fix) that, under the SINGLE existing `MutexGuard` (no second lock, no TOCTOU —
+  the two methods count in disjoint maps `message_counts` vs `dig_message_counts`), runs
+  `handle_message` AND, for opcodes `>= 220`, ALSO requires `check_dig_extension(opcode, len)`. Both
+  forwarders now call it. Behaviour change to call out: this makes 221's #1316 row go LIVE for the
+  first time too — safe (StoreMelted is a fixed 164 B, 25× under its 4096 B cap; 10/min ample for an
+  infrequent broadcast). 222 legit max ≈79 KiB < 128 KiB and 20/min > steady re-announce cadence, so
+  legit traffic is not dropped. `<220` traffic is unchanged (base bound alone). Gate order preserved:
+  the limiter runs BEFORE the `tx.send` that feeds the downstream P-256 verify.
+- #1720 regression-test integrity: the 220-band live-gate rate-limit regression test now pins the
+  REAL `pub(crate) connection::inbound_limits::inbound_gate_allows` via an in-crate `#[cfg(test)]`
+  module, NOT a hand-copied mirror. A mirror in an external test crate (`tests/con_005_tests.rs`)
+  re-implements the branch it claims to guard, so it stays green even if production drops the branch —
+  a false-green. RED was proven: removing the `>= DIG_WIRE_BAND_START check_dig_extension` branch makes
+  the in-crate tests fail (21st/11th frame admitted via the 100/min default). Lesson: a regression test
+  for a `pub(crate)` helper belongs in-crate; never mirror the code-under-test in an external test.

@@ -23,9 +23,30 @@ use dig_gossip::{RateLimit, RateLimiter, V2_RATE_LIMITS};
 
 use dig_gossip::{
     apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, gossip_inbound_rate_limits,
-    load_ssl_cert, new_inbound_rate_limiter, peer_id_for_addr, DigMessageType, PenaltyReason,
-    ServiceState,
+    load_ssl_cert, new_inbound_rate_limiter, peer_id_for_addr, CandidateAddr, DigMessageType,
+    HoldingsAnnounce, HoldingsDelta, PenaltyReason, ServiceState, HOLDINGS_ANNOUNCE,
+    HOLDINGS_MAX_CHANGES, STORE_MELTED,
 };
+
+/// Mirror of the crate-private `connection::inbound_limits::inbound_gate_allows` — the live inbound
+/// admission gate. `inbound_gate_allows` is `pub(crate)`, so these integration tests exercise the
+/// EXACT combination it wraps: the Chia base bound plus, for the DIG 220-band, the `dig_wire` bound.
+///
+/// AUTHORITATIVE regression guard: the in-crate `connection::inbound_limits::tests` module calls the
+/// REAL `inbound_gate_allows`. These external mirror tests are a SECONDARY check — a mirror cannot
+/// detect a broken production gate (it re-implements the branch it claims to guard), so it must never
+/// be the only test of the 220-band live path.
+fn live_gate_allows(lim: &mut RateLimiter, msg: &Message) -> bool {
+    if !lim.handle_message(msg) {
+        return false;
+    }
+    let opcode = msg.msg_type as u8;
+    if opcode >= 220 {
+        lim.check_dig_extension(opcode, msg.data.len() as u32)
+    } else {
+        true
+    }
+}
 
 /// **Row:** `test_inbound_rate_limiter_creation` — [`RateLimiter::new`] with `incoming = true`,
 /// `reset_seconds = 60`, and merged limits builds successfully (CON-005 §Inbound Rate Limiting).
@@ -255,4 +276,166 @@ fn test_check_dig_extension_unknown_wire_allowed() {
     let limits = gossip_inbound_rate_limits();
     let mut lim = RateLimiter::new(true, 60, 1.0, limits);
     assert!(lim.check_dig_extension(255, 1_000_000));
+}
+
+/// **Row:** `test_holdings_announce_222_row_bounds` (#1720) — opcode 222 (HoldingsAnnounce) has a
+/// DELIBERATE inbound row, not the loose 1 MiB / 100-frame `default_settings` fall-through. The
+/// bounds cap the expensive post-decode P-256 verify a hostile peer can force.
+#[test]
+fn test_holdings_announce_222_row_bounds() {
+    let map = dig_extension_rate_limits_map();
+    let row = map.get(&HOLDINGS_ANNOUNCE).expect(
+        "opcode 222 (HoldingsAnnounce) must carry an explicit inbound rate-limit row (#1720)",
+    );
+    assert_eq!(
+        row.frequency, 20.0,
+        "222 frequency: ~2x the 221 anchor (10/min)"
+    );
+    assert_eq!(
+        row.max_size, 131_072.0,
+        "222 max single frame: 128 KiB, sized to a full legit MAX_CHANGES batch + headroom"
+    );
+    assert_eq!(row.max_total_size, None, "matches the table convention");
+}
+
+/// **Row:** `test_holdings_announce_222_frequency_bounded` (#1720) — a burst beyond the 20/min cap is
+/// rejected, so a hostile peer cannot force 100 P-256 verifies/min/conn via the old default.
+#[test]
+fn test_holdings_announce_222_frequency_bounded() {
+    let mut limits = (*V2_RATE_LIMITS).clone();
+    limits.dig_wire = dig_extension_rate_limits_map();
+    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    for _ in 0..20 {
+        assert!(lim.check_dig_extension(HOLDINGS_ANNOUNCE, 1024));
+    }
+    assert!(
+        !lim.check_dig_extension(HOLDINGS_ANNOUNCE, 1024),
+        "21st holdings-announce in the window exceeds frequency=20"
+    );
+}
+
+/// **Row:** `test_holdings_announce_222_max_batch_not_clipped` (#1720) — the `max_size` fits a full
+/// legit `MAX_CHANGES` (256) re-announce (each key at a fat 4-address, 64-byte-host candidate set), so
+/// a real provider's full-holdings frame is admitted, not clipped. Guards against choosing a cap that
+/// would break the discovery flywheel.
+#[test]
+fn test_holdings_announce_222_max_batch_not_clipped() {
+    let host = "h".repeat(64); // covers a full IPv6 literal / modest hostname
+    let addresses: Vec<CandidateAddr> = (0..4)
+        .map(|_| CandidateAddr {
+            host: host.clone(),
+            port: 9256,
+        })
+        .collect();
+    let changes: Vec<HoldingsDelta> = (0..HOLDINGS_MAX_CHANGES)
+        .map(|i| {
+            let mut content_key = [0u8; 32];
+            content_key[0] = i as u8;
+            content_key[1] = (i >> 8) as u8;
+            HoldingsDelta::Add {
+                content_key,
+                addresses: addresses.clone(),
+                expires_at: 1_900_000_000,
+            }
+        })
+        .collect();
+    // A size fixture: fields are filler of realistic length (real P-256 SPKI ~91 B, ECDSA-P256
+    // ASN.1 sig ~72 B) — encode() does not verify, so this exercises only the encoded frame size.
+    let announce = HoldingsAnnounce {
+        provider_peer_id: "aa".repeat(32), // 64 hex chars
+        provider_spki: vec![0u8; 120],
+        seq: 1,
+        announced_at: 2,
+        changes,
+        signature: vec![0u8; 72],
+    };
+    let encoded = announce.encode();
+    let map = dig_extension_rate_limits_map();
+    let max_size = map.get(&HOLDINGS_ANNOUNCE).unwrap().max_size;
+    assert!(
+        encoded.len() as f64 <= max_size,
+        "legit MAX_CHANGES holdings-announce ({} bytes) must fit under max_size ({max_size})",
+        encoded.len()
+    );
+    let mut limits = (*V2_RATE_LIMITS).clone();
+    limits.dig_wire = map;
+    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    assert!(
+        lim.check_dig_extension(HOLDINGS_ANNOUNCE, encoded.len() as u32),
+        "a legit full-holdings frame must be admitted, not clipped"
+    );
+}
+
+/// **Row:** `holdings_announce_222_flood_rejected_on_live_gate` (#1720) — the LIVE ingress gate
+/// (built exactly as the forwarders build it) bounds opcode-222 flooding to the `dig_wire` row
+/// (20/min), NOT the loose 100/min `default_settings` fall-through. Proves the row is enforced on
+/// the live path, not merely unit-tested via `check_dig_extension` in isolation.
+///
+/// Pre-fix (base `handle_message` alone) this frame fell through to the 100/min default and ~100
+/// frames would pass; the extra assertion below documents that gap the combined gate closes.
+#[test]
+fn holdings_announce_222_flood_rejected_on_live_gate() {
+    let announce_frame = || Message {
+        msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+        id: None,
+        data: Bytes::new(vec![0u8; 1024]), // well under the 128 KiB max_size
+    };
+
+    let mut lim = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
+    for i in 0..20 {
+        assert!(
+            live_gate_allows(&mut lim, &announce_frame()),
+            "frame {i} within the 20/min holdings-announce cap must pass the live gate"
+        );
+    }
+    assert!(
+        !live_gate_allows(&mut lim, &announce_frame()),
+        "21st holdings-announce (222) in the window must be rejected by the live gate (#1720)"
+    );
+
+    // The enforcement gap this fix closes: the Chia base bound alone (the pre-fix live gate) reads
+    // only `default_settings` (100/min) for opcode 222, so it would admit the 21st frame.
+    let mut base_only = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
+    for _ in 0..21 {
+        assert!(
+            base_only.handle_message(&announce_frame()),
+            "pre-fix: handle_message alone lets 222 flood through the loose 100/min default"
+        );
+    }
+}
+
+/// **Row:** `store_melted_221_flood_rejected_on_live_gate` (#1316) — the LIVE ingress gate bounds
+/// opcode-221 (StoreMelted, fixed `ENCODED_LEN` = 164 B) flooding to the `dig_wire` row (10/min).
+/// This is the FIRST time the #1316 row binds on the live wire; guards it going live.
+///
+/// The extra assertion documents the pre-fix gap: base `handle_message` alone admits the 11th frame
+/// via the 100/min default.
+#[test]
+fn store_melted_221_flood_rejected_on_live_gate() {
+    assert_eq!(STORE_MELTED, 221, "opcode contract");
+    let melted_frame = || Message {
+        msg_type: ProtocolMessageTypes::StoreMelted,
+        id: None,
+        data: Bytes::new(vec![0u8; 164]), // fixed StoreMeltedAnnounce ENCODED_LEN
+    };
+
+    let mut lim = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
+    for i in 0..10 {
+        assert!(
+            live_gate_allows(&mut lim, &melted_frame()),
+            "frame {i} within the 10/min store-melted cap must pass the live gate"
+        );
+    }
+    assert!(
+        !live_gate_allows(&mut lim, &melted_frame()),
+        "11th store-melted (221) in the window must be rejected by the live gate (#1316)"
+    );
+
+    let mut base_only = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
+    for _ in 0..11 {
+        assert!(
+            base_only.handle_message(&melted_frame()),
+            "pre-fix: handle_message alone lets 221 flood through the loose 100/min default"
+        );
+    }
 }
