@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.8] - 2026-07-28
+
+### Bug Fixes
+- **transport:** Tighten WS message cap 32->8 MiB + document aggregate bound (#34)
+
 ## [0.17.7] - 2026-07-28
 
 ### Bug Fixes
