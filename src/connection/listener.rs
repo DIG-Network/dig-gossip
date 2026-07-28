@@ -456,11 +456,40 @@ async fn handle_inbound_native_inner(
 // the WebSocket + Handshake layer sits above TLS.
 // ---------------------------------------------------------------------------
 
+/// Return `true` when a [`tokio_tungstenite`] WebSocket error is a **transport-layer capacity
+/// rejection** — tungstenite refusing an over-cap frame or message before the application ever
+/// sees the bytes.
+///
+/// This is the transport arm of the #10 hardening: [`crate::connection::ws_config`] pins
+/// `max_message_size`/`max_frame_size` to [`crate::connection::WS_MAX_MESSAGE_BYTES`], so a
+/// hostile peer's oversized payload surfaces here as `Error::Capacity(_)` (e.g.
+/// [`CapacityError::MessageTooLong`]) rather than being buffered up to tungstenite's 64 MiB
+/// default. Classifying it distinctly lets us (a) log it as a capacity rejection and (b) pin the
+/// behaviour with a deterministic unit test, without a flaky socket-level test that cannot tell a
+/// transport rejection from an app-layer one (both close the connection).
+///
+/// [`CapacityError::MessageTooLong`]: tokio_tungstenite::tungstenite::error::CapacityError::MessageTooLong
+fn is_transport_capacity_rejection(e: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(e, tokio_tungstenite::tungstenite::Error::Capacity(_))
+}
+
 /// Convert a [`tokio_tungstenite`] WebSocket error into [`ClientError::Io`].
 ///
-/// The string conversion loses the original error type, but `ClientError` does not have a
-/// dedicated WebSocket variant, and we only need the message for diagnostic logging.
+/// The string conversion loses the original error type, but `ClientError` (defined in the external
+/// `dig_peer_protocol` crate) has no dedicated WebSocket variant, and we only need the message for
+/// diagnostic logging. A **transport capacity rejection** (#10 over-cap frame/message) is first
+/// surfaced distinctly via a `warn!` naming [`WS_MAX_MESSAGE_BYTES`] so it is visible in the logs
+/// even though it collapses into the same `ClientError::Io` as any other transport error.
+///
+/// [`WS_MAX_MESSAGE_BYTES`]: crate::connection::WS_MAX_MESSAGE_BYTES
 fn ws_err(e: tokio_tungstenite::tungstenite::Error) -> ClientError {
+    if is_transport_capacity_rejection(&e) {
+        tracing::warn!(
+            target: "dig_gossip::listener",
+            max_message_bytes = crate::connection::WS_MAX_MESSAGE_BYTES,
+            "WS transport rejected an over-cap frame/message (#10 capacity bound WS_MAX_MESSAGE_BYTES): {e}"
+        );
+    }
     ClientError::Io(std::io::Error::other(e.to_string()))
 }
 
@@ -951,5 +980,51 @@ pub(crate) async fn accept_loop(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ws_err_tests {
+    use super::{is_transport_capacity_rejection, ws_err};
+    use dig_peer_protocol::ClientError;
+    use tokio_tungstenite::tungstenite::error::CapacityError;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+
+    /// A synthetic over-cap rejection matching how `ws_config()`'s bounded `max_message_size`
+    /// surfaces a hostile oversized payload in tungstenite 0.24: the struct variant
+    /// `CapacityError::MessageTooLong { size, max_size }` wrapped in `Error::Capacity`.
+    fn synthetic_capacity_rejection() -> WsError {
+        WsError::Capacity(CapacityError::MessageTooLong {
+            size: crate::connection::WS_MAX_MESSAGE_BYTES + 1,
+            max_size: crate::connection::WS_MAX_MESSAGE_BYTES,
+        })
+    }
+
+    #[test]
+    fn ws_err_classifies_transport_capacity_rejection() {
+        // A transport-layer over-cap rejection (#10) is classified distinctly...
+        let capacity = synthetic_capacity_rejection();
+        assert!(
+            is_transport_capacity_rejection(&capacity),
+            "an over-cap MessageTooLong must classify as a transport capacity rejection"
+        );
+
+        // ...while ordinary transport errors are NOT capacity rejections.
+        assert!(
+            !is_transport_capacity_rejection(&WsError::AlreadyClosed),
+            "AlreadyClosed is not a capacity rejection"
+        );
+        assert!(
+            !is_transport_capacity_rejection(&WsError::Io(std::io::Error::other("boom"))),
+            "a generic IO error is not a capacity rejection"
+        );
+
+        // Both still collapse into `ClientError::Io` (no external-enum change); the classifier is
+        // what a test — and the distinct `warn!` — key off of.
+        assert!(matches!(
+            ws_err(synthetic_capacity_rejection()),
+            ClientError::Io(_)
+        ));
+        assert!(matches!(ws_err(WsError::AlreadyClosed), ClientError::Io(_)));
     }
 }

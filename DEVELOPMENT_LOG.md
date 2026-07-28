@@ -331,4 +331,13 @@ check the accept-loop admission gates first.
 
 <!-- #34: transport memory-ceiling hardening (tighten WS message cap 32->8 MiB; document the two-gate aggregate bound). Filled in by the harden lane. -->
 
-<!-- #36: expose tungstenite Capacity(MessageTooLong) distinctly from ws_err + deterministic transport-rejection test. Filled in by the lane. -->
+- **#36 — transport Capacity rejection is classified, not socket-tested.** A socket-level "send an
+  over-cap message" test cannot deterministically isolate a TRANSPORT-layer rejection from an
+  APP-layer one — both surface to the client as a connection close, so the assertion passes even
+  without the cap. The load-bearing fact is instead the *classification*: `ws_err` (listener.rs)
+  branches on `is_transport_capacity_rejection` (matches tungstenite `Error::Capacity(_)`) to emit a
+  distinct `warn!` naming `WS_MAX_MESSAGE_BYTES`/#10, and a deterministic unit test constructs the
+  synthetic `Error::Capacity(CapacityError::MessageTooLong { size, max_size })` (a struct variant in
+  tungstenite 0.24) and asserts it classifies while `AlreadyClosed`/`Io` do not. `ClientError` lives
+  in the external `dig_peer_protocol` crate (no WS variant, cross-crate blast radius), so the
+  classifier route keeps the return type `ClientError::Io` unchanged rather than adding an enum arm.
