@@ -1198,13 +1198,37 @@ impl GossipHandle {
     /// peer pool, so it counts as a connected peer (`peer_count` / `stats` / dedup / churn) and its
     /// multiplexed transport is retained for dig-node to open gossip channels + range streams on.
     ///
-    /// Returns `Ok(peer_id)` on adoption. Refuses (and drops the connection) if the peer is banned, is
-    /// already in the pool ([`GossipError::DuplicateConnection`]), or the pool is full
-    /// ([`GossipError::MaxConnectionsReached`] against [`GossipConfig::max_connections`]). Emits a
+    /// Returns `Ok(peer_id)` on adoption. Refuses (and drops the connection) if the peer is this node
+    /// itself ([`GossipError::SelfConnection`]), is banned ([`GossipError::PeerBanned`]), the pool is
+    /// full ([`GossipError::MaxConnectionsReached`] against [`GossipConfig::max_connections`]), or an
+    /// outbound diversity budget is exhausted ([`GossipError::ConnectionFiltered`]). Emits a
     /// [`PoolEvent::PeerAdded`](crate::service::peer_pool::PoolEvent) on success.
     ///
     /// This is the single place a `dig-nat` connection becomes a pool member; the pool maintenance loop
     /// and a manual dial both go through it, so the dedup + cap + churn rules hold uniformly.
+    ///
+    /// # Re-adoption policy — newest-wins (dig_ecosystem#1762)
+    ///
+    /// A slot already held for `peer_id` does **not** refuse this adoption; the freshly
+    /// mTLS-authenticated session SUPERSEDES it, exactly as the inbound path (#1691) and
+    /// [`Self::connect_to`] (#1703) do. The map keeps one slot per `peer_id` (`HashMap::insert`
+    /// replaces, never grows), so re-adoption churn cannot grow it.
+    ///
+    /// The rule is stated over the CLASS of stale slots, not one cause. A peer-map slot carries no
+    /// liveness value to consult — dig-gossip never reaps a slot on disconnect — so a
+    /// `contains_key` refusal cannot distinguish a live peer from a dead relay circuit whose mTLS
+    /// failed (#1761), a half-open TCP link, a vanished peer, or a timed-out mapping. That was the
+    /// #1762 defect: because this is the ONE path both the relayed and the direct tier are adopted
+    /// through, a dead relayed slot refused the direct adoption that would have worked, leaving the
+    /// peer unreachable while the other side reported zero connections. Refusing only a
+    /// *demonstrably live* slot would have to enumerate the ways a slot dies; superseding instead is
+    /// correct for every one of them.
+    ///
+    /// Safe because `peer_id` comes from the **completed, SPKI-pinned mTLS handshake** dig-nat
+    /// performed (see [`crate::nat::NatPeerConnection::peer_id`]): only the holder of that identity's
+    /// private key can produce a connection that reaches here, so no third party can displace a live
+    /// peer. The self (#1584) and ban (CON-007) guards run BEFORE the insert and are unaffected — a
+    /// re-adoption is not a route around them.
     pub async fn adopt_nat_connection(
         &self,
         conn: crate::nat::NatPeerConnection,
@@ -1231,16 +1255,38 @@ impl GossipHandle {
             return Err(GossipError::PeerBanned(peer_id));
         }
 
-        {
+        // Both admission budgets and the insert are decided under ONE `peers`-lock hold, so the
+        // check→insert is atomic (no TOCTOU where two concurrent net-new adoptions into the same empty
+        // group both pass). The displaced slot leaves the lock scope in `superseded` and is torn down
+        // after the lock is released.
+        let superseded = {
             let mut peers = self
                 .inner
                 .peers
                 .lock()
                 .map_err(|_| GossipError::ChannelClosed)?;
-            if peers.contains_key(&peer_id) {
-                return Err(GossipError::DuplicateConnection(peer_id));
-            }
-            if peers.len() >= self.inner.config.max_connections {
+
+            // #1762: no `DuplicateConnection` refusal — the held slot is superseded by the insert
+            // below (newest-wins, mTLS-gated; see the policy on this function). What a held slot DOES
+            // decide is how much of each budget this adoption consumes:
+            //
+            // * `replaces_held_slot` — the insert replaces an entry rather than adding one, so the map
+            //   does not grow and `max_connections` is already satisfied. Charging the cap here would
+            //   strand a peer behind its own stale slot whenever the pool is full — the same class of
+            //   defect as the refusal itself, one budget further in.
+            // * `is_outbound_reconnect` — the peer already occupies THIS node's outbound diversity
+            //   budget (its /16, its AS, or one relayed slot), so re-dialling it is not net-new
+            //   occupancy; counting it would be an off-by-one that refuses the last relayed peer's
+            //   own recovery. Mirrors the #1703 `connect_to` exemption. An INBOUND or non-outbound
+            //   held slot does NOT occupy the outbound budget, so it earns no diversity exemption.
+            //
+            // Every NET-NEW identity still faces both budgets in full — the eclipse caps below are
+            // unchanged for the attacker-influenceable case (#1710/#1716).
+            let held = peers.get(&peer_id);
+            let replaces_held_slot = held.is_some();
+            let is_outbound_reconnect = matches!(held, Some(slot) if slot.is_outbound());
+
+            if !replaces_held_slot && peers.len() >= self.inner.config.max_connections {
                 return Err(GossipError::MaxConnectionsReached(
                     self.inner.config.max_connections,
                 ));
@@ -1249,14 +1295,14 @@ impl GossipHandle {
             // adoption path too, not only manual `connect_to`. This is the attacker-influenceable
             // surface — pool candidates originate from `RespondPeers`, so an adversary can seed many
             // same-/16 (or same-AS) reservations and, absent this gate, occupy the outbound budget the
-            // diversity caps exist to protect. Unlike `connect_to`, adoption has NO reconnect-exemption
-            // branch: the duplicate-`peer_id` guard above already refuses any slot already held, so
-            // EVERY connection reaching here is a NET-NEW identity = net-new outbound occupancy that
-            // MUST satisfy the caps. Occupancy is derived from `peers` (the #1703 single source of
-            // truth); this gate + the insert run under the SAME `peers`-lock hold, so the check→insert
-            // is atomic (no TOCTOU where two concurrent net-new adoptions into an empty group both pass).
+            // diversity caps exist to protect. Every NET-NEW identity — that is, every adoption except
+            // the `is_outbound_reconnect` case carved out above (#1762) — is net-new outbound occupancy
+            // that MUST satisfy the caps. Occupancy is derived from `peers` (the #1703 single source of
+            // truth), never a parallel side-set that could drift and under-count.
             let candidate_is_relayed = matches!(method, dig_nat::TraversalKind::Relayed);
-            if candidate_is_relayed {
+            if is_outbound_reconnect {
+                // Not net-new occupancy — see `is_outbound_reconnect` above (#1762).
+            } else if candidate_is_relayed {
                 // #1716 (INT-006a): the relayed tier is EXEMPT from the /16//AS cap (the relay
                 // endpoint carries no peer address) and is instead bounded by `max_relayed_outbound`,
                 // so a relayed-Sybil flood cannot occupy the whole outbound budget. Counted + enforced
@@ -1302,7 +1348,20 @@ impl GossipHandle {
                     is_outbound: true,
                     method,
                 }),
-            );
+            )
+        };
+
+        // Newest-wins supersede (#1762) — tear the displaced slot down AFTER releasing the `peers`
+        // lock. A displaced `Live` slot needs its keepalive aborted first, or that stale task's
+        // teardown could fire against this newer session (the #1691 ghost-keepalive race; the
+        // generation guard in `disconnect_after_keepalive_failure` is the load-bearing invariant, this
+        // abort is the prompt first line of defence), then its WebSocket closed — dropping a `LiveSlot`
+        // does not close the socket. A displaced `Nat`/`Stub` slot owns no keepalive and its transport
+        // is closed by being dropped here (`Nat` drop tears down the mux session — the #1717
+        // invariant), which is exactly what frees the dead relay circuit this fix supersedes.
+        if let Some(PeerSlot::Live(stale)) = superseded {
+            stale.keepalive_task.abort();
+            let _ = stale.peer.close().await;
         }
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).

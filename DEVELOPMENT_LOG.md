@@ -2,6 +2,38 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## The same defect had THREE sites because three paths admitted a peer — a shared invariant needs a shared shape (#1691/#1703/#1762)
+
+"A held peer-map slot refuses a reconnect that would work" was fixed three separate times, in three
+separate releases, because three functions independently decided the same admission: the inbound
+listener (`precheck_inbound_peer`, #1691), the outbound dial (`connect_to`, #1703), and the `dig-nat`
+pool adoption (`adopt_nat_connection`, #1762). Each held its own `peers.contains_key(&peer_id)` reject
+with no liveness check, and dig-gossip never reaps a slot on disconnect, so each independently made the
+peer permanently unreachable behind a corpse. The third was the worst-placed: adoption is the ONE path
+BOTH the relayed and the direct `dig-nat` tier pass through, so a dead relay circuit's slot refused the
+direct dial that worked — the broken path poisoned the working one (live #1062 fleet: `duplicate
+connection to peer` on one side, `connected_peers: 0` on the other).
+
+Two durable lessons:
+
+- **Find every site of a shared invariant before declaring the class fixed.** The tell was already in
+  the code: #1710's comment in `adopt_nat_connection` reasoned *from* the duplicate reject ("adoption
+  has NO reconnect-exemption branch: the duplicate guard already refuses any slot already held"). A
+  guard that other logic reasons from is load-bearing in more places than its own line.
+- **Justify the guard over the CLASS.** The refusal cannot distinguish a live peer from a dead relay
+  circuit, a half-open TCP link, a vanished peer, or a timed-out mapping — a slot carries no liveness
+  value at all. Enumerating causes (or probing one of them) would have been bypassed by the next
+  variant; superseding on the verified identity is correct for every one of them.
+
+And the arithmetic corollary: once a re-admission is allowed, every admission BUDGET must be re-derived
+for it. `max_connections` must not be charged to a REPLACEMENT (the map does not grow — otherwise a full
+pool strands a peer behind its own stale slot, the same defect one budget further in), and the outbound
+diversity/relayed caps must not be charged to a peer that already occupies the group (an unexempted
+count is off by one, so the LAST relayed peer could never recover from a dead circuit). Both exemptions
+are safe only because they are keyed on the handshake-verified `peer_id`; a net-new identity still faces
+both caps in full, which is why each is pinned from both sides — at-bound admits the re-dial, one-over
+refuses the newcomer.
+
 ## tungstenite's 64 MiB default message cap sits ABOVE every app cap — bound it at the transport (#10)
 
 `tokio_tungstenite::accept_async` / `connect_async_tls_with_config(_, None, ..)` use tungstenite's

@@ -1472,9 +1472,40 @@ under the same held `peers` lock immediately before the insert. The auto-pool pa
 attacker-influenceable surface — its candidates originate from `RespondPeers` — so gating only the
 manual dial would leave the eclipse caps trivially bypassable via automatic peering. On the adoption
 path the check is UNCONDITIONAL: adoption already refuses a duplicate `peer_id` outright, so every
-adopted connection is a net-new identity = net-new outbound occupancy, and there is no
-reconnect-exemption branch (the exemption applies only to `connect_to`, which may re-dial an endpoint
-whose stale slot survives).
+adopted connection is net-new outbound occupancy **unless it is a re-adoption of a peer that already
+holds an outbound slot** (below), which the map already counts.
+
+**`dig-nat` adoption symmetry (normative; #1762).** `GossipHandle::adopt_nat_connection` is the single
+path EVERY `dig-nat` connection — relayed and direct alike — becomes a pool member through, and it too
+MUST NOT refuse an adoption because a slot is already held for that `peer_id` (no
+`DuplicateConnection`): the freshly SPKI-pinned-mTLS-authenticated `dig-nat` session supersedes the
+held slot at insert time, exactly as the inbound (#1691) and `connect_to` (#1703) paths do. A displaced
+`Live` slot has its keepalive aborted and its `Peer` closed; a displaced `Nat`/`Stub` slot carries no
+keepalive and its transport is torn down by being dropped.
+
+The rule is normative over the **CLASS** of stale slots, not any single cause. A peer-map slot carries
+no liveness value to consult (slots are never reaped on disconnect), so a `contains_key` refusal cannot
+distinguish a live peer from a relay circuit whose mTLS failed, a half-open TCP link, a vanished peer,
+or a timed-out mapping. Because relayed and direct adoptions share this one path, such a refusal let a
+DEAD RELAY CIRCUIT block the DIRECT adoption that would have worked — one side logging `duplicate
+connection to peer` while the other reported zero connected peers (observed on the #1062 fleet).
+
+Both admission budgets are exempted **only where the arithmetic requires it**, and every NET-NEW
+identity still faces them in full:
+
+- **`max_connections`** is not charged when the insert REPLACES a held slot for the same `peer_id`
+  (`HashMap::insert` replace-not-grow: the map does not grow, so the cap is already satisfied).
+  Charging it would strand a peer behind its own stale slot whenever the pool is full.
+- **The outbound diversity budgets** (INT-006 `/16`, INT-007 AS, INT-006a relayed-outbound) are not
+  charged when the map already holds an **OUTBOUND** slot under that `peer_id` — the peer already
+  occupies its group / one relayed slot, so re-dialling it is not net-new occupancy; counting it would
+  be an off-by-one that refuses the last relayed peer's own recovery. A held INBOUND (or otherwise
+  non-outbound) slot occupies no outbound budget and therefore earns NO diversity exemption.
+
+Supersession relaxes the duplicate rule ONLY: the self-connection (#1584) and timed-ban (CON-007)
+refusals are evaluated before the insert and are unaffected — a re-adoption is not a route around them.
+All of it is decided under ONE hold of the `peers` lock, the same hold that inserts, so the
+check→insert stays atomic.
 
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
