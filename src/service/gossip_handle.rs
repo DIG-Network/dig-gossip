@@ -1236,6 +1236,36 @@ impl GossipHandle {
                     self.inner.config.max_connections,
                 ));
             }
+            // #1710: the INT-006 (/16) + INT-007 (AS) outbound eclipse caps must gate the AUTO-POOL
+            // adoption path too, not only manual `connect_to`. This is the attacker-influenceable
+            // surface — pool candidates originate from `RespondPeers`, so an adversary can seed many
+            // same-/16 (or same-AS) reservations and, absent this gate, occupy the outbound budget the
+            // diversity caps exist to protect. Unlike `connect_to`, adoption has NO reconnect-exemption
+            // branch: the duplicate-`peer_id` guard above already refuses any slot already held, so
+            // EVERY connection reaching here is a NET-NEW identity = net-new outbound occupancy that
+            // MUST satisfy the caps. Occupancy is derived from `peers` (the #1703 single source of
+            // truth); this gate + the insert run under the SAME `peers`-lock hold, so the check→insert
+            // is atomic (no TOCTOU where two concurrent net-new adoptions into an empty group both pass).
+            if let Some(kind) = crate::service::state::outbound_diversity_conflict(
+                &peers,
+                &self.inner.as_table,
+                peer_id,
+                remote.ip(),
+            ) {
+                let ip = remote.ip();
+                return Err(match kind {
+                    crate::service::state::OutboundDiversityConflict::Subnet => {
+                        GossipError::ConnectionFiltered(format!(
+                            "INT-006: /16 subnet group already has an outbound connection for {ip}"
+                        ))
+                    }
+                    crate::service::state::OutboundDiversityConflict::As => {
+                        GossipError::ConnectionFiltered(format!(
+                            "INT-007: AS already has an outbound connection for {ip}"
+                        ))
+                    }
+                });
+            }
             peers.insert(
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {

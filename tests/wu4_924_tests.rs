@@ -204,7 +204,9 @@ async fn a_relay_transport_peer_is_counted_as_connected() {
     );
     let (relayed, s2) = loopback_nat_conn(
         [2; 32],
-        addr("203.0.113.9:9450"),
+        // Distinct /16 from the direct peer above: this suite tests relay-transport counting/routing,
+        // not the #1710 outbound /16 diversity gate, so the two adopted peers must not share a /16.
+        addr("198.51.100.9:9450"),
         dig_nat::TraversalKind::Relayed,
     );
     handle
@@ -241,7 +243,9 @@ async fn a_relay_transport_peer_is_reported_via_relay() {
     );
     let (relayed, s2) = loopback_nat_conn(
         [4; 32],
-        addr("203.0.113.9:9450"),
+        // Distinct /16 from the direct peer above: this suite tests relay-transport counting/routing,
+        // not the #1710 outbound /16 diversity gate, so the two adopted peers must not share a /16.
+        addr("198.51.100.9:9450"),
         dig_nat::TraversalKind::Relayed,
     );
     let direct_pid = handle

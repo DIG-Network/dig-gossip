@@ -67,8 +67,13 @@ fn loopback_nat_conn(
     (dig_gossip::NatPeerConnection::new(inner), server)
 }
 
+/// A remote address in a DISTINCT `/16` per port. These pool tests exercise adoption/dedup/cap/churn
+/// accounting, NOT the #1710 outbound `/16`+AS diversity gate (that gate has its own regression suite,
+/// `con_1710_autopool_diversity_tests`). Keying the second octet off the port keeps every adopted peer
+/// in its own `/16`, so a test that fills the pool with several peers is not incidentally refused by
+/// the diversity gate. The mapping is deterministic, so churn-event address equality still holds.
 fn addr(n: u16) -> SocketAddr {
-    format!("127.0.0.1:{n}").parse().unwrap()
+    format!("203.{}.0.1:{n}", n & 0xff).parse().unwrap()
 }
 
 // -------------------------------------------------------------------------------------------------
