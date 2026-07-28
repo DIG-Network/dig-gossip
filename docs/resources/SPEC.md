@@ -341,14 +341,17 @@ the two inbound accept paths (`accept_async_with_config`), the outbound peer dia
 (`connect_async_tls_with_config`), AND the relay-discovery dial (`nat::discovery`,
 `connect_async_with_config`) — is constructed with a single explicit bounded
 `WebSocketConfig` (`connection::ws_config()`), NOT tungstenite's defaults. The caps are
-`max_message_size = 32 MiB` ([`WS_MAX_MESSAGE_BYTES`]) and `max_frame_size = 16 MiB`
+`max_message_size = 8 MiB` ([`WS_MAX_MESSAGE_BYTES`]) and `max_frame_size = 8 MiB`
 ([`WS_MAX_FRAME_BYTES`]). tungstenite's default `max_message_size` is **64 MiB**, which sits
 ABOVE every DIG application cap (the reassembler's per-stream `MAX_BUFFERED_BYTES` = 4 MiB and the
 dig-message envelope ceiling): without an explicit transport bound a hostile peer could make
 tungstenite buffer up to 64 MiB PER MESSAGE before any application cap rejects it. The bounded
 config refuses an over-cap frame/message at the transport layer while leaving generous headroom
-(8× the 4 MiB reassembler cap) so no legitimate payload is clipped. Both handshake directions
-share the one `ws_config()` source of truth so the caps cannot drift apart.
+(2× the 4 MiB reassembler cap) so no legitimate payload is clipped. The number of connections that
+can each hold an in-flight WS read buffer is itself bounded by two accept-loop admission gates —
+`max_connections` (default 50) and the audit-#179 `max_inflight_handshakes` semaphore (default 200) —
+so the AGGREGATE in-flight transport-buffer memory is bounded at `(max_connections + max_inflight_handshakes) × WS_MAX_MESSAGE_BYTES ≈ 2 GiB`
+(defaults), regardless of peer count. Both handshake directions share the one `ws_config()` source of truth so the caps cannot drift apart.
 
 **Peer selection / outbound dial candidate ordering:**
 - [`AddressManager::select_peer`] itself is a Bitcoin/Chia-style single-address weighted-random

@@ -25,24 +25,22 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 /// Maximum size (bytes) of a single inbound WebSocket **frame** tungstenite will buffer.
 ///
-/// tungstenite's default is 16 MiB. We pin it explicitly so the bound is a documented
-/// contract rather than a library default that could drift on upgrade. 16 MiB is 4× the
-/// reassembler's per-stream buffer cap ([`crate::MAX_BUFFERED_BYTES`] = 4 MiB) — the largest
-/// legitimate application payload a single frame ever carries — so no legit traffic is
-/// clipped while a hostile frame is refused before allocation.
-pub const WS_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Pinned to 8 MiB = 2× the reassembler's per-stream buffer cap ([`crate::MAX_BUFFERED_BYTES`] = 4 MiB).
+/// tungstenite's default is 16 MiB. We pin it explicitly so the bound is a documented contract
+/// rather than a library default that could drift on upgrade. With tight headroom over the
+/// largest legitimate payload, an over-cap frame is refused at the transport layer before allocation.
+pub const WS_MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum size (bytes) of a single inbound WebSocket **message** tungstenite will buffer
 /// before rejecting it at the transport layer (below any application-level envelope cap).
 ///
-/// tungstenite's default is **64 MiB**, which sits ABOVE every DIG application cap: a hostile
-/// peer could make the transport buffer up to 64 MiB per message before the reassembler's
-/// per-stream cap ([`crate::MAX_BUFFERED_BYTES`] = 4 MiB) — or the dig-message envelope cap
-/// layered above it — ever sees the bytes. We bound it to 32 MiB: 8× headroom over the 4 MiB
-/// reassembler cap (the largest legitimate payload a single message carries in this crate), yet
-/// half the tungstenite default — so an over-cap message is refused by the protocol layer, not
-/// amplified into a per-connection memory DoS.
-pub const WS_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+/// Pinned to 8 MiB = 2× the reassembler's per-stream cap ([`crate::MAX_BUFFERED_BYTES`] = 4 MiB) —
+/// tight headroom, not arbitrary. tungstenite's default is **64 MiB**, which sits ABOVE every DIG
+/// application cap. We bound it to 8 MiB, an 8× reduction from the tungstenite default, so an over-cap
+/// message is refused by the transport layer before allocation. Concurrent connections that can each hold
+/// an in-flight buffer are bounded by `max_connections` + `max_inflight_handshakes` (see `SPEC.md`),
+/// so the AGGREGATE in-flight ceiling is bounded (≈ 2 GiB at defaults).
+pub const WS_MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The single bounded [`WebSocketConfig`] every DIG WebSocket handshake uses — the two inbound
 /// accept paths ([`listener`]), the outbound peer dial ([`outbound`]), and the relay-discovery
@@ -87,5 +85,7 @@ mod ws_config_tests {
         assert!(frame_cap <= message_cap);
         // Headroom over the largest legitimate application payload — nothing legit is clipped.
         assert!(message_cap > crate::MAX_BUFFERED_BYTES);
+        // Message cap is exactly 2× the 4 MiB legit-payload ceiling — tight headroom, not arbitrary.
+        assert_eq!(message_cap, 2 * crate::MAX_BUFFERED_BYTES);
     }
 }
