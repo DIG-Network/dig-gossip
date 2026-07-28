@@ -193,9 +193,12 @@ pub(crate) async fn connect_outbound_peer(
     options: PeerOptions,
 ) -> Result<OutboundConnectResult, ClientError> {
     let uri = format!("wss://{socket_addr}/ws");
+    // Bound the transport buffer on the dial side too (CON-001 / §5.2) so a hostile server
+    // cannot make tungstenite buffer up to its 64 MiB default before an app cap applies —
+    // same single-source-of-truth config as the inbound accept paths.
     let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(
         uri.as_str(),
-        None,
+        Some(crate::connection::ws_config()),
         false,
         Some(connector),
     )

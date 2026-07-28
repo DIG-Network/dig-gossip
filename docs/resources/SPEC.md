@@ -336,6 +336,19 @@ ordering preference.
 - An explicit IPv4 `listen_addr` (e.g. `127.0.0.1:0` in tests) is bound as a plain IPv4 socket;
   `IPV6_V6ONLY` is only meaningful for — and only touched for — an IPv6 bind address.
 
+**WebSocket transport size caps (CON-002 / §5.2 DoS hardening):** every WebSocket handshake —
+both inbound accept paths (`accept_async_with_config`) AND the outbound dial
+(`connect_async_tls_with_config`) — is constructed with a single explicit bounded
+`WebSocketConfig` (`connection::ws_config()`), NOT tungstenite's defaults. The caps are
+`max_message_size = 32 MiB` ([`WS_MAX_MESSAGE_BYTES`]) and `max_frame_size = 16 MiB`
+([`WS_MAX_FRAME_BYTES`]). tungstenite's default `max_message_size` is **64 MiB**, which sits
+ABOVE every DIG application cap (the reassembler's per-stream `MAX_BUFFERED_BYTES` = 4 MiB and the
+dig-message envelope ceiling): without an explicit transport bound a hostile peer could make
+tungstenite buffer up to 64 MiB PER MESSAGE before any application cap rejects it. The bounded
+config refuses an over-cap frame/message at the transport layer while leaving generous headroom
+(8× the 4 MiB reassembler cap) so no legitimate payload is clipped. Both handshake directions
+share the one `ws_config()` source of truth so the caps cannot drift apart.
+
 **Peer selection / outbound dial candidate ordering:**
 - [`AddressManager::select_peer`] itself is a Bitcoin/Chia-style single-address weighted-random
   draw over the whole address book and is family-blind by design (this is unchanged — the
