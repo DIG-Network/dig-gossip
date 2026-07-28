@@ -31,10 +31,12 @@ and algorithms exist but are not connected to the live message flow.
 
 ## §2 Connection Filtering Integration
 
-<a id="INT-006"></a>**INT-006** `GossipHandle::connect_to()` MUST check `/16 SubnetGroupFilter` before establishing outbound connection. Reject if group already has outbound. SPEC §6.4 item 3, DSC-011.
+<a id="INT-006"></a>**INT-006** DIRECT-tier outbound connections (`GossipHandle::connect_to()` + non-relayed `adopt_nat_connection`) MUST check `/16 SubnetGroupFilter` before establishing the connection. Reject if the group already has a DIRECT-tier outbound. Relayed-tier outbound is EXEMPT (INT-006a) — a relayed slot's remote address is the relay endpoint, not a peer address, so it carries no meaningful /16 group and neither occupies one nor is checked against one. SPEC §6.4 item 3, DSC-011.
 > **Spec:** [`INT-006.md`](specs/INT-006.md)
 
-<a id="INT-007"></a>**INT-007** `GossipHandle::connect_to()` MUST check `AsDiversityFilter` after /16 filter. Reject if AS already has outbound. SPEC §6.4 item 3, DSC-010.
+<a id="INT-006a"></a>**INT-006a** Relayed-tier (`TraversalKind::Relayed`) outbound connections are EXEMPT from the /16 (INT-006) + AS (INT-007) diversity caps — the relay endpoint carries no routable peer address, so keying the cap on it collapses every relayed peer into one group (zero eclipse value + a self-throttle to a single relayed peer). Relayed outbound is instead bounded by `max_relayed_outbound = target_outbound_count - max(target_outbound_count/4, 1)` (6 with the default target of 8), enforced in `adopt_nat_connection` under the same `peers`-lock hold as the insert. This keeps the relayed tier open for NAT'd nodes while reserving ≥`max(target/4,1)` outbound slots for the diversity-checked non-relayed tier and closing the relayed-Sybil-flood window. SPEC §6.4 item 3.
+
+<a id="INT-007"></a>**INT-007** DIRECT-tier outbound connections MUST check `AsDiversityFilter` after the /16 filter. Reject if the AS already has a DIRECT-tier outbound. Relayed-tier outbound is EXEMPT (INT-006a). SPEC §6.4 item 3, DSC-010.
 > **Spec:** [`INT-007.md`](specs/INT-007.md)
 
 ---

@@ -254,6 +254,21 @@ fn min_direct_peers(cfg: &PeerPoolConfig) -> usize {
     (cfg.target_peers / 4).max(1)
 }
 
+/// The maximum number of RELAYED-tier outbound connections the pool admits (#1716).
+///
+/// Relayed peers are exempt from the /16//AS diversity cap ([`outbound_diversity_conflict`] returns
+/// `None` for them) because their `remote_addr` is the relay endpoint, not a routable peer address —
+/// so the cap gives zero eclipse value on that tier. Left wholly ungated, though, a Sybil could flood
+/// the outbound budget with relayed reservations. This bound keeps the relayed tier open (a NAT'd node
+/// can hold several relayed peers) while RESERVING at least `target_outbound_count - max_relayed_outbound`
+/// (≥2 with the default 8) outbound slots for diversity-checked non-relayed peers.
+///
+/// Mirrors the #870 direct-floor derivation (`target/4`, min 1): reserve a quarter of the outbound
+/// budget for the diversity-checked tier, cap the rest as relayed → **6** with the default target of 8.
+pub(crate) fn max_relayed_outbound(target_outbound_count: usize) -> usize {
+    target_outbound_count.saturating_sub((target_outbound_count / 4).max(1))
+}
+
 /// Free-slot budget that lets relay-reachable peers reduce redundant direct dialing WITHOUT letting
 /// them starve direct dialing below [`min_direct_peers`].
 ///
@@ -545,6 +560,24 @@ mod tests {
 
     fn addr(n: u16) -> SocketAddr {
         format!("127.0.0.1:{n}").parse().unwrap()
+    }
+
+    /// **#1716:** the relayed-outbound cap reserves ≥`target/4` (min 1) slots for the diversity-checked
+    /// tier — 6 of 8 with the default target, and never underflows for tiny/zero targets.
+    #[test]
+    fn max_relayed_outbound_reserves_a_quarter_for_the_direct_tier() {
+        assert_eq!(
+            max_relayed_outbound(8),
+            6,
+            "default target 8 → 6 relayed, 2 reserved"
+        );
+        assert_eq!(max_relayed_outbound(4), 3);
+        assert_eq!(
+            max_relayed_outbound(1),
+            0,
+            "a single-slot target reserves it for diversity"
+        );
+        assert_eq!(max_relayed_outbound(0), 0);
     }
 
     fn cfg(min: usize, target: usize, max: usize) -> PeerPoolConfig {

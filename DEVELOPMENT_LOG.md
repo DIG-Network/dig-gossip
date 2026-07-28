@@ -2,6 +2,26 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## The /16+AS eclipse cap is meaningless on the RELAYED tier — exempt it, bound the tier instead (#1716)
+
+- The v0.17.4 diversity gate keyed INT-006(/16) + INT-007(AS) on `conn.remote_addr()`. For a RELAYED
+  `dig-nat` link that address is the RELAY ENDPOINT (dig-nat by design — the mTLS session runs over the
+  relay), NOT the peer's own routable address (a NAT'd peer has none). So the cap gave ZERO eclipse
+  value on that tier (all relayed peers share the relay's /16) while doing two kinds of harm: every
+  relayed peer collapsed into ONE /16 group → at most ONE relayed outbound peer could be adopted (a
+  self-throttle that strands NAT'd nodes on a single relayed link), AND a relayed slot's relay-IP group
+  wrongly BLOCKED a direct candidate that happened to share the relay's /16.
+- Fix (#1716): relayed adoptions are EXEMPT from the /16//AS cap — `outbound_diversity_conflict` takes a
+  `candidate_is_relayed` flag and returns `None` for it, and the occupancy scan excludes relayed slots
+  (`is_relayed` = `PeerSlot::Nat(n)` with `n.method == TraversalKind::Relayed`) so a relayed slot no
+  longer counts against any group. The cap still fully applies to Direct/UPnP/NAT-PMP/PCP/HolePunch
+  (real remotes).
+- But a wholly-ungated relayed tier is a Sybil-flood window (relay reservations are cheap), so the tier
+  gets its OWN bound: `max_relayed_outbound = target_outbound_count − max(target_outbound_count/4, 1)`
+  (mirrors the #870 direct-floor derivation → 6 with the default target of 8), enforced in
+  `adopt_nat_connection` under the SAME `peers`-lock hold as the insert (atomic, no TOCTOU). It reserves
+  ≥2 outbound slots for the diversity-checked non-relayed tier. Rejection code: INT-006a.
+
 ## The outbound /16+AS eclipse cap must gate the AUTO-POOL adoption path, not only manual connect_to (#1710)
 
 - The INT-006 (/16) + INT-007 (AS) outbound diversity caps shipped in v0.17.2 were enforced ONLY in
