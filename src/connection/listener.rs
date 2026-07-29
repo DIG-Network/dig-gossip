@@ -846,12 +846,11 @@ where
                         })
                         .unwrap_or(true);
                     if !allowed {
-                        // Drop the frame unconditionally (the #1720 per-connection cap), but only
-                        // charge a reputation penalty when the opcode is not a public flood — a
-                        // forwarder of a 221/222 flood is not its origin (#1626).
-                        if crate::connection::inbound_limits::rejected_frame_incurs_penalty(
-                            msg.msg_type,
-                        ) {
+                        // Drop the frame unconditionally (the #1720 per-connection cap), but charge a
+                        // reputation penalty only when attributable to this connection: a size-
+                        // violating frame always, but an over-cap public flood (221/222) is exempt —
+                        // its delivering peer is a forwarder, not the origin (#1626, #1796).
+                        if crate::connection::inbound_limits::rejected_frame_incurs_penalty(&msg) {
                             apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
                         }
                         continue;

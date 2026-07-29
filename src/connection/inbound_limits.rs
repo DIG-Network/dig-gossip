@@ -87,7 +87,9 @@ pub(crate) fn inbound_gate_allows(guard: &mut RateLimiter, msg: &Message) -> boo
 /// is kept in lockstep with the canonical public-flood grouping in
 /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) — both name exactly
 /// `StoreMelted | HoldingsAnnounce` — so the two lists cannot drift (a guard test enumerates the wire
-/// enum to prove it). It exists as the single source of truth for the #1626 penalty exemption below.
+/// enum to prove it). It is the single source of truth for the SET of flood opcodes the #1626/#1796
+/// penalty exemption applies to (the exemption itself is further narrowed to RATE violations — see
+/// [`rejected_frame_incurs_penalty`]).
 pub(crate) fn is_public_flood_opcode(msg_type: ProtocolMessageTypes) -> bool {
     matches!(
         msg_type as u8,
@@ -101,15 +103,40 @@ pub(crate) fn is_public_flood_opcode(msg_type: ProtocolMessageTypes) -> bool {
 /// the delivering peer, versus being dropped silently.
 ///
 /// A rejected frame is ALWAYS dropped (the #1720 per-connection cap counts pre-verify frames,
-/// eager duplicates included). It additionally incurs a penalty ONLY when it is not a public-flood
-/// opcode. On a multi-hop public flood (221/222) the delivering connection is a **forwarder, not the
-/// origin**, so charging it would ban honest relayers by false attribution (#1626) — a single hostile
-/// origin could get every peer that redistributes its over-cap flood banned. Dropping the excess frame
-/// alone is graceful: the receiver's seen-set, Plumtree eager/lazy redundancy, and the periodic
-/// re-announce all recover the message without the delivering peer being punished. The exemption is
-/// deliberately opcode-scoped — every other over-cap opcode is still penalised as before.
-pub(crate) fn rejected_frame_incurs_penalty(msg_type: ProtocolMessageTypes) -> bool {
-    !is_public_flood_opcode(msg_type)
+/// eager duplicates included). Whether it ALSO incurs a penalty is scoped by BOTH the opcode AND the
+/// KIND of violation (#1796):
+///
+/// - A **non-flood** opcode is always penalised on rejection (unchanged).
+/// - A **public-flood** opcode (221/222) is penalised ONLY when the frame is a SIZE/format violation
+///   (`exceeds_dig_wire_max_size`). An over-cap RATE/frequency rejection of a legit-sized flood stays
+///   EXEMPT: on a multi-hop public flood the delivering connection is a **forwarder, not the origin**,
+///   so charging it for redistributing another host's over-cap flood would ban honest relayers by
+///   false attribution (#1626). But an OVERSIZED flood frame is not a forwarding artefact — no honest
+///   relayer emits a frame larger than the enforced bound — so it is origin-attributable and IS
+///   penalised.
+///
+/// Dropping an over-cap (rate) flood frame alone is graceful: the receiver's seen-set, Plumtree
+/// eager/lazy redundancy, and the periodic re-announce all recover the message without the delivering
+/// peer being punished. The exemption is thus opcode + violation-kind scoped, not opcode-only.
+pub(crate) fn rejected_frame_incurs_penalty(msg: &Message) -> bool {
+    if is_public_flood_opcode(msg.msg_type) {
+        // Flood opcode: exempt for an over-cap RATE rejection, penalised for a SIZE violation.
+        exceeds_dig_wire_max_size(msg)
+    } else {
+        true
+    }
+}
+
+/// Whether `msg`'s payload exceeds the single-frame `max_size` its opcode's
+/// [`dig_extension_rate_limits_map`] row declares — i.e. the rejection is a SIZE/format violation
+/// rather than a rate/frequency one. The row is the SINGLE SOURCE OF TRUTH for the bound (never a
+/// hardcoded literal); an opcode with no row cannot exceed a bound it doesn't have, so returns
+/// `false` (unreachable for 221/222 — the completeness guard pins their rows).
+fn exceeds_dig_wire_max_size(msg: &Message) -> bool {
+    dig_extension_rate_limits_map()
+        .get(&(msg.msg_type as u8))
+        .map(|row| (msg.data.len() as f64) > row.max_size)
+        .unwrap_or(false)
 }
 
 /// Table from [`CON-005.md`](../../../docs/requirements/domains/connection/specs/CON-005.md) §DIG Extension Rate Limits.
@@ -168,9 +195,15 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
     // ingress like `ValidatorAnnounce`: a peer cannot flood store-melt announcements. Keyed by the
     // raw opcode (221 is a `ProtocolMessageTypes` variant in the vendored fork, not a
     // `DigMessageType`); the `dig_wire` map is `u8 -> RateLimit`, so the bound applies uniformly.
+    //
+    // #1801 — `max_size` = `store_melted::ENCODED_LEN` (164 B), the EXACT enforced frame bound: a
+    // StoreMelted announce is a fixed-length wire message that `StoreMeltedAnnounce::decode` accepts
+    // only at exactly `ENCODED_LEN`, so every legit frame is provably `<= max_size` and never
+    // hard-dropped, while any larger 221 frame is a size violation. Referencing the const keeps the
+    // limiter and the enforced bound from drifting (mirrors the 222 tie to `MAX_ANNOUNCE_FRAME_BYTES`).
     m.insert(
         crate::service::store_melted::STORE_MELTED,
-        RateLimit::new(10.0, 4096.0, None),
+        RateLimit::new(10.0, crate::service::store_melted::ENCODED_LEN as f64, None),
     );
     // #1720 — holdings-announce (opcode 222) is a signed, periodic public-discovery broadcast that
     // any internet host can send, and its P-256 signature verify (`verify_holdings_announce`) runs on
@@ -357,7 +390,7 @@ mod tests {
             "21st 222 must be DROPPED by the REAL gate (#1720 cap intact)"
         );
         assert!(
-            !rejected_frame_incurs_penalty(over_cap.msg_type),
+            !rejected_frame_incurs_penalty(&over_cap),
             "a dropped 222 public flood must NOT charge a reputation penalty (#1626)"
         );
     }
@@ -389,7 +422,7 @@ mod tests {
             "11th 221 must be DROPPED by the REAL gate (#1316 cap intact)"
         );
         assert!(
-            !rejected_frame_incurs_penalty(over_cap.msg_type),
+            !rejected_frame_incurs_penalty(&over_cap),
             "a dropped 221 public flood must NOT charge a reputation penalty (#1626)"
         );
     }
@@ -414,8 +447,74 @@ mod tests {
         }
         let rejected = rejected.expect("a Handshake flood must eventually exceed its inbound cap");
         assert!(
-            rejected_frame_incurs_penalty(rejected.msg_type),
+            rejected_frame_incurs_penalty(&rejected),
             "a non-flood over-cap opcode MUST still be penalised (#1626 exemption is opcode-scoped)"
+        );
+    }
+
+    /// #1720 — an oversized 222 (HoldingsAnnounce) frame — one whose payload EXCEEDS
+    /// `MAX_ANNOUNCE_FRAME_BYTES` — is a SIZE/format violation, attributable to the delivering
+    /// connection itself, so it is dropped AND penalised (a forwarder never legitimately relays a
+    /// frame larger than the enforced bound).
+    ///
+    /// RED before #1796: the penalty was opcode-only, exempting ALL 221/222 rejections regardless of
+    /// WHY, so an oversized flood frame escaped attribution.
+    #[test]
+    fn oversized_holdings_announce_222_is_penalised() {
+        let over_size = Message {
+            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            id: None,
+            data: Bytes::new(vec![
+                0u8;
+                crate::service::holdings_announce::MAX_ANNOUNCE_FRAME_BYTES
+                    + 1
+            ]),
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        assert!(
+            !inbound_gate_allows(&mut guard, &over_size),
+            "an oversized 222 frame must be rejected by the REAL gate (size cap)"
+        );
+        assert!(
+            rejected_frame_incurs_penalty(&over_size),
+            "an oversized (size-violating) 222 flood is origin-attributable and MUST be penalised"
+        );
+    }
+
+    /// #1801 / #1796 — an oversized 221 (StoreMelted) frame — payload EXCEEDS `ENCODED_LEN` (164 B) —
+    /// is a SIZE violation → dropped AND penalised. Mirrors the 222 case.
+    ///
+    /// RED before #1796: opcode-only exemption let it escape the penalty.
+    #[test]
+    fn oversized_store_melted_221_is_penalised() {
+        let over_size = Message {
+            msg_type: ProtocolMessageTypes::StoreMelted,
+            id: None,
+            data: Bytes::new(vec![0u8; crate::service::store_melted::ENCODED_LEN + 1]),
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        assert!(
+            !inbound_gate_allows(&mut guard, &over_size),
+            "an oversized 221 frame must be rejected by the REAL gate (size cap)"
+        );
+        assert!(
+            rejected_frame_incurs_penalty(&over_size),
+            "an oversized (size-violating) 221 flood is origin-attributable and MUST be penalised"
+        );
+    }
+
+    /// #1801 — the opcode-221 `max_size` MUST equal the enforced `ENCODED_LEN` (164 B) frame bound,
+    /// mirroring the 222 tie to `MAX_ANNOUNCE_FRAME_BYTES`: the limiter row references that const, so
+    /// a legit fixed-size StoreMelted announce is provably within the cap and never hard-dropped.
+    #[test]
+    fn store_melted_221_max_size_ties_to_enforced_frame_bound() {
+        let limits = dig_extension_rate_limits_map();
+        let row = limits
+            .get(&crate::service::store_melted::STORE_MELTED)
+            .expect("opcode 221 has a dig_wire row");
+        assert_eq!(
+            row.max_size,
+            crate::service::store_melted::ENCODED_LEN as f64
         );
     }
 
