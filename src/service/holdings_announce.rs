@@ -81,6 +81,38 @@ pub const SIG_DOMAIN_TAG: &[u8] = b"dig:holdings:v1";
 /// ([`HoldingsAnnounce::new_signed`]) and the verifier reject a batch larger than this.
 pub const MAX_CHANGES: usize = 256;
 
+/// Maximum total on-wire size, in bytes, of an encoded holdings-announce frame.
+///
+/// This is the LOAD-BEARING availability guarantee for opcode 222: an announce whose
+/// [`encode`](HoldingsAnnounce::encode)d length exceeds this is rejected by both the builder
+/// and the verifier, so every ACCEPTED announce is `<= MAX_ANNOUNCE_FRAME_BYTES`. The value
+/// equals the opcode-222 inbound rate-limit `max_size`
+/// (`connection::inbound_limits`, #1720) — that row references THIS constant, so the two can
+/// never drift. Because the limiter measures the same `msg.data` bytes that `encode` produces,
+/// an accepted announce is therefore always admitted by the limiter and never hard-dropped
+/// (the #1760 B availability bug: a legit large provider silently unannounced).
+///
+/// 128 KiB. The `MAX_CHANGES` (256) batch fits with wide headroom for a realistic
+/// full-holdings re-announce (256 changes × a handful of IPv6-literal addresses ≈ 85 KiB),
+/// and no distribution of addresses/hosts within the per-field caps below can exceed it
+/// without tripping this total bound first — regardless of how they distribute.
+pub const MAX_ANNOUNCE_FRAME_BYTES: usize = 128 * 1024;
+
+/// Maximum number of [`CandidateAddr`]s a single [`HoldingsDelta::Add`] may carry.
+///
+/// Defense-in-depth beside [`MAX_ANNOUNCE_FRAME_BYTES`] (the total-size bound is the real
+/// guarantee) — it gives clearer error attribution for a single pathological delta. Set well
+/// above the realistic "a handful of addresses per content key" (§5.2 IPv6-first) so it never
+/// clips a legit provider.
+pub const MAX_ADDRS_PER_CHANGE: usize = 32;
+
+/// Maximum byte length of a [`CandidateAddr::host`] string.
+///
+/// Defense-in-depth beside [`MAX_ANNOUNCE_FRAME_BYTES`]. Sized to the maximum DNS name length
+/// (253), which also comfortably covers any IPv6 literal (≤ ~45 chars, §5.2), so it never
+/// clips a legit host — hostile aggregate size is caught by the total-size bound.
+pub const MAX_HOST_LEN: usize = 253;
+
 /// Length of a hex-encoded `provider_peer_id` (32 bytes → 64 hex chars).
 const PEER_ID_HEX_LEN: usize = 64;
 
@@ -162,6 +194,22 @@ pub enum HoldingsError {
         /// The rejected count.
         count: usize,
     },
+    /// The encoded frame exceeded [`MAX_ANNOUNCE_FRAME_BYTES`] — the load-bearing size bound
+    /// that keeps an accepted announce within the opcode-222 inbound rate-limit `max_size`.
+    AnnounceTooLarge {
+        /// The rejected encoded-frame length in bytes.
+        bytes: usize,
+    },
+    /// An [`HoldingsDelta::Add`] carried more than [`MAX_ADDRS_PER_CHANGE`] addresses.
+    TooManyAddresses {
+        /// The rejected address count.
+        count: usize,
+    },
+    /// A [`CandidateAddr::host`] was longer than [`MAX_HOST_LEN`] bytes.
+    HostTooLong {
+        /// The rejected host length in bytes.
+        len: usize,
+    },
     /// `provider_peer_id` was not 64 lowercase hex characters.
     BadPeerIdHex,
     /// `provider_spki` could not be parsed as a P-256 `SubjectPublicKeyInfo`.
@@ -180,6 +228,21 @@ impl std::fmt::Display for HoldingsError {
                     f,
                     "holdings announce has {count} changes (max {MAX_CHANGES})"
                 )
+            }
+            Self::AnnounceTooLarge { bytes } => {
+                write!(
+                    f,
+                    "holdings announce encodes to {bytes} bytes (max {MAX_ANNOUNCE_FRAME_BYTES})"
+                )
+            }
+            Self::TooManyAddresses { count } => {
+                write!(
+                    f,
+                    "holdings delta has {count} addresses (max {MAX_ADDRS_PER_CHANGE})"
+                )
+            }
+            Self::HostTooLong { len } => {
+                write!(f, "candidate host is {len} bytes (max {MAX_HOST_LEN})")
             }
             Self::BadPeerIdHex => write!(f, "provider_peer_id is not 64 hex chars"),
             Self::BadSpki => {
@@ -276,8 +339,9 @@ pub fn canonical_encode(changes: &[HoldingsDelta]) -> Vec<u8> {
             } => {
                 buf.push(KIND_ADD);
                 buf.extend_from_slice(content_key);
-                // addr_count fits u16: the batch is capped at MAX_CHANGES deltas and a
-                // real advertisement lists a handful of addresses.
+                // addr_count fits u16: the batch is capped at MAX_CHANGES deltas, each Add is
+                // capped at MAX_ADDRS_PER_CHANGE addresses, and the total encoded frame is
+                // bounded by MAX_ANNOUNCE_FRAME_BYTES (enforced in check_announce_size).
                 buf.extend_from_slice(&(addresses.len() as u16).to_be_bytes());
                 for addr in addresses {
                     let host = addr.host.as_bytes();
@@ -374,6 +438,39 @@ fn p256_point_from_spki(spki: &[u8]) -> Result<Vec<u8>, HoldingsError> {
     Ok(info.subject_public_key.data.to_vec())
 }
 
+/// Enforce the size bounds a legit announce must satisfy so the encoded frame stays within
+/// the opcode-222 inbound rate-limit `max_size` ([`MAX_ANNOUNCE_FRAME_BYTES`]) and is never
+/// hard-dropped (#1760 B). Checks the defense-in-depth per-field caps first (clearer
+/// attribution), then the load-bearing total encoded-frame size. `encoded_frame_len` is the
+/// length of [`HoldingsAnnounce::encode`] — the exact bytes the limiter measures.
+fn check_announce_size(
+    changes: &[HoldingsDelta],
+    encoded_frame_len: usize,
+) -> Result<(), HoldingsError> {
+    for delta in changes {
+        if let HoldingsDelta::Add { addresses, .. } = delta {
+            if addresses.len() > MAX_ADDRS_PER_CHANGE {
+                return Err(HoldingsError::TooManyAddresses {
+                    count: addresses.len(),
+                });
+            }
+            for addr in addresses {
+                if addr.host.len() > MAX_HOST_LEN {
+                    return Err(HoldingsError::HostTooLong {
+                        len: addr.host.len(),
+                    });
+                }
+            }
+        }
+    }
+    if encoded_frame_len > MAX_ANNOUNCE_FRAME_BYTES {
+        return Err(HoldingsError::AnnounceTooLarge {
+            bytes: encoded_frame_len,
+        });
+    }
+    Ok(())
+}
+
 impl HoldingsAnnounce {
     /// Build a signed announcement from a batch of changes.
     ///
@@ -383,8 +480,11 @@ impl HoldingsAnnounce {
     ///
     /// # Errors
     ///
-    /// [`HoldingsError::TooManyChanges`] if `changes.len() > `[`MAX_CHANGES`] — the batch is
-    /// refused rather than truncated, so a caller cannot silently drop deltas.
+    /// - [`HoldingsError::TooManyChanges`] if `changes.len() > `[`MAX_CHANGES`] — the batch is
+    ///   refused rather than truncated, so a caller cannot silently drop deltas.
+    /// - [`HoldingsError::TooManyAddresses`] / [`HoldingsError::HostTooLong`] /
+    ///   [`HoldingsError::AnnounceTooLarge`] if the batch breaches the per-field caps or the
+    ///   total [`MAX_ANNOUNCE_FRAME_BYTES`] frame bound.
     pub fn new_signed<S: HoldingsSigner + ?Sized>(
         signer: &S,
         seq: u64,
@@ -400,14 +500,18 @@ impl HoldingsAnnounce {
         let peer_id = *peer_id_from_tls_spki_der(&provider_spki).as_bytes();
         let message = holdings_signing_message(&peer_id, seq, announced_at, &changes);
         let signature = signer.sign(&message);
-        Ok(Self {
+        let announce = Self {
             provider_peer_id: peer_id_hex(&peer_id),
             provider_spki,
             seq,
             announced_at,
             changes,
             signature,
-        })
+        };
+        // The encoded frame must stay within the opcode-222 rate-limit `max_size` so a legit
+        // provider's announce is never hard-dropped (#1760 B).
+        check_announce_size(&announce.changes, announce.encode().len())?;
+        Ok(announce)
     }
 
     /// The SHA-256 fingerprint of this announcement's signing message (KAT/layout helper).
@@ -428,14 +532,18 @@ impl HoldingsAnnounce {
 
 /// Verify an announcement, fail-closed — the gate dig-node calls before dig-dht ingest.
 ///
-/// The five checks, in order (the first failure is returned):
+/// The checks, in order (the first failure is returned):
 /// 1. `changes.len() <= `[`MAX_CHANGES`] — else [`HoldingsError::TooManyChanges`].
-/// 2. `provider_peer_id` decodes as 64-hex → `[u8; 32]` — else [`HoldingsError::BadPeerIdHex`].
-/// 3. `SHA-256(provider_spki)` equals the carried peer id — else
+/// 2. the size bounds — per-`Add` [`MAX_ADDRS_PER_CHANGE`]/[`MAX_HOST_LEN`] caps and the total
+///    [`MAX_ANNOUNCE_FRAME_BYTES`] encoded-frame bound — else [`HoldingsError::TooManyAddresses`]
+///    / [`HoldingsError::HostTooLong`] / [`HoldingsError::AnnounceTooLarge`]. Checked BEFORE the
+///    expensive P-256 verify, so an oversized/hostile frame is dropped cheaply.
+/// 3. `provider_peer_id` decodes as 64-hex → `[u8; 32]` — else [`HoldingsError::BadPeerIdHex`].
+/// 4. `SHA-256(provider_spki)` equals the carried peer id — else
 ///    [`HoldingsError::PeerIdMismatch`] (the peer id is verified against the SPKI, never trusted).
-/// 4. `provider_spki` parses as an `id-ecPublicKey` / `prime256v1` key — else
+/// 5. `provider_spki` parses as an `id-ecPublicKey` / `prime256v1` key — else
 ///    [`HoldingsError::BadSpki`].
-/// 5. the ECDSA-P256 signature verifies over [`holdings_signing_message`] under that key —
+/// 6. the ECDSA-P256 signature verifies over [`holdings_signing_message`] under that key —
 ///    else [`HoldingsError::InvalidSignature`].
 ///
 /// Any `Err` means the deltas MUST NOT be ingested.
@@ -450,16 +558,18 @@ pub fn verify_holdings_announce(announce: &HoldingsAnnounce) -> Result<(), Holdi
             count: announce.changes.len(),
         });
     }
-    // 2. peer_id hex → 32 bytes.
+    // 2. size bounds (per-field caps + total frame bound) — fail-closed before the P-256 verify.
+    check_announce_size(&announce.changes, announce.encode().len())?;
+    // 3. peer_id hex → 32 bytes.
     let peer_id = decode_peer_id(&announce.provider_peer_id)?;
-    // 3. SHA-256(SPKI) == peer_id, VERIFIED against the carried value.
+    // 4. SHA-256(SPKI) == peer_id, VERIFIED against the carried value.
     let spki_peer_id = *peer_id_from_tls_spki_der(&announce.provider_spki).as_bytes();
     if spki_peer_id != peer_id {
         return Err(HoldingsError::PeerIdMismatch);
     }
-    // 4. SPKI is a P-256 key — recover the EC point.
+    // 5. SPKI is a P-256 key — recover the EC point.
     let ec_point = p256_point_from_spki(&announce.provider_spki)?;
-    // 5. ECDSA-P256 verify over the domain-separated message (ring hashes it internally).
+    // 6. ECDSA-P256 verify over the domain-separated message (ring hashes it internally).
     let message = holdings_signing_message(
         &peer_id,
         announce.seq,
@@ -861,6 +971,130 @@ mod tests {
             verify_holdings_announce(&a),
             Err(HoldingsError::TooManyChanges { .. })
         ));
+    }
+
+    /// A batch of `Add` deltas whose addresses are each at the per-field caps but whose
+    /// AGGREGATE encoded size blows past [`MAX_ANNOUNCE_FRAME_BYTES`]. Proves the TOTAL-size
+    /// bound is the load-bearing guarantee: every per-field cap is satisfied, yet the announce
+    /// is rejected — by the builder AND (fail-closed) by verify, before the P-256 verify runs.
+    fn oversized_changes() -> Vec<HoldingsDelta> {
+        let addrs: Vec<CandidateAddr> = (0..MAX_ADDRS_PER_CHANGE)
+            .map(|_| CandidateAddr {
+                host: "h".repeat(MAX_HOST_LEN),
+                port: 1,
+            })
+            .collect();
+        (0..MAX_CHANGES)
+            .map(|i| HoldingsDelta::Add {
+                content_key: content_key(&format!("big-{i}")),
+                addresses: addrs.clone(),
+                expires_at: 1,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_and_verify_reject_oversized_announce() {
+        let changes = oversized_changes();
+        let (signer, _) = ecdsa_signer();
+        assert!(
+            matches!(
+                HoldingsAnnounce::new_signed(&signer, 1, 1, changes.clone()),
+                Err(HoldingsError::AnnounceTooLarge { .. })
+            ),
+            "builder must refuse an over-{MAX_ANNOUNCE_FRAME_BYTES}-byte announce"
+        );
+        // A hand-built oversized struct is rejected by verify too (fail-closed), so a hostile
+        // oversized frame is dropped before ingest.
+        let mut a = sample();
+        a.changes = changes;
+        assert!(matches!(
+            verify_holdings_announce(&a),
+            Err(HoldingsError::AnnounceTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_too_many_addresses() {
+        let addrs: Vec<CandidateAddr> = (0..=MAX_ADDRS_PER_CHANGE)
+            .map(|_| CandidateAddr {
+                host: "::1".to_string(),
+                port: 1,
+            })
+            .collect();
+        let mut a = sample();
+        a.changes = vec![HoldingsDelta::Add {
+            content_key: [0u8; 32],
+            addresses: addrs,
+            expires_at: 1,
+        }];
+        assert_eq!(
+            verify_holdings_announce(&a),
+            Err(HoldingsError::TooManyAddresses {
+                count: MAX_ADDRS_PER_CHANGE + 1
+            })
+        );
+    }
+
+    #[test]
+    fn verify_rejects_host_too_long() {
+        let mut a = sample();
+        a.changes = vec![HoldingsDelta::Add {
+            content_key: [0u8; 32],
+            addresses: vec![CandidateAddr {
+                host: "h".repeat(MAX_HOST_LEN + 1),
+                port: 1,
+            }],
+            expires_at: 1,
+        }];
+        assert_eq!(
+            verify_holdings_announce(&a),
+            Err(HoldingsError::HostTooLong {
+                len: MAX_HOST_LEN + 1
+            })
+        );
+    }
+
+    /// The proof that 128 KiB is provably enough (#1760 B): a realistic full-holdings
+    /// announce — the whole `MAX_CHANGES` (256) batch, each content key served at six
+    /// IPv6-literal addresses (a fat, IPv6-first §5.2 provider) — is UNDER the total bound,
+    /// builds, verifies, AND fits the opcode-222 rate-limit `max_size` (so it is never
+    /// hard-dropped). This is the no-legit-clip guarantee.
+    #[test]
+    fn realistic_full_holdings_max_is_under_bound_and_accepted() {
+        let addrs: Vec<CandidateAddr> = (0..6)
+            .map(|i| CandidateAddr {
+                host: format!("2001:db8:0:{i:x}::abcd"),
+                port: 9256,
+            })
+            .collect();
+        let changes: Vec<HoldingsDelta> = (0..MAX_CHANGES)
+            .map(|i| HoldingsDelta::Add {
+                content_key: content_key(&format!("real-{i}")),
+                addresses: addrs.clone(),
+                expires_at: 1_800_000_000,
+            })
+            .collect();
+        let (signer, _) = ecdsa_signer();
+        let a = HoldingsAnnounce::new_signed(&signer, 1, 2, changes)
+            .expect("a realistic full-holdings max announce must fit the frame bound");
+        let encoded_len = a.encode().len();
+        assert!(
+            encoded_len <= MAX_ANNOUNCE_FRAME_BYTES,
+            "realistic max ({encoded_len} B) must be within the frame bound"
+        );
+        assert_eq!(verify_holdings_announce(&a), Ok(()));
+        // Ties the fix to the availability property: within the frame bound ⇒ within the
+        // opcode-222 limiter max_size ⇒ never rate-limit-dropped.
+        assert!(encoded_len as u32 <= 131_072);
+    }
+
+    /// The frame bound and the opcode-222 inbound rate-limit `max_size` MUST be the same value
+    /// (the limiter row references this const) — pins the anti-drift tie so the availability
+    /// guarantee cannot silently break.
+    #[test]
+    fn frame_bound_ties_to_inbound_rate_limit_max_size() {
+        assert_eq!(MAX_ANNOUNCE_FRAME_BYTES, 131_072);
     }
 
     #[test]

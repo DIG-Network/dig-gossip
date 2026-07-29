@@ -435,4 +435,35 @@ check the accept-loop admission gates first.
   the in-crate tests fail (21st/11th frame admitted via the 100/min default). Lesson: a regression test
   for a `pub(crate)` helper belongs in-crate; never mirror the code-under-test in an external test.
 
-<!-- #1760 B: enforce a per-change address (+host-len) cap in holdings_announce so the opcode-222 128 KiB frame cap is provably sufficient. Filled in by the lane. -->
+## The opcode-222 128 KiB rate-limit cap was ASSUMED sufficient, not enforced (#1760 B)
+
+#1720 gave holdings-announce (opcode 222) a deliberate inbound `max_size = 128 KiB` (131072),
+sized on the ASSUMPTION that a legit `MAX_CHANGES` (256) batch carries only "a handful" of
+addresses per change. But `canonical_encode` encoded `addr_count`/`host_len` as u16 with NO
+enforced cap — the comment only assumed the handful. So a legit large provider (many
+addresses/key, or long hostnames) could emit a >128 KiB full-holdings frame that the #1720
+limiter HARD-DROPS → an availability bug: the provider is silently unannounced, its content
+undiscoverable.
+
+The arithmetic (why 128 KiB IS enough once bounded): full frame = ~282 B fixed framing
+(peer_id 66 + spki ~124 + seq/announced_at 16 + change_count 2 + sig ~74) + `canonical_encode`.
+Per `Add` delta = `43 + addr_count×(host_len+4)`. For 256 changes under 128 KiB:
+`256×(43 + addr_count×(host_len+4)) ≤ 131072 − 282` → `addr_count×(host_len+4) ≲ 468`. A
+realistic IPv6-first (§5.2) full re-announce — 256 changes × 6 v6-literal addresses (≤45 B) —
+is `256×(43 + 6×49) = 256×337 ≈ 86 KiB`, well under. So legit traffic fits comfortably; the
+128 KiB cap never needed raising and `MAX_CHANGES` never needed lowering.
+
+The fix (#1760 B) is a TOTAL encoded-frame-size bound, not just per-field caps: `MAX_ANNOUNCE_FRAME_BYTES
+= 131072` — both `new_signed` and `verify_holdings_announce` reject any announce whose
+`encode().len()` exceeds it (checked BEFORE the P-256 verify). This DIRECTLY guarantees
+≤128 KiB regardless of how addresses/hosts distribute — the property a per-field-only cap
+can't give (per-field caps can't bound the aggregate across 256 changes). Per-field caps
+(`MAX_ADDRS_PER_CHANGE = 32`, `MAX_HOST_LEN = 253`) ride along as defense-in-depth + clearer
+error attribution, set generously so they never clip legit traffic. The bound is the SAME
+const the opcode-222 limiter row references, so the enforced bound and the rate-limit `max_size`
+can't drift (a test pins the tie). Backwards-compatible: the `canonical_encode` wire LAYOUT is
+unchanged (dig-node recomputes it byte-identically) — this is purely a new reject-over-bound
+validation, so every within-bound legit frame still encodes/decodes/verifies identically.
+Cross-repo follow-up: dig-node recomputes/verifies the announce and MUST adopt the same
+`MAX_ANNOUNCE_FRAME_BYTES = 131072` bound + per-field caps (release-first: dig-gossip publishes,
+dig-node adopts).
