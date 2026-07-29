@@ -846,7 +846,14 @@ where
                         })
                         .unwrap_or(true);
                     if !allowed {
-                        apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
+                        // Drop the frame unconditionally (the #1720 per-connection cap), but only
+                        // charge a reputation penalty when the opcode is not a public flood — a
+                        // forwarder of a 221/222 flood is not its origin (#1626).
+                        if crate::connection::inbound_limits::rejected_frame_incurs_penalty(
+                            msg.msg_type,
+                        ) {
+                            apply_inbound_rate_limit_violation(&state_fwd, pid_task, gen_task);
+                        }
                         continue;
                     }
                     if let Ok(wl_in) = message_wire_len(&msg) {

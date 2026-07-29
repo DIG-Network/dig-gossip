@@ -30,7 +30,9 @@
 
 use std::collections::HashMap;
 
-use dig_peer_protocol::{Message, RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS};
+use dig_peer_protocol::{
+    Message, ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits, V2_RATE_LIMITS,
+};
 
 use crate::types::dig_messages::DigMessageType;
 
@@ -75,6 +77,39 @@ pub(crate) fn inbound_gate_allows(guard: &mut RateLimiter, msg: &Message) -> boo
         // Below the band: the base bound is the whole gate.
         true
     }
+}
+
+/// Whether `msg_type` is a **public-flood** broadcast opcode: a message any internet host may
+/// originate and that disseminates to EVERY peer via Plumtree — `StoreMelted` = 221 (#1316) and
+/// `HoldingsAnnounce` = 222 (#1428).
+///
+/// This is keyed by the very opcode constants the [`dig_extension_rate_limits_map`] rows use, and it
+/// is kept in lockstep with the canonical public-flood grouping in
+/// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) — both name exactly
+/// `StoreMelted | HoldingsAnnounce` — so the two lists cannot drift (a guard test enumerates the wire
+/// enum to prove it). It exists as the single source of truth for the #1626 penalty exemption below.
+pub(crate) fn is_public_flood_opcode(msg_type: ProtocolMessageTypes) -> bool {
+    matches!(
+        msg_type as u8,
+        crate::service::store_melted::STORE_MELTED
+            | crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+    )
+}
+
+/// Whether a frame REJECTED by [`inbound_gate_allows`] should additionally charge a
+/// [`PenaltyReason::RateLimitExceeded`](crate::types::peer::PenaltyReason) reputation penalty against
+/// the delivering peer, versus being dropped silently.
+///
+/// A rejected frame is ALWAYS dropped (the #1720 per-connection cap counts pre-verify frames,
+/// eager duplicates included). It additionally incurs a penalty ONLY when it is not a public-flood
+/// opcode. On a multi-hop public flood (221/222) the delivering connection is a **forwarder, not the
+/// origin**, so charging it would ban honest relayers by false attribution (#1626) — a single hostile
+/// origin could get every peer that redistributes its over-cap flood banned. Dropping the excess frame
+/// alone is graceful: the receiver's seen-set, Plumtree eager/lazy redundancy, and the periodic
+/// re-announce all recover the message without the delivering peer being punished. The exemption is
+/// deliberately opcode-scoped — every other over-cap opcode is still penalised as before.
+pub(crate) fn rejected_frame_incurs_penalty(msg_type: ProtocolMessageTypes) -> bool {
+    !is_public_flood_opcode(msg_type)
 }
 
 /// Table from [`CON-005.md`](../../../docs/requirements/domains/connection/specs/CON-005.md) §DIG Extension Rate Limits.
@@ -267,6 +302,120 @@ mod tests {
         assert_eq!(
             row.max_size,
             crate::service::holdings_announce::MAX_ANNOUNCE_FRAME_BYTES as f64
+        );
+    }
+
+    /// #1626 — the public-flood exemption set is EXACTLY `StoreMelted` (221) and `HoldingsAnnounce`
+    /// (222), enumerated over the real wire enum so it can never drift against the canonical
+    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping or a hand-typed
+    /// list.
+    #[test]
+    fn public_flood_opcode_set_is_exactly_221_and_222() {
+        for opcode in 0u8..=u8::MAX {
+            let Ok(msg_type) = ProtocolMessageTypes::from_bytes(&[opcode]) else {
+                continue;
+            };
+            let expected = opcode == crate::service::store_melted::STORE_MELTED
+                || opcode == crate::service::holdings_announce::HOLDINGS_ANNOUNCE;
+            assert_eq!(
+                is_public_flood_opcode(msg_type),
+                expected,
+                "opcode {opcode} public-flood classification"
+            );
+        }
+    }
+
+    /// #1626 — a 222 (HoldingsAnnounce) frame the REAL gate rejects for exceeding the per-connection
+    /// cap is DROPPED (drop behaviour unchanged) but is EXEMPT from the reputation penalty, so an
+    /// honest forwarder of another host's over-cap flood is never banned by false attribution.
+    ///
+    /// RED without the fix: [`rejected_frame_incurs_penalty`] returned `true` for every rejected
+    /// frame, so the final assertion (`!incurs_penalty`) failed and the delivering peer was charged.
+    #[test]
+    fn over_cap_holdings_announce_222_is_dropped_but_not_penalised() {
+        let frame = |seed: u32| Message {
+            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            id: None,
+            data: Bytes::new({
+                // Distinct payloads (well under the 128 KiB cap) so each is a real, non-duplicate frame.
+                let mut v = vec![0u8; 64];
+                v[0] = seed as u8;
+                v[1] = (seed >> 8) as u8;
+                v
+            }),
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        for seed in 0..20 {
+            assert!(
+                inbound_gate_allows(&mut guard, &frame(seed)),
+                "frame {seed} within the 20/min 222 cap must pass the REAL gate"
+            );
+        }
+        let over_cap = frame(999);
+        assert!(
+            !inbound_gate_allows(&mut guard, &over_cap),
+            "21st 222 must be DROPPED by the REAL gate (#1720 cap intact)"
+        );
+        assert!(
+            !rejected_frame_incurs_penalty(over_cap.msg_type),
+            "a dropped 222 public flood must NOT charge a reputation penalty (#1626)"
+        );
+    }
+
+    /// #1626 — same guarantee for 221 (StoreMelted): the 11th frame is dropped by the REAL gate yet
+    /// exempt from the penalty. Covers 221 identically to 222 (the false-attribution bug is the same).
+    #[test]
+    fn over_cap_store_melted_221_is_dropped_but_not_penalised() {
+        let frame = |seed: u32| Message {
+            msg_type: ProtocolMessageTypes::StoreMelted,
+            id: None,
+            data: Bytes::new({
+                let mut v = vec![0u8; 164];
+                v[0] = seed as u8;
+                v[1] = (seed >> 8) as u8;
+                v
+            }),
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        for seed in 0..10 {
+            assert!(
+                inbound_gate_allows(&mut guard, &frame(seed)),
+                "frame {seed} within the 10/min 221 cap must pass the REAL gate"
+            );
+        }
+        let over_cap = frame(999);
+        assert!(
+            !inbound_gate_allows(&mut guard, &over_cap),
+            "11th 221 must be DROPPED by the REAL gate (#1316 cap intact)"
+        );
+        assert!(
+            !rejected_frame_incurs_penalty(over_cap.msg_type),
+            "a dropped 221 public flood must NOT charge a reputation penalty (#1626)"
+        );
+    }
+
+    /// #1626 — CONTRAST: an over-cap NON-flood opcode is dropped by the REAL gate AND still incurs the
+    /// penalty. Proves the exemption is opcode-scoped, not a blanket disable of rate-limit attribution.
+    #[test]
+    fn over_cap_non_flood_opcode_is_still_penalised() {
+        let frame = || Message {
+            msg_type: ProtocolMessageTypes::Handshake,
+            id: None,
+            data: Bytes::new(vec![0u8; 16]),
+        };
+        let mut guard = new_inbound_rate_limiter(1.0);
+        let mut rejected = None;
+        // Drive the base bound past its cap; the first rejected frame is the one under test.
+        for _ in 0..1_000 {
+            if !inbound_gate_allows(&mut guard, &frame()) {
+                rejected = Some(frame());
+                break;
+            }
+        }
+        let rejected = rejected.expect("a Handshake flood must eventually exceed its inbound cap");
+        assert!(
+            rejected_frame_incurs_penalty(rejected.msg_type),
+            "a non-flood over-cap opcode MUST still be penalised (#1626 exemption is opcode-scoped)"
         );
     }
 

@@ -512,3 +512,15 @@ closure holds the peers lock across a broadcast send / inverts the lock order. A
 `PoolRemovalReason::Reaped` (vs keepalive `Dead` / operator `Disconnected`) for precise churn
 observability. The post-map-removal interleaving (a reconnect re-inserting between map-remove and
 plumtree-remove) is the identical accepted race disconnect() already has.
+
+## Rate-limit ban must not false-attribute a public flood to the forwarder (#1626)
+
+The per-connection inbound cap (#1720) counts pre-verify frames, so an over-cap flood is dropped —
+correct. But on gate-denial the forwarder ALSO charged a `RateLimitExceeded` reputation penalty, and
+for a multi-hop public flood (`StoreMelted` 221, `HoldingsAnnounce` 222) the connection delivering the
+frame is a FORWARDER, not the origin. So one hostile origin emitting an over-cap flood would get every
+honest peer that redistributes it banned by false attribution. Fix: keep the drop, but skip the penalty
+for public-flood opcodes only (`rejected_frame_incurs_penalty` / `is_public_flood_opcode`, co-located
+with the gate in `inbound_limits.rs`, kept in lockstep with `broadcaster::classify_broadcast`). The
+drop is graceful — seen_set + Plumtree redundancy + periodic re-announce recover it. Exemption is
+opcode-scoped: every other over-cap opcode is still penalised (proven by a contrast test).
