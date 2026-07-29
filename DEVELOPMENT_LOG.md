@@ -467,3 +467,15 @@ validation, so every within-bound legit frame still encodes/decodes/verifies ide
 Cross-repo follow-up: dig-node recomputes/verifies the announce and MUST adopt the same
 `MAX_ANNOUNCE_FRAME_BYTES = 131072` bound + per-field caps (release-first: dig-gossip publishes,
 dig-node adopts).
+
+## holdings-announce decode agrees with the size check on the per-change addr cap (#1777)
+
+`HoldingsAnnounce::decode` reads a `u16` `addr_count` per `Add` delta and reserved the address
+`Vec` with `Vec::with_capacity(addr_count)` BEFORE consuming the per-address bytes. A crafted delta
+with `addr_count = 65535` on a tiny frame (well under the 128 KiB `check_announce_size` cap — which
+runs only later, in `verify_holdings_announce`, not at decode) forced a ~2 MiB transient reservation
+per change. Gotcha: the outer 128 KiB frame guard does NOT cover this — decode runs first, on the
+raw wire bytes, so decode must enforce the per-change `MAX_ADDRS_PER_CHANGE` (32) invariant itself.
+Fix: reject `addr_count > MAX_ADDRS_PER_CHANGE` at the top of the `Add` decode arm, before the
+`with_capacity` — so decode and `check_announce_size` agree on the invariant. Additive/back-compat:
+every legit frame (≤32 addrs/change since v0.17.13) still decodes byte-identically.
