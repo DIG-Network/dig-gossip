@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.20] - 2026-07-29
+
+### Documentation
+- **spec:** Document opcode 220 base-bounded rate limiting design (#49)
+
 ## [0.17.19] - 2026-07-29
 
 ### Bug Fixes
