@@ -2,6 +2,10 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## The rate-limit ban's charge→enforce async gap is not a dodge — the mTLS handshake is the lock (#1703 item 3)
+
+`apply_inbound_rate_limit_violation` (`state.rs:1164`) charges the penalty synchronously but spawns `enforce_timed_ban_and_disconnect` (`state.rs:999`), which writes the `banned` row. A session that crosses the threshold could in theory dodge the ban by reconnecting between the charge and the spawned enforce (fresh `PeerReputation::default()` per slot; the enforce carries `Some(generation)` and no-ops against a newer slot). It is not exploitable: winning needs a same-`peer_id` live slot inside the single-digit-µs spawn→lock gap, but `peer_id = SHA-256(TLS SPKI DER)` is minted only by a completed SPKI-pinned mTLS handshake (ms) — 3+ orders of magnitude too slow — with no relayed/cheap-reconnect amplification, and a won dodge just forces another ~7 violations + another handshake (self-DoS). Considered vs. recording the ban synchronously at charge time: feasible (the charge site is under the #1691 gen-guard and can read the IP + insert into the std-`Mutex` `banned` map), but it leaves a banned-but-still-Live slot when the async enforce later no-ops against a reconnect, and duplicates the ban-insert — real complexity for a physically-unwinnable race. Accepted as-is; the synchronous-record option is noted in SPEC §CON-007 for if identity-scoped ban persistence is ever wanted. Flagged by the #1691 round-3 decider and loop-security; pre-existing, not introduced by newest-wins.
+
 ## The same defect had THREE sites because three paths admitted a peer — a shared invariant needs a shared shape (#1691/#1703/#1762)
 
 "A held peer-map slot refuses a reconnect that would work" was fixed three separate times, in three
