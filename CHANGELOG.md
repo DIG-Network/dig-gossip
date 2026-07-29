@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.16] - 2026-07-29
+
+### Documentation
+- **spec:** Record the rate-limit ban async-gap as an accepted residual (#45)
+
 ## [0.17.15] - 2026-07-29
 
 ### Bug Fixes
