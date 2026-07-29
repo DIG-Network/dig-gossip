@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.18] - 2026-07-29
+
+### Bug Fixes
+- **svc:** Guard plumtree.remove_peer against the reconnect window in disconnect() + reaper (#47)
+
 ## [0.17.17] - 2026-07-29
 
 ### Bug Fixes
