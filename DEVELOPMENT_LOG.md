@@ -528,3 +528,10 @@ for public-flood opcodes only (`rejected_frame_incurs_penalty` / `is_public_floo
 with the gate in `inbound_limits.rs`, kept in lockstep with `broadcaster::classify_broadcast`). The
 drop is graceful — seen_set + Plumtree redundancy + periodic re-announce recover it. Exemption is
 opcode-scoped: every other over-cap opcode is still penalised (proven by a contrast test).
+
+#1796/#1801 — the flood penalty exemption is now scoped by opcode AND violation-kind, not opcode-only.
+`rejected_frame_incurs_penalty(&Message)` penalises a public-flood 221/222 frame that is a SIZE/format
+violation (`exceeds_dig_wire_max_size`, read from the `dig_extension_rate_limits_map` row's `max_size` —
+never a hardcoded literal) while still exempting a legit-sized over-cap RATE rejection (the forwarder-
+not-origin case). 221's `max_size` now ties to `store_melted::ENCODED_LEN` (164 B) exactly, mirroring
+222's tie to `MAX_ANNOUNCE_FRAME_BYTES`; a >164 B 221 is thus a size violation and is penalised.
