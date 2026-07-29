@@ -1069,13 +1069,51 @@ impl ServiceState {
     ///
     /// Dropping a reaped [`PeerSlot::Nat`] tears down its yamux mux session (the #1717 drop
     /// invariant), releasing the transport as part of the eviction.
+    ///
+    /// # Cleanup parity with `disconnect()` (#1703 gate follow-up)
+    ///
+    /// Evicting a peer from [`Self::peers`] alone would leave two sibling leaks of the same class this
+    /// reaper targets, so — exactly as [`GossipHandle::disconnect`](super::gossip_handle::GossipHandle::disconnect)
+    /// does — each reaped `peer_id` is ALSO removed from Plumtree state (PLT-006 tree self-healing;
+    /// else the id lingers in `eager_peers`/`lazy_peers`) and announced as
+    /// [`PoolEvent::PeerRemoved`](crate::service::peer_pool::PoolEvent) so event-driven consumers
+    /// (dig-node) drop their stale "connected" view. Both run **after** the `peers` lock is released,
+    /// in the SAME order `disconnect()` uses (publish, then Plumtree), so the reaper never holds the
+    /// `peers` lock across a broadcast send or the Plumtree lock — no lock-order inversion. A reaped
+    /// id is already gone from the map, so a concurrent reconnect re-inserts a fresh slot + re-adds to
+    /// Plumtree independently; this is the identical (accepted) interleaving `disconnect()` has.
     pub(crate) fn reap_departed_peers(&self) -> usize {
-        let Ok(mut peers) = self.peers.lock() else {
-            return 0; // Poisoned lock — a degraded no-op is safer than a panic in the loop.
+        // Phase 1 — judge + remove ATOMICALLY under one `peers`-lock hold (the load-bearing
+        // invariant: the slot judged departed is exactly the slot removed; no supersession window),
+        // collecting the reaped ids for the post-lock cleanup below.
+        let reaped_ids: Vec<PeerId> = {
+            let Ok(mut peers) = self.peers.lock() else {
+                return 0; // Poisoned lock — a degraded no-op is safer than a panic in the loop.
+            };
+            let mut ids = Vec::new();
+            peers.retain(|peer_id, slot| {
+                let departed = slot_is_departed(slot);
+                if departed {
+                    ids.push(*peer_id);
+                }
+                !departed
+            });
+            ids
         };
-        let before = peers.len();
-        peers.retain(|_peer_id, slot| !slot_is_departed(slot));
-        before - peers.len()
+
+        // Phase 2 — cleanup OUTSIDE the `peers` lock, mirroring `disconnect()` (publish churn, then
+        // Plumtree removal) so no new lock-order inversion is introduced.
+        for peer_id in &reaped_ids {
+            self.pool
+                .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {
+                    peer_id: *peer_id,
+                    reason: crate::service::peer_pool::PoolRemovalReason::Reaped,
+                });
+            if let Ok(mut pt) = self.plumtree.lock() {
+                pt.remove_peer(peer_id);
+            }
+        }
+        reaped_ids.len()
     }
 
     /// `true` if `peer_id` is currently banned **after** pruning expired rows at `now_unix_secs`.

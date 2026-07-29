@@ -494,3 +494,17 @@ and kept. That atomicity is STRICTLY STRONGER than the #1691 session-generation 
 (which the keepalive/rate-limit paths need only because they judge across `await`s then remove), so
 `NatSlot` needs no generation field. Conservative by design: only proven-closed slots are reaped; a
 live-but-quiet NAT peer reports open and is never touched (a false reap is worse than a slow leak).
+
+## reaper cleanup must reach parity with disconnect() — plumtree + churn event (#1703 gate follow-up)
+
+Removing a reaped peer from the `peers` map alone left two sibling leaks of the SAME class the reaper
+targets: the `peer_id` lingered in Plumtree's `eager_peers`/`lazy_peers` (unbounded growth), and no
+`PoolEvent::PeerRemoved` was emitted so event-driven consumers (dig-node) kept a stale "connected"
+view. Fix: mirror `disconnect()` exactly — after the atomic map removal, publish
+`PeerRemoved{reason: Reaped}` then `plumtree.remove_peer(id)`. Lock-ordering gotcha: both MUST run
+OUTSIDE the `peers` lock (collect reaped ids under the lock, release, then clean up), because both
+plumtree and the pool broadcast sender take their own locks/senders — doing them inside the retain
+closure holds the peers lock across a broadcast send / inverts the lock order. Added a dedicated
+`PoolRemovalReason::Reaped` (vs keepalive `Dead` / operator `Disconnected`) for precise churn
+observability. The post-map-removal interleaving (a reconnect re-inserting between map-remove and
+plumtree-remove) is the identical accepted race disconnect() already has.

@@ -1510,6 +1510,19 @@ running service MUST run a periodic **departed-peer reaper**:
   paths because they judge liveness across `await`s and THEN remove; the reaper never separates the
   two, so atomicity is strictly stronger.) Dropping a reaped `PeerSlot::Nat` tears down its yamux mux
   session (the #1717 drop invariant), releasing the transport as part of the eviction.
+- **Full cleanup parity with `disconnect()`.** Removing the slot from the peer map is not enough — the
+  reaper MUST perform the same downstream cleanup `disconnect()` does, or it leaves sibling leaks of
+  the same class: (i) each reaped `peer_id` is removed from Plumtree state (`plumtree.remove_peer`,
+  PLT-006 self-healing), else the id lingers in `eager_peers`/`lazy_peers`; and (ii) a
+  `PoolEvent::PeerRemoved` is emitted so event-driven consumers (dig-node) drop their stale
+  "connected" view. The reaper uses removal reason `Reaped` (distinct from keepalive's `Dead` and the
+  operator `Disconnected`) for churn observability. **Lock ordering (normative):** both steps run
+  AFTER the `peers` lock is released — the reaped ids are collected under the `peers` lock, then the
+  publish + Plumtree removal happen outside it, in the SAME order `disconnect()` uses (publish, then
+  Plumtree). The reaper MUST NOT call `plumtree.remove_peer` or publish a `PoolEvent` while holding
+  the `peers` lock (that would invert the lock order / hold the map lock across a broadcast send). A
+  reaped id is already gone from the map, so a concurrent reconnect re-inserts a fresh slot and
+  re-adds to Plumtree independently — the identical accepted interleaving `disconnect()` has.
 
 This outbound `/16`+AS diversity gate is enforced on **EVERY** path that adds an outbound peer, not
 only the operator-initiated dial. Both `GossipHandle::connect_to` (manual dial) AND

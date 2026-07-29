@@ -20,7 +20,7 @@ mod common;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dig_gossip::{GossipHandle, GossipService, PeerPoolConfig};
+use dig_gossip::{GossipHandle, GossipService, PeerPoolConfig, PoolEvent, PoolRemovalReason};
 
 /// Build a `NatPeerConnection` over a loopback duplex with a chosen `peer_id` + remote address, plus
 /// its transport-closed observer. Returns `(conn, server_half, closed_handle)`. Dropping the returned
@@ -194,6 +194,80 @@ async fn periodic_reaper_task_evicts_departed_peer() {
     assert!(
         reaped,
         "the periodic reaper task must evict the departed peer"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **#1703 gate follow-up (Finding 1 — leak parity):** a reaped NAT peer must be removed from
+/// Plumtree state too, exactly as `disconnect()` does — otherwise its `peer_id` lingers in the
+/// eager/lazy sets, a sibling unbounded-growth leak of the same class. Fails before the fix: the
+/// reaper cleared only the peer map, leaving the id in Plumtree.
+#[tokio::test]
+async fn reaped_peer_is_removed_from_plumtree() {
+    let (svc, handle, _dir) = manual_reaper_handle().await;
+
+    let peer_id_bytes = [5u8; 32];
+    let (conn, server, closed) = loopback_nat_conn(peer_id_bytes, addr("203.0.113.5:9445"));
+    let peer_id = handle.adopt_nat_connection(conn).await.expect("adopt");
+    assert!(
+        handle.__plumtree_contains_for_tests(&peer_id),
+        "adoption registers the peer in Plumtree (starts eager)"
+    );
+
+    drop(server);
+    closed.closed().await;
+    let reaped = handle.__reap_departed_peers_for_tests();
+    assert_eq!(reaped, 1);
+
+    assert!(
+        !handle.__plumtree_contains_for_tests(&peer_id),
+        "the reaped peer_id must be gone from Plumtree (parity with disconnect())"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **#1703 gate follow-up (Finding 2 — consumer consistency):** reaping a departed peer must emit a
+/// `PoolEvent::PeerRemoved` (reason `Reaped`) on the churn stream, so event-driven consumers drop
+/// their stale "connected" view — exactly as `disconnect()` does. Fails before the fix: the reaper
+/// emitted nothing.
+#[tokio::test]
+async fn reaped_peer_emits_pool_removed_event() {
+    let (svc, handle, _dir) = manual_reaper_handle().await;
+
+    // Subscribe BEFORE adopting so both the PeerAdded and the later PeerRemoved land on this stream.
+    let mut events = handle.subscribe_pool_events().expect("subscribe");
+
+    let peer_id_bytes = [6u8; 32];
+    let (conn, server, closed) = loopback_nat_conn(peer_id_bytes, addr("203.0.113.6:9445"));
+    let peer_id = handle.adopt_nat_connection(conn).await.expect("adopt");
+
+    drop(server);
+    closed.closed().await;
+    assert_eq!(handle.__reap_departed_peers_for_tests(), 1);
+
+    // Drain the buffered events and assert a Reaped PeerRemoved for this id is present.
+    let mut saw_reaped = false;
+    while let Ok(evt) = events.try_recv() {
+        if let PoolEvent::PeerRemoved {
+            peer_id: removed,
+            reason,
+        } = evt
+        {
+            if removed == peer_id {
+                assert_eq!(
+                    reason,
+                    PoolRemovalReason::Reaped,
+                    "the reaper's churn event carries reason Reaped"
+                );
+                saw_reaped = true;
+            }
+        }
+    }
+    assert!(
+        saw_reaped,
+        "reaping must emit PoolEvent::PeerRemoved for the departed peer"
     );
 
     svc.stop().await.expect("stop");

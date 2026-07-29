@@ -2391,6 +2391,17 @@ impl GossipHandle {
         self.inner.reap_departed_peers()
     }
 
+    /// #1703 item 2: whether `peer_id` is currently a member of Plumtree state (eager OR lazy). Lets a
+    /// test assert the reaper mirrors `disconnect()`'s `plumtree.remove_peer` cleanup.
+    #[doc(hidden)]
+    pub fn __plumtree_contains_for_tests(&self, peer_id: &PeerId) -> bool {
+        self.inner
+            .plumtree
+            .lock()
+            .map(|pt| pt.is_eager(peer_id) || pt.is_lazy(peer_id))
+            .unwrap_or(false)
+    }
+
     /// Test helper: push a synthetic inbound event into the broadcast hub.
     #[doc(hidden)]
     pub fn __inject_inbound_for_tests(
