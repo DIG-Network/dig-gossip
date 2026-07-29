@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.14] - 2026-07-29
+
+### Bug Fixes
+- **con:** Clamp decode_delta over-alloc + guard 220-band rate-limit completeness (#43)
+
 ## [0.17.13] - 2026-07-29
 
 ### Bug Fixes
