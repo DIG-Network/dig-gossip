@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.19] - 2026-07-29
+
+### Bug Fixes
+- **con:** Flood penalty exemption is rate-only; tie 221 max_size to ENCODED_LEN (#48)
+
 ## [0.17.18] - 2026-07-29
 
 ### Bug Fixes
