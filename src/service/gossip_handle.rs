@@ -1998,10 +1998,10 @@ impl GossipHandle {
                     reason: crate::service::peer_pool::PoolRemovalReason::Disconnected,
                 });
         }
-        // INT-001: Remove peer from Plumtree state (PLT-006 tree self-healing).
-        if let Ok(mut pt) = self.inner.plumtree.lock() {
-            pt.remove_peer(peer_id);
-        }
+        // INT-001: Remove peer from Plumtree state (PLT-006 tree self-healing), UNLESS a concurrent
+        // reconnect re-inserted this id in the map→plumtree gap (#1792) — see
+        // `ServiceState::remove_from_plumtree_unless_reconnected`.
+        self.inner.remove_from_plumtree_unless_reconnected(peer_id);
 
         // INT-006/INT-007: no diversity-budget bookkeeping here (#1703). Outbound diversity occupancy
         // is derived from the live peer map, so removing the slot above already frees its /16 + AS for
@@ -2407,6 +2407,24 @@ impl GossipHandle {
             .lock()
             .map(|pt| pt.is_eager(peer_id) || pt.is_lazy(peer_id))
             .unwrap_or(false)
+    }
+
+    /// #1792 test hook: register `peer_id` in Plumtree state (starts eager, PLT-001) without a real
+    /// transport, so a test can drive the reconnect-guard helper deterministically.
+    #[doc(hidden)]
+    pub fn __plumtree_add_peer_for_tests(&self, peer_id: PeerId) {
+        if let Ok(mut pt) = self.inner.plumtree.lock() {
+            pt.add_peer(peer_id);
+        }
+    }
+
+    /// #1792 test hook: invoke the shared reconnect-guard cleanup
+    /// ([`ServiceState::remove_from_plumtree_unless_reconnected`](super::state::ServiceState::remove_from_plumtree_unless_reconnected))
+    /// exactly as both departure paths (`disconnect` + the reaper) do, so a test can prove the guard
+    /// SKIPS the Plumtree removal when the id is once again present in the peer map.
+    #[doc(hidden)]
+    pub fn __remove_from_plumtree_unless_reconnected_for_tests(&self, peer_id: &PeerId) {
+        self.inner.remove_from_plumtree_unless_reconnected(peer_id);
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.

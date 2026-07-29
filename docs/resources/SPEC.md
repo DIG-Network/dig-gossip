@@ -1520,9 +1520,19 @@ running service MUST run a periodic **departed-peer reaper**:
   AFTER the `peers` lock is released — the reaped ids are collected under the `peers` lock, then the
   publish + Plumtree removal happen outside it, in the SAME order `disconnect()` uses (publish, then
   Plumtree). The reaper MUST NOT call `plumtree.remove_peer` or publish a `PoolEvent` while holding
-  the `peers` lock (that would invert the lock order / hold the map lock across a broadcast send). A
-  reaped id is already gone from the map, so a concurrent reconnect re-inserts a fresh slot and
-  re-adds to Plumtree independently — the identical accepted interleaving `disconnect()` has.
+  the `peers` lock (that would invert the lock order / hold the map lock across a broadcast send).
+- **Reconnect guard on the trailing Plumtree removal (normative; #1792).** Because the map removal and
+  the Plumtree removal are deliberately NOT atomic (they must not nest the `peers` and `plumtree`
+  locks), a concurrent reconnect (`adopt_nat_connection` / `connect_to` → `plumtree.add_peer`) can land
+  in the gap and re-insert the id into `peers` with a FRESH eager membership; an unconditional trailing
+  `plumtree.remove_peer` would then wipe that live membership — a transient partition of a healthy
+  peer. So before the trailing `plumtree.remove_peer`, both departure paths (the reaper Phase 2 AND
+  `disconnect()`) MUST re-read `peers` and SKIP the Plumtree removal when the id is present again (the
+  reconnect's `add_peer` wins). This guard is **best-effort**: the `peers` re-check and the
+  `plumtree.remove_peer` are taken as two SEPARATE (never nested) locks to preserve the no-lock-order-
+  inversion invariant above, so it NARROWS — does not eliminate — the window (a reconnect landing
+  between the re-check and the removal is still possible). That residual is accepted and self-healing:
+  Plumtree's PLT-006 IHAVE/GRAFT re-grafts the peer.
 
 This outbound `/16`+AS diversity gate is enforced on **EVERY** path that adds an outbound peer, not
 only the operator-initiated dial. Both `GossipHandle::connect_to` (manual dial) AND

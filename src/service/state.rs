@@ -1109,11 +1109,40 @@ impl ServiceState {
                     peer_id: *peer_id,
                     reason: crate::service::peer_pool::PoolRemovalReason::Reaped,
                 });
-            if let Ok(mut pt) = self.plumtree.lock() {
-                pt.remove_peer(peer_id);
-            }
+            self.remove_from_plumtree_unless_reconnected(peer_id);
         }
         reaped_ids.len()
+    }
+
+    /// Remove `peer_id` from Plumtree state **unless a concurrent reconnect has re-inserted it** into
+    /// the peer map (#1792). Both departure paths — [`Self::reap_departed_peers`] Phase 2 and
+    /// [`GossipHandle::disconnect`](super::gossip_handle::GossipHandle::disconnect) — remove the id
+    /// from `peers` under the lock, RELEASE the lock, then call this to clear the id from Plumtree.
+    /// A reconnect (`adopt_nat_connection` / `connect_to` → `plumtree.add_peer`) landing in that gap
+    /// re-inserts the id into `peers` and re-adds it to Plumtree with a FRESH eager/lazy membership;
+    /// an unconditional trailing `plumtree.remove_peer` would then wipe that live membership — a
+    /// transient partition of a healthy peer. So before removing we re-read `peers`: if the id is
+    /// present again, the reconnect won, and we SKIP the Plumtree removal.
+    ///
+    /// This is **best-effort** and NARROWS — does not eliminate — the window: a reconnect landing
+    /// between the `contains_key` re-check and the `plumtree.remove_peer` below is still possible.
+    /// That residual is accepted and self-healing (Plumtree's IHAVE/GRAFT re-grafts the peer). We do
+    /// NOT close it by holding `peers` and `plumtree` together: PR#44 deliberately does the Plumtree
+    /// cleanup OUTSIDE the `peers` lock to avoid a `peers`+`plumtree` nested-lock inversion, so the
+    /// two locks here are taken SEPARATELY/sequentially — a brief `peers` read, then, only if absent,
+    /// the `plumtree` write — never nested.
+    pub(crate) fn remove_from_plumtree_unless_reconnected(&self, peer_id: &PeerId) {
+        let reconnected = self
+            .peers
+            .lock()
+            .map(|peers| peers.contains_key(peer_id))
+            .unwrap_or(false);
+        if reconnected {
+            return; // A reconnect re-inserted the peer in the gap — its fresh add_peer must win.
+        }
+        if let Ok(mut pt) = self.plumtree.lock() {
+            pt.remove_peer(peer_id);
+        }
     }
 
     /// `true` if `peer_id` is currently banned **after** pruning expired rows at `now_unix_secs`.
