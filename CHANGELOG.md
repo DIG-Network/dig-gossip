@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.21] - 2026-07-29
+
+### Documentation
+- Mark DSC-009/PRF-004 as roadmap, not implemented (#50)
+
 ## [0.17.20] - 2026-07-29
 
 ### Documentation
