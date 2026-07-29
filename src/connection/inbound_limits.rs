@@ -143,17 +143,24 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
     // 1 MiB) — bounding that expensive verify only by accident. Give it a deliberate row keyed by the
     // raw opcode (222 is a `ProtocolMessageTypes` variant in the vendored fork, not a `DigMessageType`;
     // the `dig_wire` map is `u8 -> RateLimit`, so the bound applies uniformly). Sized larger than 221:
-    // - `max_size` 128 KiB fits a full legit `MAX_CHANGES` (256) re-announce — each key served at a fat
-    //   4-address, 64-byte-host candidate set encodes to ~79 KiB (256×315 B + ~251 B framing), so 128 KiB
-    //   leaves >60% headroom and never clips a real provider's full-holdings frame. Far below the 1 MiB
-    //   default (8x tighter).
+    // - `max_size` = `MAX_ANNOUNCE_FRAME_BYTES` (128 KiB). This is NOT a loose estimate: `holdings_announce`
+    //   ENFORCES that same bound (#1760 B) — both the builder and `verify_holdings_announce` reject any
+    //   announce whose encoded frame exceeds it, plus per-field addr-count/host-len caps — so every legit
+    //   announce is provably `<= max_size` and never hard-dropped (the availability bug this closes). A
+    //   realistic full `MAX_CHANGES` (256) re-announce with ~6 IPv6-literal addresses per key is ~85 KiB,
+    //   well under the bound. Referencing the const keeps the limiter and the enforced bound from drifting.
+    //   Far below the 1 MiB default (8x tighter).
     // - `freq` 20/min is ~2x the 221 anchor (10/min): a provider re-announces its whole holdings in ONE
     //   frame, so steady state is minutes apart; 20/min allows legit burst re-announces (a 0→N peer
     //   transition plus a cluster of holdings-change events) while capping a hostile conn at 20 P-256
     //   verifies/min/conn — 5x below the 100/min default.
     m.insert(
         crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
-        RateLimit::new(20.0, 131_072.0, None),
+        RateLimit::new(
+            20.0,
+            crate::service::holdings_announce::MAX_ANNOUNCE_FRAME_BYTES as f64,
+            None,
+        ),
     );
     m
 }
@@ -206,6 +213,21 @@ mod tests {
         assert!(
             !inbound_gate_allows(&mut guard, &announce_frame()),
             "21st holdings-announce (222) must be rejected by the REAL inbound_gate_allows (#1720)"
+        );
+    }
+
+    /// The opcode-222 `max_size` MUST equal the enforced `MAX_ANNOUNCE_FRAME_BYTES` bound
+    /// (#1760 B) — the limiter row references that const, so a legit announce that passes the
+    /// enforced frame bound is provably within the limiter cap and never hard-dropped.
+    #[test]
+    fn holdings_announce_222_max_size_ties_to_enforced_frame_bound() {
+        let limits = dig_extension_rate_limits_map();
+        let row = limits
+            .get(&crate::service::holdings_announce::HOLDINGS_ANNOUNCE)
+            .expect("opcode 222 has a dig_wire row");
+        assert_eq!(
+            row.max_size,
+            crate::service::holdings_announce::MAX_ANNOUNCE_FRAME_BYTES as f64
         );
     }
 

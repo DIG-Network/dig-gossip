@@ -601,10 +601,24 @@ free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is ex
 - **Inbound rate limit (CON-005, #1720).** Opcode 222 carries a DELIBERATE `dig_wire` row —
   `frequency = 20`/min, `max_size = 131072` (128 KiB) — NOT the loose `default_settings`
   (100 frames/min, 1 MiB) it would otherwise fall through to. The row bounds the expensive
-  post-decode P-256 verify a hostile peer can force: `max_size` fits a full legit
-  `MAX_CHANGES` (256) re-announce (~79 KiB with a fat 4-address candidate set) with headroom
-  so a real provider is never clipped, while `frequency` (~2x the 221 anchor of 10/min) caps
-  a connection at 20 signature verifies/min.
+  post-decode P-256 verify a hostile peer can force, while `frequency` (~2x the 221 anchor of
+  10/min) caps a connection at 20 signature verifies/min.
+- **Encoded-size bound (#1760 B) — makes 128 KiB PROVABLY sufficient.** The 128 KiB `max_size`
+  is not merely assumed to fit a legit batch: `holdings_announce` ENFORCES a matching bound.
+  An announce whose `encode()`d frame exceeds **`MAX_ANNOUNCE_FRAME_BYTES = 131072`** is
+  REJECTED by both `new_signed` and `verify_holdings_announce` (`AnnounceTooLarge`), plus
+  per-field caps — **`MAX_ADDRS_PER_CHANGE = 32`** addresses per `Add` (`TooManyAddresses`) and
+  **`MAX_HOST_LEN = 253`** bytes per host (`HostTooLong`). The total-size bound is the
+  load-bearing guarantee (per-field caps are defense-in-depth): it directly guarantees every
+  accepted announce is `<= max_size` regardless of how addresses/hosts distribute, so a legit
+  provider's full-holdings frame is never hard-dropped. `MAX_ANNOUNCE_FRAME_BYTES` IS the value
+  of the opcode-222 `max_size`, so the enforced bound and the rate-limit cap cannot drift.
+  Arithmetic: fixed framing ≈ 282 B; per `Add` delta = `43 + addr_count×(host_len+4)`; a
+  realistic IPv6-first (§5.2) full re-announce (256 changes × ~6 v6-literal addresses) ≈ 86 KiB,
+  well under the bound. **This is a cross-repo canonical bound: dig-node, which recomputes and
+  re-verifies the announce, MUST enforce the SAME `MAX_ANNOUNCE_FRAME_BYTES`/`MAX_ADDRS_PER_CHANGE`/
+  `MAX_HOST_LEN` values.** Backwards-compatible: purely a reject-over-bound validation — the
+  `canonical_encode` wire LAYOUT is unchanged, so every within-bound legit frame is byte-identical.
 - **§5.4-EXEMPT (signed + mTLS, NOT recipient-sealed).** It carries no recipient-specific
   content — it is a public all-peers broadcast, exactly the L2 consensus-gossip carve-out
   (NC-1) — so it is mTLS-authenticated and signed but NOT end-to-end sealed to a recipient
@@ -613,13 +627,16 @@ free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is ex
   on-chain proof). It binds the batch of `(content_key, addresses)` deltas to the provider
   identity, so no third party can advertise content on the provider's behalf or point
   resolvers at attacker-controlled addresses. `verify_holdings_announce` performs the
-  five-step fail-closed gate:
+  fail-closed gate:
   1. `changes.len() <= 256` (else `TooManyChanges`).
-  2. `provider_peer_id` decodes as 64-hex → `[u8; 32]` (else `BadPeerIdHex`).
-  3. `SHA-256(provider_spki)` equals the carried peer id (else `PeerIdMismatch`) — the peer
+  2. the size bounds — per-`Add` `MAX_ADDRS_PER_CHANGE`/`MAX_HOST_LEN` caps and the total
+     `MAX_ANNOUNCE_FRAME_BYTES` encoded-frame bound (else `TooManyAddresses` / `HostTooLong` /
+     `AnnounceTooLarge`); checked BEFORE the P-256 verify so an oversized frame is dropped cheaply.
+  3. `provider_peer_id` decodes as 64-hex → `[u8; 32]` (else `BadPeerIdHex`).
+  4. `SHA-256(provider_spki)` equals the carried peer id (else `PeerIdMismatch`) — the peer
      id is VERIFIED against the SPKI, never trusted.
-  4. `provider_spki` parses as an `id-ecPublicKey` / `prime256v1` (P-256) key (else `BadSpki`).
-  5. the ECDSA-P256 signature verifies over the signing message under that key (else
+  5. `provider_spki` parses as an `id-ecPublicKey` / `prime256v1` (P-256) key (else `BadSpki`).
+  6. the ECDSA-P256 signature verifies over the signing message under that key (else
      `InvalidSignature`).
 - **Leaf-key identity — sound standalone (decider-locked, #1428).** An announcement carries
   the provider's TLS leaf `SubjectPublicKeyInfo` DER (`provider_spki`) and is signed by that
@@ -669,8 +686,9 @@ dig-dht's ingest recompute it byte-identically.
 
 | Item | Purpose |
 |------|---------|
-| `HoldingsAnnounce::new_signed(&signer, seq, announced_at, changes) -> Result` | Build a signed announcement (rejects `> 256` changes). |
-| `verify_holdings_announce(&HoldingsAnnounce) -> Result<(), HoldingsError>` | The DHT-ingest gate — the five-step fail-closed verify above. |
+| `HoldingsAnnounce::new_signed(&signer, seq, announced_at, changes) -> Result` | Build a signed announcement (rejects `> 256` changes and any batch over the size bounds). |
+| `verify_holdings_announce(&HoldingsAnnounce) -> Result<(), HoldingsError>` | The DHT-ingest gate — the fail-closed verify above (change-count + size bounds + identity + signature). |
+| `MAX_ANNOUNCE_FRAME_BYTES` / `MAX_ADDRS_PER_CHANGE` / `MAX_HOST_LEN` | The enforced size bounds (#1760 B); `MAX_ANNOUNCE_FRAME_BYTES` = the opcode-222 rate-limit `max_size`. Cross-repo: dig-node MUST match. |
 | `HoldingsSigner` (`sign(&[u8]) -> Vec<u8>`, `spki_der() -> Vec<u8>`) / `EcdsaHoldingsSigner::new(key_pair, spki_der)` | Build-side abstraction; v1 ECDSA-P256 leaf-key signer paired with its SPKI. |
 | `HoldingsAnnounce::{encode,decode}` | Variable-length big-endian wire round-trip. |
 | `canonical_encode(&[HoldingsDelta]) -> Vec<u8>` / `holdings_signing_message(&peer_id, seq, announced_at, &changes) -> Vec<u8>` | Signed-bytes + signing-message helpers. |
