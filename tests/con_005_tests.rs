@@ -25,28 +25,8 @@ use dig_gossip::{
     apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, gossip_inbound_rate_limits,
     load_ssl_cert, new_inbound_rate_limiter, peer_id_for_addr, CandidateAddr, DigMessageType,
     HoldingsAnnounce, HoldingsDelta, PenaltyReason, ServiceState, HOLDINGS_ANNOUNCE,
-    HOLDINGS_MAX_CHANGES, STORE_MELTED,
+    HOLDINGS_MAX_CHANGES,
 };
-
-/// Mirror of the crate-private `connection::inbound_limits::inbound_gate_allows` — the live inbound
-/// admission gate. `inbound_gate_allows` is `pub(crate)`, so these integration tests exercise the
-/// EXACT combination it wraps: the Chia base bound plus, for the DIG 220-band, the `dig_wire` bound.
-///
-/// AUTHORITATIVE regression guard: the in-crate `connection::inbound_limits::tests` module calls the
-/// REAL `inbound_gate_allows`. These external mirror tests are a SECONDARY check — a mirror cannot
-/// detect a broken production gate (it re-implements the branch it claims to guard), so it must never
-/// be the only test of the 220-band live path.
-fn live_gate_allows(lim: &mut RateLimiter, msg: &Message) -> bool {
-    if !lim.handle_message(msg) {
-        return false;
-    }
-    let opcode = msg.msg_type as u8;
-    if opcode >= 220 {
-        lim.check_dig_extension(opcode, msg.data.len() as u32)
-    } else {
-        true
-    }
-}
 
 /// **Row:** `test_inbound_rate_limiter_creation` — [`RateLimiter::new`] with `incoming = true`,
 /// `reset_seconds = 60`, and merged limits builds successfully (CON-005 §Inbound Rate Limiting).
@@ -366,76 +346,8 @@ fn test_holdings_announce_222_max_batch_not_clipped() {
     );
 }
 
-/// **Row:** `holdings_announce_222_flood_rejected_on_live_gate` (#1720) — the LIVE ingress gate
-/// (built exactly as the forwarders build it) bounds opcode-222 flooding to the `dig_wire` row
-/// (20/min), NOT the loose 100/min `default_settings` fall-through. Proves the row is enforced on
-/// the live path, not merely unit-tested via `check_dig_extension` in isolation.
-///
-/// Pre-fix (base `handle_message` alone) this frame fell through to the 100/min default and ~100
-/// frames would pass; the extra assertion below documents that gap the combined gate closes.
-#[test]
-fn holdings_announce_222_flood_rejected_on_live_gate() {
-    let announce_frame = || Message {
-        msg_type: ProtocolMessageTypes::HoldingsAnnounce,
-        id: None,
-        data: Bytes::new(vec![0u8; 1024]), // well under the 128 KiB max_size
-    };
-
-    let mut lim = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
-    for i in 0..20 {
-        assert!(
-            live_gate_allows(&mut lim, &announce_frame()),
-            "frame {i} within the 20/min holdings-announce cap must pass the live gate"
-        );
-    }
-    assert!(
-        !live_gate_allows(&mut lim, &announce_frame()),
-        "21st holdings-announce (222) in the window must be rejected by the live gate (#1720)"
-    );
-
-    // The enforcement gap this fix closes: the Chia base bound alone (the pre-fix live gate) reads
-    // only `default_settings` (100/min) for opcode 222, so it would admit the 21st frame.
-    let mut base_only = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
-    for _ in 0..21 {
-        assert!(
-            base_only.handle_message(&announce_frame()),
-            "pre-fix: handle_message alone lets 222 flood through the loose 100/min default"
-        );
-    }
-}
-
-/// **Row:** `store_melted_221_flood_rejected_on_live_gate` (#1316) — the LIVE ingress gate bounds
-/// opcode-221 (StoreMelted, fixed `ENCODED_LEN` = 164 B) flooding to the `dig_wire` row (10/min).
-/// This is the FIRST time the #1316 row binds on the live wire; guards it going live.
-///
-/// The extra assertion documents the pre-fix gap: base `handle_message` alone admits the 11th frame
-/// via the 100/min default.
-#[test]
-fn store_melted_221_flood_rejected_on_live_gate() {
-    assert_eq!(STORE_MELTED, 221, "opcode contract");
-    let melted_frame = || Message {
-        msg_type: ProtocolMessageTypes::StoreMelted,
-        id: None,
-        data: Bytes::new(vec![0u8; 164]), // fixed StoreMeltedAnnounce ENCODED_LEN
-    };
-
-    let mut lim = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
-    for i in 0..10 {
-        assert!(
-            live_gate_allows(&mut lim, &melted_frame()),
-            "frame {i} within the 10/min store-melted cap must pass the live gate"
-        );
-    }
-    assert!(
-        !live_gate_allows(&mut lim, &melted_frame()),
-        "11th store-melted (221) in the window must be rejected by the live gate (#1316)"
-    );
-
-    let mut base_only = RateLimiter::new(true, 60, 1.0, gossip_inbound_rate_limits());
-    for _ in 0..11 {
-        assert!(
-            base_only.handle_message(&melted_frame()),
-            "pre-fix: handle_message alone lets 221 flood through the loose 100/min default"
-        );
-    }
-}
+// The live-gate 220-band flood guards for opcodes 221/222 live in the crate's own
+// `connection::inbound_limits::tests` module (`real_gate_bounds_store_melted_221`,
+// `real_gate_bounds_holdings_announce_222`), which drive the REAL `inbound_gate_allows`. The
+// external mirrors that once lived here re-implemented the gate's branch and so could not detect a
+// broken production gate; they were removed (#1760 E) in favour of the authoritative in-crate tests.
