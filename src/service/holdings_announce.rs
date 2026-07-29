@@ -683,6 +683,15 @@ fn decode_delta(bytes: &[u8], pos: &mut usize) -> Option<HoldingsDelta> {
     match kind {
         KIND_ADD => {
             let addr_count = take_u16(bytes, pos)? as usize;
+            // Reject an over-cap address count BEFORE reserving the `Vec` (#1777): a crafted
+            // `addr_count` of up to `u16::MAX` would otherwise trigger a ~2 MiB transient
+            // reservation on a tiny frame that sits below the `check_announce_size` cap (that
+            // guard runs only later, in verify). Rejecting here makes decode agree with
+            // `check_announce_size` on the [`MAX_ADDRS_PER_CHANGE`] per-change invariant, so no
+            // legit frame (≤ cap since v0.17.13) is affected.
+            if addr_count > MAX_ADDRS_PER_CHANGE {
+                return None;
+            }
             let mut addresses = Vec::with_capacity(addr_count);
             for _ in 0..addr_count {
                 let host = String::from_utf8(take_bytes(bytes, pos)?.to_vec()).ok()?;
@@ -1104,6 +1113,64 @@ mod tests {
         assert_eq!(
             verify_holdings_announce(&a),
             Err(HoldingsError::BadPeerIdHex)
+        );
+    }
+
+    /// #1777 — a crafted `Add` delta claiming more addresses than [`MAX_ADDRS_PER_CHANGE`]
+    /// MUST be rejected at DECODE time, before the per-address `Vec` is reserved. A hostile
+    /// `addr_count` of `u16::MAX` sits far below the 128 KiB `check_announce_size` frame cap
+    /// (that guard runs only later, in verify), so decode is the only line of defence against
+    /// the transient over-reservation — and decode must agree with `check_announce_size` on the
+    /// per-change address invariant. Pre-fix decode had no such cap and returned `Some` here.
+    #[test]
+    fn decode_rejects_add_over_max_addrs_per_change() {
+        let over_cap: Vec<CandidateAddr> = (0..=MAX_ADDRS_PER_CHANGE)
+            .map(|_| CandidateAddr {
+                host: "::1".to_string(),
+                port: 1,
+            })
+            .collect();
+        assert_eq!(over_cap.len(), MAX_ADDRS_PER_CHANGE + 1);
+        let mut a = sample();
+        a.changes = vec![HoldingsDelta::Add {
+            content_key: [0u8; 32],
+            addresses: over_cap,
+            expires_at: 1,
+        }];
+        // The frame is small — well under MAX_ANNOUNCE_FRAME_BYTES — so only decode's own
+        // per-change cap can reject it. A crafted u16::MAX addr_count would otherwise reserve
+        // ~2 MiB before the truncated bytes are noticed.
+        let bytes = a.encode();
+        assert!(bytes.len() < MAX_ANNOUNCE_FRAME_BYTES);
+        assert!(
+            HoldingsAnnounce::decode(&bytes).is_none(),
+            "decode must reject an Add claiming > MAX_ADDRS_PER_CHANGE addresses (#1777)"
+        );
+    }
+
+    /// Back-compat (§5.1): a legit `Add` at the exact [`MAX_ADDRS_PER_CHANGE`] cap still decodes
+    /// byte-identically — the #1777 clamp is additive validation, never a tightening of the
+    /// accepted set below the invariant enforced since v0.17.13.
+    #[test]
+    fn decode_accepts_add_at_max_addrs_per_change() {
+        let at_cap: Vec<CandidateAddr> = (0..MAX_ADDRS_PER_CHANGE)
+            .map(|i| CandidateAddr {
+                host: format!("2001:db8::{i:x}"),
+                port: 9256,
+            })
+            .collect();
+        assert_eq!(at_cap.len(), MAX_ADDRS_PER_CHANGE);
+        let mut a = sample();
+        a.changes = vec![HoldingsDelta::Add {
+            content_key: [7u8; 32],
+            addresses: at_cap,
+            expires_at: 1_800_000_000,
+        }];
+        let bytes = a.encode();
+        assert_eq!(
+            HoldingsAnnounce::decode(&bytes),
+            Some(a),
+            "a max-shape Add (exactly MAX_ADDRS_PER_CHANGE) must still decode identically"
         );
     }
 

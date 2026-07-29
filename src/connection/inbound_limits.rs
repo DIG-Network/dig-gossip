@@ -189,9 +189,48 @@ mod tests {
     //! `default_settings` and these tests go RED (proven by reverting the branch). The external
     //! mirror in `tests/con_005_tests.rs` cannot detect that regression and is only a secondary check.
 
-    use dig_peer_protocol::{Bytes, ProtocolMessageTypes};
+    use dig_peer_protocol::{Bytes, ProtocolMessageTypes, Streamable};
 
     use super::*;
+
+    /// #1760 D — completeness guard for the DIG 220-band `dig_wire` rows.
+    ///
+    /// [`RateLimiter::check_dig_extension`] **fails OPEN**: an opcode in the 220 band with no
+    /// [`dig_extension_rate_limits_map`] row silently falls through to the loose Chia
+    /// `default_settings` (100/min, 1 MiB) instead of a deliberate bound (the class of gap #1720
+    /// closed for 221/222). This test enumerates every ≥[`DIG_WIRE_BAND_START`]
+    /// [`ProtocolMessageTypes`] variant that actually exists (probed via the wire discriminant, so
+    /// it can never go stale against a hand-copied list) and asserts each is CLASSIFIED — either it
+    /// carries a dedicated `dig_wire` row, or it is a documented member of
+    /// [`BASE_BOUND_ONLY_BAND_OPCODES`]. A newly-added 220-band opcode that is neither fails this
+    /// test, forcing a deliberate rate-limit decision rather than a silent fail-open default.
+    #[test]
+    fn every_220_band_opcode_is_classified() {
+        // Opcodes deliberately bounded ONLY by the base `handle_message` default (100/min, 1 MiB),
+        // with no tighter dedicated `dig_wire` row. `DigMessage` (220) is a DIRECTED envelope whose
+        // inner `DigMessageType` decides semantics; its ingress is covered by the base bound like any
+        // generic message, so — unlike the 221/222 public-flood broadcasts — it needs no dedicated
+        // tighter row. Adding an opcode here is a conscious "base bound is sufficient" statement.
+        const BASE_BOUND_ONLY_BAND_OPCODES: &[u8] = &[crate::service::dig_message::DIG_MESSAGE];
+
+        let map = dig_extension_rate_limits_map();
+        for opcode in DIG_WIRE_BAND_START..=u8::MAX {
+            // Probe whether this opcode is a real `ProtocolMessageTypes` variant via its wire
+            // discriminant — the authoritative source, so the guard tracks the enum, not a literal.
+            if ProtocolMessageTypes::from_bytes(&[opcode]).is_err() {
+                continue;
+            }
+            let has_row = map.contains_key(&opcode);
+            let base_bound_only = BASE_BOUND_ONLY_BAND_OPCODES.contains(&opcode);
+            assert!(
+                has_row ^ base_bound_only,
+                "220-band opcode {opcode} must be classified EXACTLY once: give it a \
+                 dig_extension_rate_limits_map row (a dedicated bound) OR list it in \
+                 BASE_BOUND_ONLY_BAND_OPCODES (base default is sufficient) — never both, never \
+                 neither. A fail-open fall-through to default_settings is the #1720/#1760 D bug."
+            );
+        }
+    }
 
     /// Real 222 (HoldingsAnnounce) flood: the live gate admits the first 20 (the `dig_wire` row) and
     /// rejects the 21st, driven through the REAL [`inbound_gate_allows`]. Without the 220-band branch

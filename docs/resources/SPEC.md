@@ -665,7 +665,10 @@ free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is ex
 | `changes` | `canonical_encode` | See below. |
 | `signature` | `⟨lp⟩` bytes | ECDSA-P256 ASN.1-DER over the signing message (~70-72 B, variable). |
 
-`decode` rejects any truncated frame, a `change_count > 256`, or trailing bytes.
+`decode` rejects any truncated frame, a `change_count > 256`, an `Add` whose `addr_count >
+MAX_ADDRS_PER_CHANGE` (32) — rejected before the per-address buffer is reserved, so a crafted
+`addr_count` cannot force an over-allocation on a small frame (#1777) — or trailing bytes. Decode
+thus enforces the same per-change address invariant as the verify-time size check.
 
 **`canonical_encode(changes)`** — the signed bytes; per delta a **kind-tag** byte then:
 
