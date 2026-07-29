@@ -341,6 +341,16 @@ impl GossipService {
                         .expect("pool_task mutex poisoned") = Some(pool_jh);
                 }
 
+                // #1703 item 2: the departed-peer reaper runs UNCONDITIONALLY — a node may adopt
+                // `dig-nat` peers (which carry no keepalive) whether or not the pool loop is enabled,
+                // so the leak it fixes exists on every running service.
+                let reaper_jh = handle.spawn_reaper();
+                *self
+                    .inner
+                    .reaper_task
+                    .lock()
+                    .expect("reaper_task mutex poisoned") = Some(reaper_jh);
+
                 Ok(handle)
             }
             // Already running -- API-001 acceptance criterion: "Calling `start()` twice
@@ -423,6 +433,19 @@ impl GossipService {
         }
         if let Ok(mut g) = self.inner.pool.events_tx.lock() {
             *g = None;
+        }
+
+        // Step 2d (#1703 item 2): stop the departed-peer reaper. It also self-exits once lifecycle
+        // left RUNNING (swapped above), but abort + join for a clean, prompt stop.
+        let reaper_join = self
+            .inner
+            .reaper_task
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        if let Some(jh) = reaper_join {
+            jh.abort();
+            let _ = jh.await;
         }
 
         // Step 3: Clear the bound address so the OS can reclaim the port.

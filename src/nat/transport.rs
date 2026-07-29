@@ -98,6 +98,19 @@ impl NatPeerConnection {
         self.inner.query_availability(items).await
     }
 
+    /// Whether the underlying multiplexed transport has closed — a clean peer departure OR a
+    /// transport error (the yamux driver task ended). Cheap and **synchronous**: a single atomic
+    /// load behind `dig-nat`'s [`ClosedHandle`](dig_nat::ClosedHandle), so it is safe to call while
+    /// holding the peer-map lock (it never awaits).
+    ///
+    /// This is the departed-peer reaper's PROOF that a [`PeerSlot::Nat`](crate::service::state::PeerSlot::Nat)
+    /// slot is gone (#1703 item 2). A NAT pool member carries no keepalive, so nothing else observes
+    /// its departure; the reaper polls this and evicts only slots that report `true`. A live-but-quiet
+    /// peer reports `false` and is never reaped.
+    pub fn is_transport_closed(&self) -> bool {
+        self.inner.session.closed_handle().is_closed()
+    }
+
     /// The underlying `dig-nat` connection, for callers that need the raw session (e.g. `dig-node`).
     pub fn into_inner(self) -> NatConnection {
         self.inner

@@ -195,6 +195,7 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         backpressure: None,
         keepalive_ping_interval_secs: None,
         keepalive_peer_timeout_secs: None,
+        reaper_interval_secs: None,
         peer_pool: None,
         nat_identity: None,
     }

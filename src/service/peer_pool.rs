@@ -81,6 +81,11 @@ pub enum PoolRemovalReason {
     Dead,
     /// Removed because the peer was banned (CON-007) for misbehaviour.
     Banned,
+    /// Evicted by the departed-peer reaper (#1703 item 2) — the peer's transport was provably
+    /// closed but, being a keepalive-less `dig-nat` slot, nothing else observed its departure.
+    /// Distinguished from [`Self::Dead`] (a CON-004 keepalive eviction) so churn consumers can tell
+    /// the periodic sweep apart from the keepalive path.
+    Reaped,
 }
 
 /// One dialable candidate the pool may connect to: its [`PeerId`] (when known) + address.

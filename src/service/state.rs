@@ -420,6 +420,25 @@ pub(crate) fn is_relayed(slot: &PeerSlot) -> bool {
     matches!(slot, PeerSlot::Nat(n) if matches!(n.method, dig_nat::TraversalKind::Relayed))
 }
 
+/// **#1703 item 2** — whether a peer slot is provably DEPARTED and safe for the reaper to evict.
+///
+/// A slot is departed only when we can PROVE its transport is gone from a cheap synchronous check:
+///
+/// * [`PeerSlot::Nat`] — the multiplexed `dig-nat` session has closed
+///   ([`NatPeerConnection::is_transport_closed`](crate::nat::NatPeerConnection::is_transport_closed)).
+///   This is the leak the reaper exists to fix: NAT pool members carry no keepalive, so nothing else
+///   observes their departure. A live-but-quiet NAT peer reports `false` and is left alone.
+/// * [`PeerSlot::Live`] — never reaped here. A live TLS peer is already torn down by the CON-004
+///   keepalive within [`PEER_TIMEOUT_SECS`](crate::constants::PEER_TIMEOUT_SECS), and it exposes no
+///   cheap synchronous closed signal to key on.
+/// * [`PeerSlot::Stub`] — a test-only row with no transport; nothing to reap.
+fn slot_is_departed(slot: &PeerSlot) -> bool {
+    match slot {
+        PeerSlot::Nat(n) => n.conn.is_transport_closed(),
+        PeerSlot::Live(_) | PeerSlot::Stub(_) => false,
+    }
+}
+
 /// The `Arc`-shared interior of [`GossipService`](super::gossip_service::GossipService)
 /// and [`GossipHandle`](super::gossip_handle::GossipHandle).
 ///
@@ -608,6 +627,12 @@ pub struct ServiceState {
     /// disabled, i.e. `GossipConfig::peer_pool` is `None`). `stop()` aborts + joins it.
     pub(crate) pool_task: Mutex<Option<JoinHandle<()>>>,
 
+    /// **#1703 item 2** — [`JoinHandle`] for the departed-peer reaper loop. Spawned unconditionally in
+    /// `start()` (any node may adopt `dig-nat` peers, pool or not), aborted + joined in `stop()`. The
+    /// loop wakes every [`REAPER_INTERVAL_SECS`](crate::constants::REAPER_INTERVAL_SECS) and calls
+    /// [`Self::reap_departed_peers`].
+    pub(crate) reaper_task: Mutex<Option<JoinHandle<()>>>,
+
     /// **Audit #179 (HIGH)** — bounds concurrent in-flight inbound handshakes (accepted TCP
     /// socket through TLS + Chia `Handshake`, before the peer is registered in [`Self::peers`]).
     /// Sized from [`GossipConfig::max_inflight_handshakes`] at construction. The accept loop
@@ -732,6 +757,7 @@ impl ServiceState {
             listener_task: Mutex::new(None),
             pool: Arc::new(crate::service::peer_pool::PoolState::new()),
             pool_task: Mutex::new(None),
+            reaper_task: Mutex::new(None),
             inflight_handshakes,
             relay_status: Mutex::new(None),
             relay_reachable: Mutex::new(std::collections::HashSet::new()),
@@ -1011,6 +1037,83 @@ impl ServiceState {
     /// it (never evicting the newer slot). See [`LiveSlot::generation`].
     pub(crate) fn next_peer_generation(&self) -> u64 {
         self.peer_generation.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// **#1703 item 2** — evict every peer slot whose transport is provably departed, returning how
+    /// many were reaped.
+    ///
+    /// # Why this exists
+    ///
+    /// A [`PeerSlot::Nat`] pool member carries no keepalive (unlike a [`PeerSlot::Live`] TLS peer,
+    /// which the CON-004 keepalive tears down within [`PEER_TIMEOUT_SECS`](crate::constants::PEER_TIMEOUT_SECS)).
+    /// So a NAT peer that leaves and never returns lingers in [`Self::peers`] until `stop()` — a slow
+    /// leak that over-counts `peer_count` and the `max_connections` budget under high peer turnover.
+    /// The reaper closes that gap by sweeping the map on a timer.
+    ///
+    /// # Conservative by construction
+    ///
+    /// Only slots that report a CLOSED transport are reaped ([`slot_is_departed`]). A live-but-quiet
+    /// NAT peer reports `false` and is left untouched — a false reap of a live peer is worse than a
+    /// slow leak. Live/Stub slots expose no cheap synchronous closed signal and are never reaped here
+    /// (Live is bounded by keepalive; a Stub has no transport).
+    ///
+    /// # No supersession race (stronger than the #1691 generation guard)
+    ///
+    /// The liveness judgement and the removal happen under ONE `peers`-lock hold, so the slot judged
+    /// departed is EXACTLY the slot removed — there is no window for a same-`peer_id` reconnect to
+    /// slip a newer live slot in between (insertion takes the same lock). A reconnect that already
+    /// superseded a dead session is seen as the CURRENT slot: its transport is open, so it is kept.
+    /// The generation guard in [`disconnect_after_keepalive_failure`] is needed there because that
+    /// path judges liveness across `await`s and then removes; the reaper never separates the two, so
+    /// atomicity subsumes the guard.
+    ///
+    /// Dropping a reaped [`PeerSlot::Nat`] tears down its yamux mux session (the #1717 drop
+    /// invariant), releasing the transport as part of the eviction.
+    ///
+    /// # Cleanup parity with `disconnect()` (#1703 gate follow-up)
+    ///
+    /// Evicting a peer from [`Self::peers`] alone would leave two sibling leaks of the same class this
+    /// reaper targets, so — exactly as [`GossipHandle::disconnect`](super::gossip_handle::GossipHandle::disconnect)
+    /// does — each reaped `peer_id` is ALSO removed from Plumtree state (PLT-006 tree self-healing;
+    /// else the id lingers in `eager_peers`/`lazy_peers`) and announced as
+    /// [`PoolEvent::PeerRemoved`](crate::service::peer_pool::PoolEvent) so event-driven consumers
+    /// (dig-node) drop their stale "connected" view. Both run **after** the `peers` lock is released,
+    /// in the SAME order `disconnect()` uses (publish, then Plumtree), so the reaper never holds the
+    /// `peers` lock across a broadcast send or the Plumtree lock — no lock-order inversion. A reaped
+    /// id is already gone from the map, so a concurrent reconnect re-inserts a fresh slot + re-adds to
+    /// Plumtree independently; this is the identical (accepted) interleaving `disconnect()` has.
+    pub(crate) fn reap_departed_peers(&self) -> usize {
+        // Phase 1 — judge + remove ATOMICALLY under one `peers`-lock hold (the load-bearing
+        // invariant: the slot judged departed is exactly the slot removed; no supersession window),
+        // collecting the reaped ids for the post-lock cleanup below.
+        let reaped_ids: Vec<PeerId> = {
+            let Ok(mut peers) = self.peers.lock() else {
+                return 0; // Poisoned lock — a degraded no-op is safer than a panic in the loop.
+            };
+            let mut ids = Vec::new();
+            peers.retain(|peer_id, slot| {
+                let departed = slot_is_departed(slot);
+                if departed {
+                    ids.push(*peer_id);
+                }
+                !departed
+            });
+            ids
+        };
+
+        // Phase 2 — cleanup OUTSIDE the `peers` lock, mirroring `disconnect()` (publish churn, then
+        // Plumtree removal) so no new lock-order inversion is introduced.
+        for peer_id in &reaped_ids {
+            self.pool
+                .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {
+                    peer_id: *peer_id,
+                    reason: crate::service::peer_pool::PoolRemovalReason::Reaped,
+                });
+            if let Ok(mut pt) = self.plumtree.lock() {
+                pt.remove_peer(peer_id);
+            }
+        }
+        reaped_ids.len()
     }
 
     /// `true` if `peer_id` is currently banned **after** pruning expired rows at `now_unix_secs`.
