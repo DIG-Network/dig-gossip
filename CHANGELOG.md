@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.17] - 2026-07-29
+
+### Bug Fixes
+- **con:** Exempt public-flood opcodes (221/222) from the rate-limit ban penalty (#46)
+
 ## [0.17.16] - 2026-07-29
 
 ### Documentation
