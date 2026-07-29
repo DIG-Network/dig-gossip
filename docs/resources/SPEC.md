@@ -1601,6 +1601,10 @@ let inbound_limiter = RateLimiter::new(
 // For DIG extension messages, extend V2_RATE_LIMITS with additional entries
 ```
 
+### 5.4.1 Rate-Limit Ban Recording (Accepted Async-Gap Residual)
+
+**Rate-limit ban recording (accepted async-gap residual).** A rate-limit penalty that crosses `PENALTY_BAN_THRESHOLD` is charged synchronously on the inbound bridge (under the #1691 per-generation guard), while the ban row (`banned` table, keyed by `peer_id = SHA-256(TLS SPKI DER)`) is written by a spawned enforcement task. A session MUST NOT be able to evade the resulting ban by reconnecting inside the µs spawn→enforce gap: this is prevented not by synchronous recording but by the cost asymmetry — a same-`peer_id` reconnect requires a full SPKI-pinned mTLS handshake (milliseconds), which cannot complete inside the microsecond gap, and confers no amplification (a fresh identity is a different `peer_id`; a won dodge still requires re-crossing the threshold at another full handshake). The ban table is identity-scoped and durable across reconnects once written. Implementations MAY instead record the threshold-cross into the `peer_id`/IP ban table synchronously at charge time for defence-in-depth; this is not required for correctness and is deliberately not done, to avoid a banned-but-still-Live map inconsistency when the guarded async enforce no-ops against a superseding reconnect.
+
 ---
 
 ## 6. Peer Discovery
