@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.17.13] - 2026-07-29
+
+### Bug Fixes
+- **con:** Bound holdings-announce encoded size so the 128 KiB cap is provably sufficient (#1760 B)
+
 ## [0.17.12] - 2026-07-28
 
 ### Bug Fixes
