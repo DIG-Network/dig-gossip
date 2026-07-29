@@ -1485,6 +1485,32 @@ outbound reconnect that MOVES into a different, already-occupied group is reconc
 departed-peer reaper, #1703 item 2.) Without the outbound path, a node could never re-establish a
 dropped outbound link to a peer until the stale slot was cleared.
 
+### 5.2.4 Departed-peer reaper (normative; #1703 item 2)
+
+A `dig-nat` pool member (`PeerSlot::Nat`) carries no keepalive — unlike a live TLS peer, which the
+CON-004 keepalive tears down within `PEER_TIMEOUT_SECS` (90 s). So a NAT peer that leaves and never
+returns would otherwise linger in the peer map until `stop()`, over-counting `peer_count` and the
+`max_connections` / outbound-diversity budgets under high peer turnover (a slow leak). To bound this, a
+running service MUST run a periodic **departed-peer reaper**:
+
+- **Cadence.** The reaper wakes every `reaper_interval_secs` (config; `None` resolves to
+  `REAPER_INTERVAL_SECS` = 30 s) and is spawned unconditionally at `start()` (a node may adopt NAT
+  peers whether or not the pool loop runs), aborted + joined at `stop()`.
+- **Provable departure only.** A slot is reaped ONLY when its transport is provably closed from a
+  cheap synchronous check: a `PeerSlot::Nat` whose multiplexed session has closed
+  (`NatPeerConnection::is_transport_closed`, backed by dig-nat's `ClosedHandle`). A live-but-quiet NAT
+  peer reports open and MUST NOT be reaped — a false reap of a live peer is worse than a slow leak.
+  `PeerSlot::Live` is left to the CON-004 keepalive (it exposes no cheap synchronous closed signal);
+  `PeerSlot::Stub` has no transport.
+- **Atomic decide-and-remove — subsumes the §5.2.3 generation guard.** The liveness judgement and the
+  removal MUST happen under ONE hold of the `peers` lock, so the slot judged departed is EXACTLY the
+  slot removed. This closes the newest-wins race (#1762) without a generation field on `NatSlot`: a
+  same-`peer_id` reconnect that already superseded a dead session is seen as the CURRENT slot, whose
+  transport is open, so it is kept. (The §5.2.3 generation guard is needed for the keepalive/rate-limit
+  paths because they judge liveness across `await`s and THEN remove; the reaper never separates the
+  two, so atomicity is strictly stronger.) Dropping a reaped `PeerSlot::Nat` tears down its yamux mux
+  session (the #1717 drop invariant), releasing the transport as part of the eviction.
+
 This outbound `/16`+AS diversity gate is enforced on **EVERY** path that adds an outbound peer, not
 only the operator-initiated dial. Both `GossipHandle::connect_to` (manual dial) AND
 `GossipHandle::adopt_nat_connection` (the AUTO-POOL adoption path: pool maintenance → `HandleDialer::dial`

@@ -479,3 +479,18 @@ raw wire bytes, so decode must enforce the per-change `MAX_ADDRS_PER_CHANGE` (32
 Fix: reject `addr_count > MAX_ADDRS_PER_CHANGE` at the top of the `Add` decode arm, before the
 `with_capacity` — so decode and `check_announce_size` agree on the invariant. Additive/back-compat:
 every legit frame (≤32 addrs/change since v0.17.13) still decodes byte-identically.
+
+## departed-peer reaper: atomic decide-and-remove subsumes the generation guard (#1703 item 2)
+
+NAT pool members (`PeerSlot::Nat`) carry NO keepalive (unlike `Live`, which the CON-004 keepalive
+reaps within 90 s), so a departed NAT peer lingered in the map until `stop()` — a slow leak that
+over-counts `peer_count` + the outbound-diversity budget under churn. Fix: a periodic reaper
+(`ServiceState::reap_departed_peers`, spawned in `start()`) evicts slots whose transport is provably
+closed (`NatPeerConnection::is_transport_closed`, backed by dig-nat's `ClosedHandle` — a cheap sync
+atomic load, safe under the `peers` std-Mutex, no await). Key realization on the #1762 newest-wins
+race: because the reaper judges liveness AND removes under ONE `peers`-lock hold, the slot it judges
+departed IS the slot it removes — a superseded-then-live reconnect is seen as the CURRENT (open) slot
+and kept. That atomicity is STRICTLY STRONGER than the #1691 session-generation compare-and-remove
+(which the keepalive/rate-limit paths need only because they judge across `await`s then remove), so
+`NatSlot` needs no generation field. Conservative by design: only proven-closed slots are reaped; a
+live-but-quiet NAT peer reports open and is never touched (a false reap is worse than a slow leak).

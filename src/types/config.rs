@@ -262,6 +262,13 @@ pub struct GossipConfig {
     /// `None` falls back to [`PEER_TIMEOUT_SECS`](crate::constants::PEER_TIMEOUT_SECS) (90 s).
     pub keepalive_peer_timeout_secs: Option<u64>,
 
+    /// #1703 item 2: seconds between departed-peer reaper sweeps. `None` falls back to
+    /// [`REAPER_INTERVAL_SECS`](crate::constants::REAPER_INTERVAL_SECS) (30 s). The reaper evicts
+    /// `dig-nat` pool members whose transport is provably closed — a slot class that carries no
+    /// keepalive and would otherwise linger until `stop()`. Integration tests set this to 1 s so the
+    /// end-to-end sweep is observable quickly.
+    pub reaper_interval_secs: Option<u64>,
+
     /// Connected-peer-pool policy (POOL-*): the maintained set of ready, CONNECTED peers a node
     /// keeps for peer-RPC + downloads. `None` disables the pool maintenance loop entirely — the
     /// node still accepts inbound peers and honours manual `connect_to` / `connect_via_nat`, but
@@ -325,6 +332,7 @@ impl Default for GossipConfig {
             backpressure: None,
             keepalive_ping_interval_secs: None,
             keepalive_peer_timeout_secs: None,
+            reaper_interval_secs: None,
             peer_pool: None,
             nat_identity: None,
         }

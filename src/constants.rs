@@ -209,6 +209,15 @@ pub const PEER_TIMEOUT_SECS: u64 = 90;
 /// SPEC §2.13 constants (`PING_INTERVAL_SECS = 30`).
 pub const PING_INTERVAL_SECS: u64 = 30;
 
+/// Interval between departed-peer reaper sweeps (#1703 item 2).
+///
+/// A `dig-nat` pool member ([`PeerSlot::Nat`](crate::service::state::PeerSlot::Nat)) carries no
+/// keepalive, so a peer that leaves lingers in the map until the service stops — a slow leak that
+/// inflates `peer_count` / the `max_connections` budget under high peer turnover. The reaper task
+/// wakes every `REAPER_INTERVAL_SECS` and evicts the slots whose transport is provably closed. Chosen
+/// equal to [`PING_INTERVAL_SECS`] so a departed peer is reaped on the same order as a keepalive miss.
+pub const REAPER_INTERVAL_SECS: u64 = 30;
+
 /// Default timeout for [`GossipHandle::request`](crate::service::gossip_handle::GossipHandle::request)
 /// RPC calls. Used until API-003 adds an explicit `GossipConfig` field.
 /// SPEC §3.3 (API-002 implementation notes).

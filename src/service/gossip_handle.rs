@@ -1676,6 +1676,35 @@ impl GossipHandle {
     /// [`GossipService::start`](super::gossip_service::GossipService::start) when the pool is
     /// configured. The loop exits when the lifecycle leaves `RUNNING` (i.e. `stop()`), so the task is
     /// self-terminating in addition to being aborted at teardown.
+    /// **#1703 item 2** — spawn the departed-peer reaper loop.
+    ///
+    /// Wakes every [`GossipConfig::reaper_interval_secs`](crate::types::config::GossipConfig::reaper_interval_secs)
+    /// (or [`REAPER_INTERVAL_SECS`](crate::constants::REAPER_INTERVAL_SECS)) and evicts peer slots whose
+    /// transport is provably closed ([`ServiceState::reap_departed_peers`](crate::service::state::ServiceState::reap_departed_peers)).
+    /// The first (immediate) tick is skipped so the sweep never fires the instant the service starts.
+    /// The loop exits once the lifecycle leaves `RUNNING`; `stop()` also aborts + joins it.
+    pub(crate) fn spawn_reaper(&self) -> tokio::task::JoinHandle<()> {
+        let handle = self.clone();
+        let interval_secs = handle
+            .inner
+            .config
+            .reaper_interval_secs
+            .unwrap_or(crate::constants::REAPER_INTERVAL_SECS)
+            .max(1);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // Consume the immediate first tick.
+            loop {
+                ticker.tick().await;
+                if !handle.inner.is_running() {
+                    break;
+                }
+                handle.inner.reap_departed_peers();
+            }
+        })
+    }
+
     pub(crate) fn spawn_pool_maintenance(&self) -> tokio::task::JoinHandle<()> {
         let handle = self.clone();
         let interval_secs = handle
@@ -2353,6 +2382,13 @@ impl GossipHandle {
             .lock()
             .map(|g| g.keys().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// #1703 item 2: run one departed-peer reaper sweep synchronously and return the number of slots
+    /// reaped. Lets tests exercise the reap logic deterministically without waiting on the timer loop.
+    #[doc(hidden)]
+    pub fn __reap_departed_peers_for_tests(&self) -> usize {
+        self.inner.reap_departed_peers()
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.
