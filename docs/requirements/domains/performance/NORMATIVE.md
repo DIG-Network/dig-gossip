@@ -26,9 +26,9 @@ The Plumtree spanning tree MUST prefer low-latency peers as eager push targets. 
 
 **Spec reference:** SPEC Section 1.8 (Improvement #6), Section 2.5 (PeerReputation.avg_rtt_ms: "Used for latency-aware peer selection and Plumtree tree optimization"), Section 8.1 (Plumtree Structured Gossip)
 
-### PRF-004: Parallel Bootstrap
+### PRF-004: Parallel Bootstrap (future roadmap)
 
-Connection establishment during bootstrap MUST use PARALLEL_CONNECT_BATCH_SIZE (8) concurrent connection attempts via FuturesUnordered. The system MUST NOT wait for one connection attempt to complete before starting the next. All batch members MUST be in-flight concurrently.
+Parallel bootstrap is a planned improvement: connection establishment during bootstrap is designed to use PARALLEL_CONNECT_BATCH_SIZE (8) concurrent connection attempts via FuturesUnordered, with all batch members in-flight concurrently rather than sequentially. Currently, connection establishment is serial via the pool-maintenance dialer (`HandleDialer::dial` → `connect_via_nat_full_ladder` → `adopt_nat_connection`) or manual `connect_to` → `connect_outbound_peer` (CON-001). The parallel-batch simulation stub was removed in v0.17.6.
 
 **Spec reference:** SPEC Section 1.8 (Improvement #5: Parallel connection establishment), Section 4.4 (PARALLEL_CONNECT_BATCH_SIZE), Section 6.4 (Discovery Loop, item 2)
 

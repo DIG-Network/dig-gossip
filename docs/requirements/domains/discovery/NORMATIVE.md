@@ -54,9 +54,9 @@ Feeler connections MUST follow a Poisson schedule with 240s average interval. A 
 
 **Spec reference:** SPEC Section 6.4 (Discovery Loop, item 4)
 
-### DSC-009: Parallel Connection Establishment
+### DSC-009: Parallel Connection Establishment (future roadmap)
 
-Connection establishment MUST batch up to PARALLEL_CONNECT_BATCH_SIZE (8) concurrent connections via FuturesUnordered. This is an improvement over Chia's sequential one-at-a-time approach.
+Parallel connection establishment is a planned improvement: the design is to batch up to PARALLEL_CONNECT_BATCH_SIZE (8) concurrent connections via FuturesUnordered, improving over Chia's sequential one-at-a-time approach. Currently, connection establishment is serial via the pool-maintenance dialer (`HandleDialer::dial` → `connect_via_nat_full_ladder` → `adopt_nat_connection`) or manual `connect_to` → `connect_outbound_peer` (CON-001). The parallel-batch simulation stub was removed in v0.17.6.
 
 **Spec reference:** SPEC Section 6.4 (Discovery Loop, item 2)
 

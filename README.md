@@ -561,7 +561,7 @@ PENALTY_BAN_THRESHOLD        = 100     // penalty points → ban
 BAN_DURATION_SECS            = 3600    // 1-hour ban default
 PEER_TIMEOUT_SECS            = 90      // keepalive timeout
 PING_INTERVAL_SECS           = 30      // keepalive probe interval
-PARALLEL_CONNECT_BATCH_SIZE  = 8       // concurrent outbound connects
+PARALLEL_CONNECT_BATCH_SIZE  = 8       // planned for parallel connect batches (DSC-009/PRF-004)
 FEELER_INTERVAL_SECS         = 240     // average Poisson feeler interval
 MAX_PEERS_RECEIVED_PER_REQUEST = 1000  // cap per RespondPeers
 ```
@@ -587,7 +587,7 @@ MAX_PEERS_RECEIVED_PER_REQUEST = 1000  // cap per RespondPeers
 2. Loop queries DNS seeds (`Network::lookup_all()`)
 3. Falls back to configured introducer (`RequestPeersIntroducer`)
 4. Filters candidates through `/16 subnet group` and `AS-level diversity` guards
-5. Connects in parallel batches (`PARALLEL_CONNECT_BATCH_SIZE = 8`)
+5. Connects to selected peers via the pool-maintenance dialer (`HandleDialer::dial` → `connect_via_nat_full_ladder` → `adopt_nat_connection`) or manual `connect_to` → `connect_outbound_peer` (CON-001); parallel batching (DSC-009/PRF-004) is planned but not yet implemented
 6. On connect: sends `RequestPeers`, feeds reply to `AddressManager`
 7. Inbound listener relays peer addresses back to any live outbound peer
 

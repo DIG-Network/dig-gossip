@@ -51,7 +51,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] DSC-006 — Discovery loop with DNS-first then introducer with exponential backoff
 - [x] DSC-007 — Peer exchange via RequestPeers/RespondPeers on outbound connect
 - [x] DSC-008 — Feeler connections on Poisson schedule (240s average)
-- [x] DSC-009 — Parallel connection establishment (batch connect with FuturesUnordered)
+- [ ] DSC-009 — Parallel connection establishment (batch connect with FuturesUnordered) — planned
 - [x] DSC-010 — AS-level diversity (one outbound per AS, cached BGP lookup)
 - [x] DSC-011 — One outbound per /16 group (fast filter before AS check)
 - [x] DSC-012 — IntroducerPeers/VettedPeer tracking (vetting state machine)
@@ -115,7 +115,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] PRF-001 — Latency-aware peer scoring (RTT tracking from Ping/Pong, rolling average)
 - [x] PRF-002 — Peer selection preference by composite score
 - [x] PRF-003 — Plumtree tree optimization (prefer low-latency peers as eager)
-- [x] PRF-004 — Parallel bootstrap (PARALLEL_CONNECT_BATCH_SIZE concurrent connects)
+- [ ] PRF-004 — Parallel bootstrap (PARALLEL_CONNECT_BATCH_SIZE concurrent connects) — planned
 - [x] PRF-005 — Bandwidth benchmarks (Plumtree vs flood, compact vs full, ERLAY vs flood)
 - [x] PRF-006 — Latency benchmarks (NewPeak p99 during bulk sync < 50ms)
 
