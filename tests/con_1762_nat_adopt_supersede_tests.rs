@@ -279,7 +279,7 @@ async fn at_the_relayed_cap_a_relayed_peer_can_redial_but_a_new_relayed_identity
     );
     let err = handle.adopt_nat_connection(over).await;
     assert!(
-        matches!(err, Err(GossipError::ConnectionFiltered(ref m)) if m.contains("INT-006a")),
+        matches!(err, Err(GossipError::ConnectionFiltered(ref m)) if m.as_str().contains("INT-006a")),
         "a net-new relayed identity at the cap must still be refused, got {err:?}"
     );
 

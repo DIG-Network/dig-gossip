@@ -20,6 +20,8 @@
 
 use std::collections::HashMap;
 
+use dig_nat::SafeText;
+
 use super::relay_types::{RelayMessage, RelayPeerInfo};
 use crate::error::GossipError;
 
@@ -90,9 +92,11 @@ impl RelayClient {
             tracing::info!("RLY-001: registered with relay ({connected_peers} peers)");
             Ok(())
         } else {
-            Err(GossipError::RelayError(format!(
+            // #1883 — `message` is relay-supplied, so it is neutralized on the way into the
+            // error rather than trusted to be one line.
+            Err(GossipError::RelayError(SafeText::from_untrusted(format!(
                 "registration rejected: {message}"
-            )))
+            ))))
         }
     }
 

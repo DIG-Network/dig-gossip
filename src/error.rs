@@ -27,6 +27,34 @@
 //! This matches the API-004 implementation note (“boxed representation”) while satisfying
 //! `Clone` without losing structured upstream error information.
 //!
+//! # Why some variants hold [`SafeText`] rather than [`String`] (#1883)
+//!
+//! A `String` field accepts anything, so the safety of a rendered error rested on every present and
+//! future construction site remembering to neutralize what it was handed — and the relay-discovery
+//! site did not: it interpolated the `message` of a `RelayMessage::Error` frame, chosen freely by an
+//! **explicitly untrusted** relay, so a real newline in that field forged a whole second line in any
+//! log rendering the error.
+//!
+//! The variants whose text comes from a remote party therefore hold [`dig_nat::SafeText`], whose only
+//! doors are `from_untrusted` (which escapes control and bidi-formatting characters and bounds the
+//! length) and `from_static`, which a runtime `String` cannot pass through. That makes the defect
+//! **unrepresentable** instead of guarded, which matters because this exact hole was reopened once per
+//! variant by callers each individually forgetting a convention. `SafeText`’s `Debug` renders like
+//! its `Display` for the same reason — `{:?}` reaches a log at least as often as `{}` does.
+//!
+//! Deliberately **unchanged**: the peer-identity variants
+//! ([`PeerNotConnected`](GossipError::PeerNotConnected),
+//! [`PeerBanned`](GossipError::PeerBanned),
+//! [`DuplicateConnection`](GossipError::DuplicateConnection)) carry a [`PeerId`], a fixed 32-byte
+//! `Bytes32` rendered as hex. A peer cannot put text of its choosing there at all, so they are
+//! already unrepresentable, and widening them to a text type would invite a future caller to
+//! interpolate a formatted string into a field that is currently incapable of holding one.
+//! Likewise the variants fed only by the OS, the local config, or this crate’s own literals
+//! ([`IoError`](GossipError::IoError), [`InvalidConfig`](GossipError::InvalidConfig),
+//! [`AddressManagerStore`](GossipError::AddressManagerStore),
+//! [`IntroducerError`](GossipError::IntroducerError)) keep `String`: their provenance is not a
+//! stranger, and converting them would spend the type’s signal on text that never crossed the wire.
+//!
 //! # Chia equivalent
 //!
 //! Chia Python raises ad-hoc exceptions throughout `server.py`, `node_discovery.py`, etc.
@@ -35,6 +63,7 @@
 
 use std::sync::Arc;
 
+use dig_nat::SafeText;
 use thiserror::Error;
 
 use crate::types::peer::PeerId;
@@ -209,9 +238,14 @@ pub enum GossipError {
     /// violation (SPEC §7).
     /// **Caller action:** The relay service auto-reconnects; callers can check
     /// `relay_stats()` for status.
-    /// **Produced by:** [`crate::relay`] subsystem (future implementation).
+    /// **Produced by:** [`crate::relay`] subsystem, and
+    /// [`crate::nat::discovery::relay_get_peers`].
+    ///
+    /// Holds [`SafeText`] because a relay is untrusted and its `RelayMessage::Error { message }` is
+    /// a `String` it chose — the one field in this enum a stranger used to write into directly
+    /// (#1883).
     #[error("relay error: {0}")]
-    RelayError(String),
+    RelayError(SafeText),
 
     /// A connection was rejected by a diversity filter (INT-006 /16 subnet, INT-007 AS).
     ///
@@ -219,8 +253,13 @@ pub enum GossipError {
     /// already has an outbound connection in the filter.
     /// **Caller action:** Skip this candidate and try another peer.
     /// **Produced by:** [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle).
+    ///
+    /// Holds [`SafeText`] even though today’s producers interpolate only a parsed [`std::net::IpAddr`]
+    /// and a count, neither of which can carry a control character: the reason this variant was
+    /// reported is that nothing in a `String` field stopped the next producer from being the one that
+    /// did (#1883).
     #[error("connection filtered: {0}")]
-    ConnectionFiltered(String),
+    ConnectionFiltered(SafeText),
 
     /// Address manager peers-file snapshot failed (DSC-002 — corrupt bincode, version mismatch, or invariant violation).
     ///
@@ -272,8 +311,11 @@ pub enum GossipError {
     /// **Caller action:** retry later / try another candidate address; the peer may be offline or the
     /// relay unreachable.
     /// **Produced by:** the `dig-nat` transport adapter (`crate::nat`).
+    ///
+    /// Holds [`SafeText`] because the dial chain it renders reaches out to relays and remote peers,
+    /// so the failure string can end up carrying text a stranger supplied (#1883).
     #[error("nat transport error: {0}")]
-    NatError(String),
+    NatError(SafeText),
 
     // -- DIG dispatch-authority errors (#1404) --------------------------------
     /// A DIG opcode's [`RoutingStrategy`](crate::types::dig_messages::RoutingStrategy) has no

@@ -84,7 +84,7 @@ async fn second_adoption_in_same_slash16_is_filtered_int006() {
     let (second, s2) = loopback_nat_conn([2; 32], addr("127.0.0.9:9450"));
     let err = handle.adopt_nat_connection(second).await;
     assert!(
-        matches!(&err, Err(GossipError::ConnectionFiltered(msg)) if msg.contains("INT-006")),
+        matches!(&err, Err(GossipError::ConnectionFiltered(msg)) if msg.as_str().contains("INT-006")),
         "a second net-new adoption into an occupied /16 must be ConnectionFiltered (INT-006), got {err:?}"
     );
     assert_eq!(

@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.17.21"
+version = "0.18.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -78,6 +78,14 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # types below (`expected dig_nat::relay::RelayStatus, found dig_nat::RelayStatus`). Every node on every
 # path from dig-nat to dig-node must be bumped; this crate is the last one.
 #
+# `0.15` (cascade #1674/#1675) adds `SafeText` — text that cannot hold a raw control character, so a
+# peer-supplied string is unrepresentable in a rendered error rather than merely guarded. This crate
+# ADOPTS it (#1883): the untrusted relay's `RelayMessage::Error { message }` used to be interpolated
+# raw into `GossipError::RelayError`, so a newline the relay chose forged a second log line. The
+# re-pin is again mandatory rather than cosmetic — `dig-nat = "0.14"` (`>=0.14.0, <0.15.0`) can never
+# resolve 0.15.0, and `SafeText` now crosses dig-dht's and dig-peer's public error surfaces too, so a
+# tree holding two dig-nat versions is an outright `E0308` on those seams and not just two mTLS stacks.
+#
 # WHY the bump is a MINOR even though nothing here changed: `src/nat/mod.rs` re-exports dig-nat types
 # from THIS crate's public API, so a dig-nat version change rotates their type identity for our
 # consumers. Resolved at dig-nat's head rather than assumed — SIX are nominal types DEFINED in dig-nat
@@ -88,7 +96,7 @@ dig-peer-protocol = { version = "0.2", default-features = false }
 # re-exports (`NodeCert`, `PeerId`, `BindingPolicy`, `peer_id_from_*`) come from dig-tls, which both
 # dig-nat versions pin at `^0.3`, so cargo unifies those. Six rotating nominal types is still a
 # breaking public-API change for consumers ⇒ MINOR on `0.x`, not patch.
-dig-nat = "0.14"
+dig-nat = "0.15"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid

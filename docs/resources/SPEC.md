@@ -1292,8 +1292,11 @@ pub enum GossipError {
     #[error("relay not configured")]
     RelayNotConfigured,
 
+    // Holds `dig_nat::SafeText`, not `String`: a relay is untrusted and chooses the `message` of a
+    // `RelayMessage::Error` frame, so the text is neutralized as it enters the error rather than at
+    // each place that renders it (#1883).
     #[error("relay error: {0}")]
-    RelayError(String),
+    RelayError(SafeText),
 
     #[error("service not started")]
     ServiceNotStarted,
