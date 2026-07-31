@@ -209,7 +209,7 @@ async fn eclipse_admission_is_refused_for_verified_new_identity_in_full_group() 
         "a net-new verified identity in a full /16 must be refused, not eclipse-admitted",
     );
     assert!(
-        matches!(err, GossipError::ConnectionFiltered(ref m) if m.contains("INT-006")),
+        matches!(err, GossipError::ConnectionFiltered(ref m) if m.as_str().contains("INT-006")),
         "expected INT-006 diversity refusal, got {err:?}"
     );
 
@@ -286,7 +286,7 @@ async fn map_derived_occupancy_refuses_new_identity_when_a_seeded_outbound_holds
         "a net-new verified identity in a /16 the peer map already shows occupied must be refused",
     );
     assert!(
-        matches!(err, GossipError::ConnectionFiltered(ref m) if m.contains("INT-006")),
+        matches!(err, GossipError::ConnectionFiltered(ref m) if m.as_str().contains("INT-006")),
         "expected INT-006 diversity refusal derived from the peer map, got {err:?}"
     );
 

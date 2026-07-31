@@ -43,6 +43,7 @@
 //! (`full_node.py`, `server.py`). The key difference is that Chia's `Server` object is not
 //! `Clone` — callers must borrow it. Our `Arc` wrapper avoids lifetime gymnastics in async code.
 
+use dig_nat::SafeText;
 use dig_peer_protocol::Peer;
 use dig_peer_protocol::{
     ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
@@ -944,14 +945,14 @@ impl GossipHandle {
                 let ip = addr.ip();
                 return Err(match kind {
                     crate::service::state::OutboundDiversityConflict::Subnet => {
-                        GossipError::ConnectionFiltered(format!(
+                        GossipError::ConnectionFiltered(SafeText::from_untrusted(format!(
                             "INT-006: /16 subnet group already has an outbound connection for {ip}"
-                        ))
+                        )))
                     }
                     crate::service::state::OutboundDiversityConflict::As => {
-                        GossipError::ConnectionFiltered(format!(
+                        GossipError::ConnectionFiltered(SafeText::from_untrusted(format!(
                             "INT-007: AS already has an outbound connection for {ip}"
-                        ))
+                        )))
                     }
                 });
             }
@@ -1129,7 +1130,7 @@ impl GossipHandle {
             .build();
         crate::nat::nat_connect(&target, &identity, &config)
             .await
-            .map_err(|e| GossipError::NatError(e.to_string()))
+            .map_err(|e| GossipError::NatError(SafeText::from_untrusted(e.to_string())))
     }
 
     /// Establish a pool auto-dial over the **FULL** `dig-nat` traversal ladder (#1517 defect 2).
@@ -1158,7 +1159,7 @@ impl GossipHandle {
         let runtime = self.pool_dial_runtime();
         crate::nat::nat_connect_with_runtime(&target, &identity, &config, &runtime)
             .await
-            .map_err(|e| GossipError::NatError(e.to_string()))
+            .map_err(|e| GossipError::NatError(SafeText::from_untrusted(e.to_string())))
     }
 
     /// Build the [`dig_nat::NatRuntime`] the pool auto-dial composes the full ladder from (#1517
@@ -1323,8 +1324,8 @@ impl GossipHandle {
                     self.inner.config.target_outbound_count,
                 );
                 if relayed_outbound >= cap {
-                    return Err(GossipError::ConnectionFiltered(format!(
-                        "INT-006a: relayed outbound cap reached ({cap})"
+                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                        format!("INT-006a: relayed outbound cap reached ({cap})"),
                     )));
                 }
             } else if let Some(kind) = crate::service::state::outbound_diversity_conflict(
@@ -1337,14 +1338,14 @@ impl GossipHandle {
                 let ip = remote.ip();
                 return Err(match kind {
                     crate::service::state::OutboundDiversityConflict::Subnet => {
-                        GossipError::ConnectionFiltered(format!(
+                        GossipError::ConnectionFiltered(SafeText::from_untrusted(format!(
                             "INT-006: /16 subnet group already has an outbound connection for {ip}"
-                        ))
+                        )))
                     }
                     crate::service::state::OutboundDiversityConflict::As => {
-                        GossipError::ConnectionFiltered(format!(
+                        GossipError::ConnectionFiltered(SafeText::from_untrusted(format!(
                             "INT-007: AS already has an outbound connection for {ip}"
-                        ))
+                        )))
                     }
                 });
             }

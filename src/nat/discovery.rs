@@ -40,6 +40,8 @@
 use std::time::Duration;
 
 #[cfg(feature = "relay")]
+use dig_nat::SafeText;
+#[cfg(feature = "relay")]
 use futures_util::{SinkExt, StreamExt};
 
 use crate::discovery::address_manager::AddressManager;
@@ -49,6 +51,18 @@ use crate::nat::peer_record::PeerRecord;
 #[cfg(feature = "relay")]
 use crate::relay::relay_types::RelayMessage;
 use crate::types::peer::PeerInfo;
+
+/// Wrap a relay-query failure, neutralizing the text on the way in (#1883).
+///
+/// Every relay failure in this module funnels through here rather than constructing
+/// [`GossipError::RelayError`] directly, so there is exactly one place to read to know that no
+/// relay-chosen byte reaches a rendered error. The relay is untrusted (see the module docs), and
+/// some of these strings interpolate a field it wrote — `RelayMessage::Error { message }` most
+/// directly — so they are sanitized rather than assumed to be one line.
+#[cfg(feature = "relay")]
+fn relay_failure(detail: String) -> GossipError {
+    GossipError::RelayError(SafeText::from_untrusted(detail))
+}
 
 /// Relay protocol version advertised in RLY-001 `register` — matches `dig-nat`'s
 /// `RELAY_PROTOCOL_VERSION` and `dig-relay`'s server so all four relay-wire copies agree.
@@ -104,7 +118,7 @@ pub async fn relay_get_peers(
             false,
         )
         .await
-        .map_err(|e| GossipError::RelayError(format!("connect: {e}")))?;
+        .map_err(|e| relay_failure(format!("connect: {e}")))?;
         let (mut write, mut read) = ws.split();
 
         // RLY-001: register so the relay accepts our control messages (it rejects pre-register with
@@ -140,24 +154,24 @@ pub async fn relay_get_peers(
         let mut frames_seen = 0usize;
         loop {
             if frames_seen >= MAX_RELAY_DISCOVERY_FRAMES {
-                return Err(GossipError::RelayError(format!(
+                return Err(relay_failure(format!(
                     "relay sent {frames_seen} frames without a peers/error response (max {MAX_RELAY_DISCOVERY_FRAMES})"
                 )));
             }
             let Some(frame) = read.next().await else {
-                return Err(GossipError::RelayError(
-                    "relay closed before returning peers".into(),
-                ));
+                return Err(GossipError::RelayError(SafeText::from_static(
+                    "relay closed before returning peers",
+                )));
             };
             frames_seen += 1;
-            let frame = frame.map_err(|e| GossipError::RelayError(format!("read: {e}")))?;
+            let frame = frame.map_err(|e| relay_failure(format!("read: {e}")))?;
             let bytes = match frame {
                 tokio_tungstenite::tungstenite::Message::Text(t) => t.into_bytes(),
                 tokio_tungstenite::tungstenite::Message::Binary(b) => b,
                 tokio_tungstenite::tungstenite::Message::Close(_) => {
-                    return Err(GossipError::RelayError(
-                        "relay closed before returning peers".into(),
-                    ));
+                    return Err(GossipError::RelayError(SafeText::from_static(
+                        "relay closed before returning peers",
+                    )));
                 }
                 _ => continue,
             };
@@ -178,10 +192,12 @@ pub async fn relay_get_peers(
                         .map(PeerRecord::from_relay_peer_info)
                         .collect());
                 }
+                // #1883 — `message` is a `String` the relay chose, and the relay is untrusted
+                // (see the module docs). A real newline here forged a second log line in every
+                // caller that rendered the error, so the text is neutralized as it enters the
+                // error rather than at any one place that logs it.
                 RelayMessage::Error { code, message } => {
-                    return Err(GossipError::RelayError(format!(
-                        "relay error {code}: {message}"
-                    )));
+                    return Err(relay_failure(format!("code {code}: {message}")));
                 }
                 _ => continue,
             }
@@ -190,7 +206,9 @@ pub async fn relay_get_peers(
 
     match tokio::time::timeout(timeout, work).await {
         Ok(inner) => inner,
-        Err(_) => Err(GossipError::RelayError("get_peers timed out".into())),
+        Err(_) => Err(GossipError::RelayError(SafeText::from_static(
+            "get_peers timed out",
+        ))),
     }
 }
 
@@ -201,12 +219,11 @@ where
     W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,
     <W as futures_util::Sink<tokio_tungstenite::tungstenite::Message>>::Error: std::fmt::Display,
 {
-    let txt =
-        serde_json::to_string(msg).map_err(|e| GossipError::RelayError(format!("encode: {e}")))?;
+    let txt = serde_json::to_string(msg).map_err(|e| relay_failure(format!("encode: {e}")))?;
     write
         .send(tokio_tungstenite::tungstenite::Message::Text(txt))
         .await
-        .map_err(|e| GossipError::RelayError(format!("send: {e}")))
+        .map_err(|e| relay_failure(format!("send: {e}")))
 }
 
 /// Merge discovered [`PeerRecord`]s into the address manager's **new** table, returning how many were

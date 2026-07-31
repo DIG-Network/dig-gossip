@@ -170,7 +170,7 @@ async fn seventh_relayed_adoption_is_filtered_but_a_direct_peer_still_joins() {
     let (over, s7) = loopback_nat_conn([7; 32], addr("100.64.0.7:9450"), TraversalKind::Relayed);
     let err = handle.adopt_nat_connection(over).await;
     assert!(
-        matches!(&err, Err(GossipError::ConnectionFiltered(msg)) if msg.contains("INT-006a")),
+        matches!(&err, Err(GossipError::ConnectionFiltered(msg)) if msg.as_str().contains("INT-006a")),
         "the 7th relayed adoption must be ConnectionFiltered (INT-006a), got {err:?}"
     );
 

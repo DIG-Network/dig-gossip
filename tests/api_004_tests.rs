@@ -130,11 +130,12 @@ fn test_relay_not_configured_display() {
     );
 }
 
-/// **Row:** `test_relay_error_display` -- wraps an arbitrary inner message string.
+/// **Row:** `test_relay_error_display` -- wraps the relay's reason as [`dig_nat::SafeText`], which
+/// renders exactly as the text it was built from when that text was already one safe line (#1883).
 #[test]
 fn test_relay_error_display() {
     assert_eq!(
-        GossipError::RelayError("disconnected".to_string()).to_string(),
+        GossipError::RelayError(dig_nat::SafeText::from_static("disconnected")).to_string(),
         "relay error: disconnected"
     );
 }
