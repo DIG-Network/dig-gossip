@@ -66,7 +66,17 @@ jobs:
         if: steps.ver.outputs.skip == 'false'
         run: git-cliff --config cliff.toml --tag "${{ steps.ver.outputs.tag }}" --output CHANGELOG.md
 
-      - name: Commit changelog, tag, push
+      # Keep Cargo.lock in sync with the just-merged Cargo.toml version and include it in the
+      # release commit. A version bump in a PR changes Cargo.toml but not the lock, so the tagged
+      # commit would otherwise carry a stale lock — which breaks `--locked` for everyone: CI, a
+      # contributor's clean checkout, and every consumer resolving this crate by git rev (#1885,
+      # where the lock said 0.17.19 while the manifest said 0.17.21). Re-locking here guarantees
+      # every tagged release ships a Cargo.lock in agreement with Cargo.toml.
+      - name: Sync Cargo.lock to the bumped version
+        if: steps.ver.outputs.skip == 'false' && hashFiles('Cargo.toml') != ''
+        run: cargo update -p dig-gossip
+
+      - name: Commit changelog + lock, tag, push
         if: steps.ver.outputs.skip == 'false'
         shell: bash
         run: |
@@ -74,6 +84,8 @@ jobs:
           git config user.name "dig-release-bot"
           git config user.email "release-bot@users.noreply.github.com"
           git add CHANGELOG.md
+          # `if`, not `[ … ] && …`: under `set -e` a false test as the left of `&&` would abort.
+          if [ -f Cargo.lock ]; then git add Cargo.lock; fi
           # `chore(release):` prefix so this workflow skips its own push (loop guard above).
           git commit -m "chore(release): ${{ steps.ver.outputs.tag }}" || echo "changelog unchanged"
           git tag -a "${{ steps.ver.outputs.tag }}" -m "Release ${{ steps.ver.outputs.tag }}"

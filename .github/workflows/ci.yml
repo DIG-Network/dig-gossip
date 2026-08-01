@@ -62,6 +62,27 @@ jobs:
       - name: Check documentation
         run: cargo doc --no-deps --all-features
 
+  lock:
+    name: Cargo.lock in sync
+    # The version-drift guard (#1885). A PR that bumps Cargo.toml without re-locking leaves the
+    # lock's own entry for this crate behind, and `--locked` then fails for everyone — CI, a
+    # contributor on a clean checkout, and every consumer that resolves dig-gossip by git rev
+    # (this crate is git-dep'd, not on crates.io, so its lock is what consumers resolve against).
+    # `cargo metadata --locked` fails whenever the lock is not already a valid solution for the
+    # manifests, which is exactly that drift — and it needs no build, so it reports in seconds.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Verify Cargo.lock matches Cargo.toml
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
   rustls-tests:
     name: rustls inbound tests (Linux, #1371)
     # The coverage job above measures the native-tls default feature set; the rustls inbound
@@ -87,6 +108,7 @@ jobs:
         # and runs here so the OpenSSL/Linux cert-capture path is exercised on every PR.
         run: >-
           cargo test
+          --locked
           --no-default-features
           --features rustls,relay,erlay,compact-blocks,dandelion
           --lib
@@ -118,6 +140,7 @@ jobs:
       - name: Run tests with coverage and enforce >=80% line coverage
         run: >-
           cargo llvm-cov nextest
+          --locked
           --no-default-features
           --features native-tls,relay,erlay,compact-blocks,dandelion
           --ignore-filename-regex 'vendor/'

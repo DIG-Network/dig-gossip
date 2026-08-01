@@ -535,3 +535,22 @@ violation (`exceeds_dig_wire_max_size`, read from the `dig_extension_rate_limits
 never a hardcoded literal) while still exempting a legit-sized over-cap RATE rejection (the forwarder-
 not-origin case). 221's `max_size` now ties to `store_melted::ENCODED_LEN` (164 B) exactly, mirroring
 222's tie to `MAX_ANNOUNCE_FRAME_BYTES`; a >164 B 221 is thus a size violation and is penalised.
+
+## A version bump without a re-lock disables `--locked` for everyone (#1885)
+
+A PR bumps `Cargo.toml`'s version as its last step; `Cargo.lock` records that same version in the
+crate's OWN `[[package]]` entry, and nothing updates it. The lock is then not a valid solution for
+the manifest, so `cargo …  --locked` fails outright — `main` carried `lock = 0.17.19` against
+`toml = 0.17.21` at v0.17.21. It healed only by accident, when the next PR bumped a dependency
+(`dig-nat` 0.14 → 0.15) and therefore re-locked as a side effect.
+
+The cost is not untidiness: `--locked` is the defence against a lock that disagrees with intent (a
+transitive pin hiding a shipped fix), and a crate where it is known-broken on `main` teaches everyone
+to drop the flag. dig-gossip is git-dep'd rather than published, so consumers resolve against
+whatever a rev's lock says — its lock hygiene matters more, not less.
+
+Two-sided fix: `release.yml` re-locks (`cargo update -p dig-gossip`) between the changelog generation
+and the release commit, so a tagged release can never ship a stale lock even if the PR forgot; and CI
+gained a `lock` job (`cargo metadata --locked`) plus `--locked` on both test invocations, so the drift
+reds the PR instead of landing. `cargo metadata --locked` is the right probe — it fails on exactly
+this condition and needs no build.
