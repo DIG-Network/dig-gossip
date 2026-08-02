@@ -25,8 +25,14 @@ use std::net::SocketAddr;
 /// `#[serde(rename = "...")]` as the `type` discriminator field.
 ///
 /// SPEC §7 — "Relay messages use JSON over WebSocket."
+// `non_exhaustive` so ADDING a wire message is no longer a breaking change (dig_ecosystem #1935).
+// This enum is the CANONICAL definition, vendored byte-identical into dig-relay, dig-nat and
+// dig-node; before this, every addition forced a semver-major bump and a five-crate cascade through
+// the peer stack before the node could pick it up. A new variant is now additive: external matches
+// carry a wildcard arm, so the next RLY-0xx ships as a patch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum RelayMessage {
     // -- RLY-001: Registration --
     /// Client → Relay: register after WebSocket connect.
@@ -124,6 +130,24 @@ pub enum RelayMessage {
     /// Relay → Client: error notification.
     #[serde(rename = "error")]
     Error { code: u32, message: String },
+
+    // -- RLY-009: DHT record observability (dig_ecosystem #1935) --
+    /// Relay → Client: ask this node for an AGGREGATED view of its DHT provider records.
+    ///
+    /// The relay is not a DHT node, but it holds a live reservation to every registered peer — and a
+    /// Kademlia node stores records for keys near its OWN `peer_id`, so its store describes MANY
+    /// OTHER peers' content. `max_keys` bounds the answer.
+    #[serde(rename = "get_dht_records")]
+    GetDhtRecords { max_keys: usize },
+
+    /// Client → Relay: the aggregated view. COUNTS, never provider identities — a provider record is
+    /// a `(peer_id, content_key)` pair, and publishing that linkage is what `/map` forbids.
+    #[serde(rename = "dht_records")]
+    DhtRecords {
+        records: Vec<DhtRecordEntry>,
+        total_keys: usize,
+        truncated: bool,
+    },
 }
 
 /// Peer info as tracked by relay server.
@@ -156,4 +180,14 @@ impl RelayPeerInfo {
             addresses: Vec::new(),
         }
     }
+}
+
+/// One content key in a [`RelayMessage::DhtRecords`] answer: the key and how many live providers the
+/// answering node knows for it. Carries no provider identity (RLY-009, dig_ecosystem #1935).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DhtRecordEntry {
+    /// The 64-hex content key.
+    pub content_key: String,
+    /// How many non-expired providers the answering node holds a record for.
+    pub providers: usize,
 }
