@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.19.0] - 2026-08-02
+
+### Features
+- **relay-wire:** RLY-009 DHT records + non_exhaustive; dig-nat 0.18 (#53)
+
 ## [0.18.1] - 2026-08-01
 
 ### CI
