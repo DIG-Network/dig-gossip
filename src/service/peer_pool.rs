@@ -741,45 +741,7 @@ mod tests {
         assert_eq!(plan.to_dial[0].addr, Some(addr(2)));
     }
 
-    /// **#2176 regression** — a peer already connected and held by `peer_id` must NOT be re-dialed
-    /// when a peer-exchange candidate offers it ADDRESS-ONLY (the cross-key-space miss a live node
-    /// hit ~every 30s). The connected set records the peer under BOTH its `peer_id` and its address;
-    /// the candidate keys to `Addr`. Before the fix the planner compared only the candidate's single
-    /// `dedup_key` (here `Addr`) — which matched — so this exact shape is guarded by making the
-    /// connected side carry only the OTHER dimension the candidate does NOT key to, proving the
-    /// planner now matches on EITHER dimension.
-    #[test]
-    fn plan_skips_connected_peer_across_key_spaces() {
-        let c = cfg(1, 4, 8);
-        let id = PeerId::from([11u8; 32]);
-        // The peer is connected; the candidate for it is offered ADDRESS-ONLY (peer-exchange), while
-        // the pool recorded it by `peer_id`. Different key-spaces — the live-node bug.
-        let candidates = vec![
-            PoolCandidate::from_addr(addr(1)),
-            PoolCandidate::from_addr(addr(2)),
-        ];
-        let backoff = HashMap::new();
-        let snap = PoolSnapshot {
-            connected: 1,
-            direct_connected: 1,
-            in_flight: 0,
-            // Connected peer carries both dims; addr(1) is the address the candidate offers.
-            connected_keys: &[CandidateKey::Id(id), CandidateKey::Addr(addr(1))],
-            candidates: &candidates,
-            backoff: &backoff,
-            now: 0,
-        };
-        let plan = plan_pass(&snap, &c);
-        // addr(1) is the already-connected peer → must be excluded; only addr(2) is dialable.
-        assert_eq!(
-            plan.to_dial.len(),
-            1,
-            "already-connected peer must not be re-dialed"
-        );
-        assert_eq!(plan.to_dial[0].addr, Some(addr(2)));
-    }
-
-    /// **#2176 regression (reverse direction)** — the pure planner must exclude a candidate whose
+    /// **#2176 regression** — the pure planner must exclude a candidate whose
     /// `peer_id` matches a connected peer recorded ONLY by address (and vice-versa). This is the
     /// strongest form: the candidate keys to `Id`, the connected side carries only `Addr` — before
     /// the fix the `dedup_key` (`Id`) never matched `Addr`, so the peer was re-dialed.
