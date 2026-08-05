@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.19.1] - 2026-08-05
+
+### Bug Fixes
+- **peer-pool:** Stop re-dialing already-connected peers (cross-key-space miss) (#55)
+
 ## [0.19.0] - 2026-08-02
 
 ### Features
