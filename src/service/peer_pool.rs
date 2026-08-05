@@ -771,7 +771,11 @@ mod tests {
         };
         let plan = plan_pass(&snap, &c);
         // addr(1) is the already-connected peer → must be excluded; only addr(2) is dialable.
-        assert_eq!(plan.to_dial.len(), 1, "already-connected peer must not be re-dialed");
+        assert_eq!(
+            plan.to_dial.len(),
+            1,
+            "already-connected peer must not be re-dialed"
+        );
         assert_eq!(plan.to_dial[0].addr, Some(addr(2)));
     }
 
