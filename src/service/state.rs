@@ -811,18 +811,39 @@ impl ServiceState {
         Ok(node)
     }
 
-    /// **POOL-*** — dedup keys of every currently-connected peer, for
-    /// [`plan_pass`](crate::service::peer_pool::plan_pass) (a pool peer keyed by its `peer_id`).
+    /// **POOL-* / #2176** — the identity keys of every currently-connected peer, for
+    /// [`plan_pass`](crate::service::peer_pool::plan_pass), so the pool never re-dials a peer it
+    /// already holds.
     ///
-    /// Read from the [`Self::peers`] map so the pool never redials a peer it already holds. Returns an
-    /// empty vec if the peer map lock is poisoned (a degraded read is safer than a panic in the loop).
+    /// Each connected peer contributes BOTH dimensions it can be recognised by: a
+    /// [`CandidateKey::Id`](crate::service::peer_pool::CandidateKey) for its `peer_id` AND a
+    /// [`CandidateKey::Addr`] for its remote address. Emitting only the `peer_id` (as this did before
+    /// #2176) let an address-only peer-exchange candidate for an already-held peer slip past the
+    /// skip-connected filter — the planner keyed that candidate to `Addr` while the pool recorded the
+    /// peer as `Id`, so the two never matched and the pool re-dialed the held peer every maintenance
+    /// pass (~30s), completing a full mTLS handshake the #1762 duplicate guard then discarded. Carrying
+    /// both dimensions makes that re-dial unrepresentable: the candidate matches on EITHER key.
+    ///
+    /// A **relay-transport** peer ([`is_relayed`]) contributes ONLY its `Id`: its `remote` is the relay
+    /// endpoint, not the peer's own routable address, so keying it by `Addr` would wrongly exclude a
+    /// *different* candidate that happens to share the relay endpoint.
+    ///
+    /// Returns an empty vec if the peer map lock is poisoned (a degraded read is safer than a panic in
+    /// the loop).
     pub(crate) fn connected_pool_keys(&self) -> Vec<crate::service::peer_pool::CandidateKey> {
+        use crate::service::peer_pool::CandidateKey;
         self.peers
             .lock()
             .map(|g| {
-                g.keys()
-                    .map(|pid| crate::service::peer_pool::CandidateKey::Id(*pid))
-                    .collect()
+                let mut keys = Vec::with_capacity(g.len() * 2);
+                for (pid, slot) in g.iter() {
+                    keys.push(CandidateKey::Id(*pid));
+                    // A relayed peer's `remote` is the relay, not the peer — don't key it by address.
+                    if !is_relayed(slot) {
+                        keys.push(CandidateKey::Addr(slot.remote()));
+                    }
+                }
+                keys
             })
             .unwrap_or_default()
     }
@@ -1104,6 +1125,13 @@ impl ServiceState {
         // Phase 2 — cleanup OUTSIDE the `peers` lock, mirroring `disconnect()` (publish churn, then
         // Plumtree removal) so no new lock-order inversion is introduced.
         for peer_id in &reaped_ids {
+            // #2176: log the teardown so a pooled connection ending — here via the reaper's provable
+            // close — is visible, mirroring the "pool connection established" line's level/shape.
+            tracing::info!(
+                peer_id = %peer_id,
+                reason = ?crate::service::peer_pool::PoolRemovalReason::Reaped,
+                "pool connection closed",
+            );
             self.pool
                 .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {
                     peer_id: *peer_id,
