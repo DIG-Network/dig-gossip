@@ -129,12 +129,34 @@ impl PoolCandidate {
             (None, None) => CandidateKey::Addr("0.0.0.0:0".parse().expect("valid sentinel addr")),
         }
     }
+
+    /// EVERY identity dimension by which this candidate could match an already-connected peer: its
+    /// `peer_id` (when known) AND its address (when known).
+    ///
+    /// The skip-connected filter (#2176) must match on *either* dimension, not just the single
+    /// [`Self::dedup_key`]. A peer already in the pool is recorded under BOTH keys (peer_id + addr) by
+    /// [`ServiceState::connected_pool_keys`](crate::service::state::ServiceState); a peer-exchange
+    /// candidate for that same peer, however, carries only its ADDRESS. Comparing just `dedup_key`
+    /// (which prefers `Id` and would key an id-bearing candidate to `Id`) against an address-keyed
+    /// connected entry — or the reverse — misses the match, and the pool re-dials a peer it already
+    /// holds every maintenance pass (the ~30s churn this method's caller closes). Yielding both keys
+    /// lets the planner exclude the candidate when EITHER dimension is already connected.
+    fn identity_keys(&self) -> impl Iterator<Item = CandidateKey> {
+        self.peer_id
+            .map(CandidateKey::Id)
+            .into_iter()
+            .chain(self.addr.map(CandidateKey::Addr))
+    }
 }
 
 /// Identity-or-address dedup key for a candidate (so we never dial the same peer twice concurrently).
 ///
 /// A peer is keyed by its `peer_id` once known, else by its address. The planner + in-flight
 /// reservation set use this so the same peer is never dialed twice at once (POOL dedup rule).
+///
+/// A *candidate* is dedup'd by a single preferred key ([`PoolCandidate::dedup_key`]), but an
+/// already-*connected* peer is recorded under BOTH keys it is known by (#2176) so the skip-connected
+/// filter can match a candidate on either dimension — see [`PoolSnapshot::connected_keys`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateKey {
     /// Keyed by verified/known `peer_id`.
@@ -224,7 +246,13 @@ pub struct PoolSnapshot<'a> {
     pub direct_connected: usize,
     /// Number of dials currently in flight (reserved slots not yet resolved).
     pub in_flight: usize,
-    /// Dedup keys of peers already connected — never dialed again.
+    /// Identity keys of peers already connected — never dialed again. Each connected peer contributes
+    /// BOTH dimensions it is known by (#2176): a [`CandidateKey::Id`] for its `peer_id` AND a
+    /// [`CandidateKey::Addr`] for its address (a relay-transport peer contributes only its `Id`, since
+    /// its remote is the relay endpoint, not the peer's own routable address). Carrying both is what
+    /// lets [`plan_pass`] exclude a candidate that matches an already-connected peer on EITHER
+    /// dimension — so a peer held by `peer_id` but offered address-only (or vice-versa) is never
+    /// re-dialed.
     pub connected_keys: &'a [CandidateKey],
     /// Ordered candidate list (most-preferred first) from discovery / the address manager.
     pub candidates: &'a [PoolCandidate],
@@ -307,6 +335,12 @@ pub fn free_slot_budget_with_direct_floor(
 /// A candidate is ELIGIBLE when it is not already connected, not already selected this pass (dedup by
 /// `peer_id`-or-address), not within its backoff window, and not marked dead. The result preserves
 /// the candidate order (callers pass most-preferred — e.g. most-direct / most-diverse — first).
+///
+/// "Not already connected" is tested on EITHER identity dimension (#2176): a candidate is excluded
+/// when its `peer_id` OR its address matches any peer in [`PoolSnapshot::connected_keys`] (which
+/// records both dimensions of each held peer). This makes re-dialing an already-connected peer
+/// unrepresentable regardless of whether the pool holds it by id and the candidate offers an address,
+/// or vice-versa — the mismatch that otherwise re-dials a held peer every maintenance pass.
 pub fn plan_pass(snap: &PoolSnapshot, cfg: &PeerPoolConfig) -> PoolPlan {
     let cfg = cfg.normalized();
     let relay_reachable = snap.connected.saturating_sub(snap.direct_connected);
@@ -333,8 +367,12 @@ pub fn plan_pass(snap: &PoolSnapshot, cfg: &PeerPoolConfig) -> PoolPlan {
             break;
         }
         let key = cand.dedup_key();
-        // Already connected — never redial.
-        if connected.contains(&key) {
+        // Already connected — never redial. Match on EITHER identity dimension (#2176): the
+        // connected set carries both the peer_id AND the address of each held peer, and a candidate
+        // is the same peer if either of ITS dimensions matches. Keying only by `dedup_key` misses a
+        // peer connected under one dimension but offered under the other (id-in-pool vs
+        // address-only peer-exchange candidate), which re-dials an already-held peer every pass.
+        if cand.identity_keys().any(|k| connected.contains(&k)) {
             continue;
         }
         // Already selected this pass — dedup.
@@ -701,6 +739,33 @@ mod tests {
         let plan = plan_pass(&snap, &c);
         assert_eq!(plan.to_dial.len(), 1);
         assert_eq!(plan.to_dial[0].addr, Some(addr(2)));
+    }
+
+    /// **#2176 regression** — the pure planner must exclude a candidate whose
+    /// `peer_id` matches a connected peer recorded ONLY by address (and vice-versa). This is the
+    /// strongest form: the candidate keys to `Id`, the connected side carries only `Addr` — before
+    /// the fix the `dedup_key` (`Id`) never matched `Addr`, so the peer was re-dialed.
+    #[test]
+    fn plan_matches_connected_on_either_dimension() {
+        let c = cfg(1, 4, 8);
+        let id = PeerId::from([12u8; 32]);
+        // Candidate known by id+addr; connected side recorded ONLY by that address.
+        let candidates = vec![PoolCandidate::with_id(id, addr(1))];
+        let backoff = HashMap::new();
+        let snap = PoolSnapshot {
+            connected: 1,
+            direct_connected: 1,
+            in_flight: 0,
+            connected_keys: &[CandidateKey::Addr(addr(1))],
+            candidates: &candidates,
+            backoff: &backoff,
+            now: 0,
+        };
+        let plan = plan_pass(&snap, &c);
+        assert!(
+            plan.to_dial.is_empty(),
+            "candidate matching a connected peer by address must not be dialed even when it also carries an id"
+        );
     }
 
     #[test]

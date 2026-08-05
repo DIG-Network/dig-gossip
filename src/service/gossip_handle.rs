@@ -1386,6 +1386,10 @@ impl GossipHandle {
                 peer_id,
                 addr: remote,
             });
+        // #2176: mirror dig-nat's "peer connection established" so a pooled connection's WHOLE
+        // lifecycle — establish here, teardown at `disconnect` / `reap_departed_peers` — is visible in
+        // logs. The silent drop is why 10k+ redundant re-dials churned invisibly for days.
+        tracing::info!(peer_id = %peer_id, remote = %remote, ?method, "pool connection established");
         Ok(peer_id)
     }
 
@@ -1993,6 +1997,13 @@ impl GossipHandle {
         // POOL-*: publish churn so dig-node's pool consumers (and the maintenance loop) learn the peer
         // left and the pool can replenish toward target.
         if was_present {
+            // #2176: log the teardown at the same level/shape as the "pool connection established"
+            // line so a pooled connection ending is never silent (the invisible churn's root cause).
+            tracing::info!(
+                peer_id = %peer_id,
+                reason = ?crate::service::peer_pool::PoolRemovalReason::Disconnected,
+                "pool connection closed",
+            );
             self.inner
                 .pool
                 .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {

@@ -811,18 +811,39 @@ impl ServiceState {
         Ok(node)
     }
 
-    /// **POOL-*** — dedup keys of every currently-connected peer, for
-    /// [`plan_pass`](crate::service::peer_pool::plan_pass) (a pool peer keyed by its `peer_id`).
+    /// **POOL-* / #2176** — the identity keys of every currently-connected peer, for
+    /// [`plan_pass`](crate::service::peer_pool::plan_pass), so the pool never re-dials a peer it
+    /// already holds.
     ///
-    /// Read from the [`Self::peers`] map so the pool never redials a peer it already holds. Returns an
-    /// empty vec if the peer map lock is poisoned (a degraded read is safer than a panic in the loop).
+    /// Each connected peer contributes BOTH dimensions it can be recognised by: a
+    /// [`CandidateKey::Id`](crate::service::peer_pool::CandidateKey) for its `peer_id` AND a
+    /// [`CandidateKey::Addr`] for its remote address. Emitting only the `peer_id` (as this did before
+    /// #2176) let an address-only peer-exchange candidate for an already-held peer slip past the
+    /// skip-connected filter — the planner keyed that candidate to `Addr` while the pool recorded the
+    /// peer as `Id`, so the two never matched and the pool re-dialed the held peer every maintenance
+    /// pass (~30s), completing a full mTLS handshake the #1762 duplicate guard then discarded. Carrying
+    /// both dimensions makes that re-dial unrepresentable: the candidate matches on EITHER key.
+    ///
+    /// A **relay-transport** peer ([`is_relayed`]) contributes ONLY its `Id`: its `remote` is the relay
+    /// endpoint, not the peer's own routable address, so keying it by `Addr` would wrongly exclude a
+    /// *different* candidate that happens to share the relay endpoint.
+    ///
+    /// Returns an empty vec if the peer map lock is poisoned (a degraded read is safer than a panic in
+    /// the loop).
     pub(crate) fn connected_pool_keys(&self) -> Vec<crate::service::peer_pool::CandidateKey> {
+        use crate::service::peer_pool::CandidateKey;
         self.peers
             .lock()
             .map(|g| {
-                g.keys()
-                    .map(|pid| crate::service::peer_pool::CandidateKey::Id(*pid))
-                    .collect()
+                let mut keys = Vec::with_capacity(g.len() * 2);
+                for (pid, slot) in g.iter() {
+                    keys.push(CandidateKey::Id(*pid));
+                    // A relayed peer's `remote` is the relay, not the peer — don't key it by address.
+                    if !is_relayed(slot) {
+                        keys.push(CandidateKey::Addr(slot.remote()));
+                    }
+                }
+                keys
             })
             .unwrap_or_default()
     }
@@ -1104,6 +1125,13 @@ impl ServiceState {
         // Phase 2 — cleanup OUTSIDE the `peers` lock, mirroring `disconnect()` (publish churn, then
         // Plumtree removal) so no new lock-order inversion is introduced.
         for peer_id in &reaped_ids {
+            // #2176: log the teardown so a pooled connection ending — here via the reaper's provable
+            // close — is visible, mirroring the "pool connection established" line's level/shape.
+            tracing::info!(
+                peer_id = %peer_id,
+                reason = ?crate::service::peer_pool::PoolRemovalReason::Reaped,
+                "pool connection closed",
+            );
             self.pool
                 .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {
                     peer_id: *peer_id,
@@ -1598,5 +1626,106 @@ mod nat_slot_teardown_tests {
             .expect(
                 "dropping the Nat slot must close its dig-nat mux session (no ghost-session leak)",
             );
+    }
+}
+
+#[cfg(test)]
+mod connected_pool_keys_tests {
+    //! **#2176** — pin the ESSENTIAL half of the re-dial fix that lives here in `state.rs`:
+    //! [`ServiceState::connected_pool_keys`] must contribute BOTH identity dimensions for a held DIRECT
+    //! peer (so an address-only peer-exchange candidate for an already-held peer is recognised by the
+    //! planner and never re-dialed), and ONLY the `Id` dimension for a RELAYED peer (whose `remote` is
+    //! the relay endpoint, not the peer's own routable address). Reverting `connected_pool_keys` to the
+    //! pre-#2176 Id-only emission makes the direct-peer assertion below FAIL — this is the test that
+    //! guards the real root-cause line, which the pure `plan_pass` tests (they hand-feed a
+    //! `connected_keys` array) never exercise.
+
+    use super::*;
+    use crate::service::peer_pool::CandidateKey;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().expect("valid SocketAddr")
+    }
+
+    fn state() -> ServiceState {
+        let tls = ChiaCertificate::generate().expect("chia-ssl cert");
+        ServiceState::new(GossipConfig::default(), tls).expect("construct ServiceState")
+    }
+
+    fn direct_stub(remote: SocketAddr) -> PeerSlot {
+        PeerSlot::Stub(StubPeer {
+            remote,
+            node_type: NodeType::FullNode,
+            is_outbound: true,
+        })
+    }
+
+    /// A loopback-backed [`NatSlot`] with [`TraversalKind::Relayed`], whose `remote` is the RELAY
+    /// endpoint (not the peer's own address). Mirrors the `nat_drop_teardown_tests` harness; the server
+    /// end is returned so the caller keeps it alive while asserting.
+    fn relayed_nat_slot(relay_endpoint: SocketAddr) -> (PeerSlot, dig_nat::PeerSession) {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let server = dig_nat::PeerSession::server(server_io);
+        let inner = dig_nat::PeerConnection {
+            peer_id: dig_nat::PeerId::from_bytes([0x22; 32]),
+            method: dig_nat::TraversalKind::Relayed,
+            remote_addr: relay_endpoint,
+            peer_bls_pub: None,
+            session: dig_nat::PeerSession::client(client_io),
+        };
+        let slot = PeerSlot::Nat(NatSlot {
+            conn: crate::nat::NatPeerConnection::new(inner),
+            remote: relay_endpoint,
+            is_outbound: true,
+            method: dig_nat::TraversalKind::Relayed,
+        });
+        (slot, server)
+    }
+
+    /// A held DIRECT peer contributes BOTH `Id(peer_id)` AND `Addr(remote)` — the load-bearing
+    /// assertion. It FAILS if `connected_pool_keys` is reverted to the pre-#2176 Id-only emission,
+    /// which is exactly the real-node bug (an address-only candidate for this peer would then slip past
+    /// the planner's skip-connected filter and be re-dialed every pass).
+    #[test]
+    fn direct_peer_contributes_both_id_and_addr() {
+        let remote = addr("203.0.113.7:9444");
+        let pid = peer_id_for_addr(remote);
+        let state = state();
+        state.peers.lock().unwrap().insert(pid, direct_stub(remote));
+
+        let keys = state.connected_pool_keys();
+        assert!(
+            keys.contains(&CandidateKey::Id(pid)),
+            "a direct held peer must be recognisable by its peer_id: {keys:?}",
+        );
+        assert!(
+            keys.contains(&CandidateKey::Addr(remote)),
+            "a direct held peer must ALSO be recognisable by its remote address (the #2176 fix); \
+             reverting connected_pool_keys to Id-only makes this fail: {keys:?}",
+        );
+    }
+
+    /// A RELAYED peer contributes its `Id` ONLY — never `Addr(relay_endpoint)`, which would wrongly
+    /// exclude a *different* candidate that merely shares the relay endpoint. This pins the `is_relayed`
+    /// carve-out; it FAILS if the carve-out is dropped (relayed peers keyed by their relay `Addr`).
+    #[tokio::test]
+    async fn relayed_peer_contributes_id_only() {
+        let relay_endpoint = addr("198.51.100.5:9444");
+        // The peer's own conceptual identity/address is distinct from the relay endpoint it rode in on.
+        let pid = peer_id_for_addr(addr("192.0.2.9:9444"));
+        let (slot, _server) = relayed_nat_slot(relay_endpoint);
+        let state = state();
+        state.peers.lock().unwrap().insert(pid, slot);
+
+        let keys = state.connected_pool_keys();
+        assert!(
+            keys.contains(&CandidateKey::Id(pid)),
+            "a relayed held peer must still be recognisable by its peer_id: {keys:?}",
+        );
+        assert!(
+            !keys.contains(&CandidateKey::Addr(relay_endpoint)),
+            "a relayed peer must NOT be keyed by the relay endpoint address (the is_relayed carve-out): \
+             {keys:?}",
+        );
     }
 }
