@@ -758,7 +758,7 @@ where
     let (peer, mut inbound_rx) = Peer::from_server_websocket(ws, remote_addr, opts)?;
 
     // --- Phase 8: Per-connection inbound rate limiter (CON-005) + peer map insert ---
-    // SPEC §5.4 — "Inbound: create a separate RateLimiter for each connection"
+    // SPEC §5.4 — "Inbound: create a separate rate limiter for each connection"
     // using `V2_RATE_LIMITS` from `chia-sdk-client`.
     // [`LiveSlot`] must exist **before** the forwarder runs so rate-limit violations can update
     // [`PeerReputation`] via [`apply_inbound_rate_limit_violation`].
@@ -827,7 +827,7 @@ where
     }
 
     // --- Phase 9: Bridge inbound wire messages into the service broadcast channel ---
-    // CON-005: [`RateLimiter::handle_message`] must approve each frame before CON-004 keepalive
+    // CON-005: [`InboundRateLimiter::allows`] must approve each frame before CON-004 keepalive
     // auto-replies and before the `(PeerId, Message)` publish.
     if let Ok(guard) = state.inbound_tx.lock() {
         if let Some(tx_b) = guard.as_ref() {
@@ -840,12 +840,7 @@ where
             let lim_fwd = lim;
             tokio::spawn(async move {
                 while let Some(msg) = inbound_rx.recv().await {
-                    let allowed = lim_fwd
-                        .lock()
-                        .map(|mut g| {
-                            crate::connection::inbound_limits::inbound_gate_allows(&mut g, &msg)
-                        })
-                        .unwrap_or(true);
+                    let allowed = lim_fwd.lock().map(|mut g| g.allows(&msg)).unwrap_or(true);
                     if !allowed {
                         // Drop the frame unconditionally (the #1720 per-connection cap), but charge a
                         // reputation penalty only when attributable to this connection: a size-

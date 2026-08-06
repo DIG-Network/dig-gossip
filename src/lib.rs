@@ -213,8 +213,10 @@ pub use constants::*;
 // =============================================================================
 
 #[doc(hidden)]
+pub use connection::dig_rate_limiter::DigRateLimiter;
+#[doc(hidden)]
 pub use connection::inbound_limits::{
-    dig_extension_rate_limits_map, gossip_inbound_rate_limits, new_inbound_rate_limiter,
+    dig_extension_rate_limits_map, new_inbound_rate_limiter, InboundRateLimiter,
 };
 #[doc(hidden)]
 pub use discovery::address_manager_store::{

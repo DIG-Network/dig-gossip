@@ -9,7 +9,10 @@ pub mod handshake;
 /// CON-004 keepalive + RTT sampling (application-level `RequestPeers` probe).
 pub mod keepalive;
 
-/// CON-005 inbound [`RateLimiter`] configuration (`V2_RATE_LIMITS` + DIG `dig_wire`).
+/// CON-005 — the DIG per-opcode inbound rate limiter, keyed by the raw wire byte.
+pub mod dig_rate_limiter;
+
+/// CON-005 inbound admission gate: Chia's `V2_RATE_LIMITS` bound composed with the DIG bound.
 pub mod inbound_limits;
 
 pub mod listener;

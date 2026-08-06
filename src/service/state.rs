@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dig_peer_protocol::ChiaCertificate;
-use dig_peer_protocol::{ClientState, Peer, RateLimiter};
+use dig_peer_protocol::{ClientState, Peer};
 use dig_peer_protocol::{Message, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
@@ -74,6 +74,7 @@ use tokio::task::JoinHandle;
 
 use dig_peer_protocol::Bytes32;
 
+use crate::connection::inbound_limits::InboundRateLimiter;
 use crate::discovery::address_manager::AddressManager;
 use crate::error::GossipError;
 use crate::types::config::GossipConfig;
@@ -133,7 +134,7 @@ pub(crate) struct StubPeer {
 /// * **CON-003** -- handshake validation decides which fields are retained.
 /// * **CON-004** -- [`PeerReputation`] is updated by
 ///   [`crate::connection::keepalive::spawn_keepalive_task`] with RTT samples.
-/// * **CON-005** -- [`RateLimiter`] (`incoming = true`, 60 s window) enforced on the inbound
+/// * **CON-005** -- [`InboundRateLimiter`] (`incoming = true`, 60 s window) enforced on the inbound
 ///   `mpsc` bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
 /// * **CON-006** -- [`PeerConnectionWireMetrics`] updated on each metered send/receive (wire bytes).
 #[derive(Debug)]
@@ -158,12 +159,13 @@ pub(crate) struct LiveSlot {
     /// without rustc’s nested-guard lifetime error (E0597). Same mutex still serializes
     /// keepalive RTT updates vs penalties (CON-004 / API-006).
     pub reputation: Arc<Mutex<PeerReputation>>,
-    /// Per-connection inbound [`RateLimiter`] (CON-005) — `V2_RATE_LIMITS` + DIG `dig_wire`.
+    /// Per-connection inbound admission gate (CON-005) — Chia's `V2_RATE_LIMITS` bound composed
+    /// with the DIG per-opcode bound.
     ///
     /// The accept/forwarder tasks currently hold their own `Arc` clone of the same limiter;
     /// this field remains the **slot of record** for diagnostics and future introspection APIs.
     #[allow(dead_code)]
-    pub inbound_rate_limiter: Arc<Mutex<RateLimiter>>,
+    pub inbound_rate_limiter: Arc<Mutex<InboundRateLimiter>>,
     /// CON-006 — per-live-connection counters mirrored into [`crate::types::peer::PeerConnection`]
     /// when snapshot APIs land; summed into [`crate::types::stats::GossipStats`] in [`crate::service::gossip_handle::GossipHandle::stats`].
     pub traffic: Arc<Mutex<PeerConnectionWireMetrics>>,
@@ -1203,7 +1205,7 @@ impl ServiceState {
 }
 
 /// CON-005: apply [`PenaltyReason::RateLimitExceeded`] when an inbound wire frame fails
-/// [`RateLimiter::handle_message`].
+/// [`InboundRateLimiter::allows`].
 ///
 /// **CON-007:** if [`PeerReputation::apply_penalty`] reports a *fresh* ban threshold crossing,
 /// we spawn [`ServiceState::enforce_timed_ban_and_disconnect`] — this function is synchronous

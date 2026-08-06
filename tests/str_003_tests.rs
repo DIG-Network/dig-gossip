@@ -221,20 +221,19 @@ fn test_full_import_set() {
     #![allow(unused_imports)]
     use dig_gossip::{
         aggregate_peer_connection_io, apply_inbound_rate_limit_violation,
-        dig_extension_rate_limits_map, gossip_inbound_rate_limits, load_ssl_cert, message_wire_len,
-        metric_unix_timestamp_secs, new_inbound_rate_limiter, peer_id_for_addr,
-        peer_id_from_tls_spki_der, AddressManager, BackpressureConfig, Bytes32, ChiaCertificate,
-        ChiaProtocolMessage, Client, ClientError, ClientState, DigMessageType, ExtendedPeerInfo,
-        FullBlock, GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
-        IntroducerClient, IntroducerConfig, IntroducerPeers, Message, Network, NewPeak,
-        NewTransaction, NewUnfinishedBlock, NodeType, Peer, PeerConnection,
-        PeerConnectionWireMetrics, PeerId, PeerIdRotationConfig, PeerInfo, PeerOptions,
-        PeerReputation, PenaltyReason, ProtocolMessageTypes, RateLimit, RateLimiter, RateLimits,
-        RelayConfig, RelayStats, RequestBlock, RequestBlocks, RequestMempoolTransactions,
-        RequestPeers, RequestTransaction, RequestUnfinishedBlock, RespondBlock, RespondBlocks,
-        RespondPeers, RespondTransaction, RespondUnfinishedBlock, ServiceState, SpendBundle,
-        Streamable, TimestampedPeerInfo, UnknownDigMessageType, VettedPeer,
-        DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
+        dig_extension_rate_limits_map, load_ssl_cert, message_wire_len, metric_unix_timestamp_secs,
+        new_inbound_rate_limiter, peer_id_for_addr, peer_id_from_tls_spki_der, AddressManager,
+        BackpressureConfig, Bytes32, ChiaCertificate, ChiaProtocolMessage, Client, ClientError,
+        ClientState, DigMessageType, ExtendedPeerInfo, FullBlock, GossipConfig, GossipError,
+        GossipHandle, GossipService, GossipStats, Handshake, IntroducerClient, IntroducerConfig,
+        IntroducerPeers, Message, Network, NewPeak, NewTransaction, NewUnfinishedBlock, NodeType,
+        Peer, PeerConnection, PeerConnectionWireMetrics, PeerId, PeerIdRotationConfig, PeerInfo,
+        PeerOptions, PeerReputation, PenaltyReason, ProtocolMessageTypes, RateLimit, RateLimiter,
+        RateLimits, RelayConfig, RelayStats, RequestBlock, RequestBlocks,
+        RequestMempoolTransactions, RequestPeers, RequestTransaction, RequestUnfinishedBlock,
+        RespondBlock, RespondBlocks, RespondPeers, RespondTransaction, RespondUnfinishedBlock,
+        ServiceState, SpendBundle, Streamable, TimestampedPeerInfo, UnknownDigMessageType,
+        VettedPeer, DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
     };
 }
 

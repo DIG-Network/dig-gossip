@@ -9,8 +9,8 @@
 //! ## Proof strategy
 //!
 //! Outbound limiting stays inside [`chia_sdk_client::Peer`] (not duplicated here). These tests
-//! prove the **DIG-specific** pieces: merged [`RateLimits`] (V2 + `dig_wire`), independent limiters
-//! per connection, [`RateLimiter::handle_message`] / [`RateLimiter::check_dig_extension`] behavior,
+//! prove the **DIG-specific** pieces: the DIG per-opcode table, independent limiters per
+//! connection, [`RateLimiter::handle_message`] / [`DigRateLimiter::check`] behavior,
 //! and the **penalty** path exercised through [`dig_gossip::apply_inbound_rate_limit_violation`]
 //! (integration-style with a synthetic [`ServiceState`] row).
 
@@ -22,11 +22,17 @@ use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
 use dig_gossip::{RateLimit, RateLimiter, V2_RATE_LIMITS};
 
 use dig_gossip::{
-    apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, gossip_inbound_rate_limits,
-    load_ssl_cert, new_inbound_rate_limiter, peer_id_for_addr, CandidateAddr, DigMessageType,
+    apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, load_ssl_cert,
+    new_inbound_rate_limiter, peer_id_for_addr, CandidateAddr, DigMessageType, DigRateLimiter,
     HoldingsAnnounce, HoldingsDelta, PenaltyReason, ServiceState, HOLDINGS_ANNOUNCE,
     HOLDINGS_MAX_CHANGES,
 };
+
+/// A DIG limiter over the production table, shaped exactly like a live inbound connection's
+/// (`incoming = true`, 60 s window) so these tests bind the real rows, not a bespoke fixture.
+fn dig_limiter(limit_factor: f64) -> DigRateLimiter {
+    DigRateLimiter::new(true, 60, limit_factor, dig_extension_rate_limits_map())
+}
 
 /// **Row:** `test_inbound_rate_limiter_creation` — [`RateLimiter::new`] with `incoming = true`,
 /// `reset_seconds = 60`, and merged limits builds successfully (CON-005 §Inbound Rate Limiting).
@@ -78,19 +84,6 @@ fn test_dig_message_types_added() {
             map.contains_key(&wire),
             "missing DIG wire limit for {wire}: keys {:?}",
             map.keys().collect::<Vec<_>>()
-        );
-    }
-    let merged = gossip_inbound_rate_limits();
-    for wire in 200u8..=208 {
-        assert!(
-            merged.dig_wire.contains_key(&wire),
-            "gossip_inbound_rate_limits missing dig_wire {wire}"
-        );
-    }
-    for wire in 218u8..=219 {
-        assert!(
-            merged.dig_wire.contains_key(&wire),
-            "gossip_inbound_rate_limits missing dig_wire {wire}"
         );
     }
 }
@@ -234,28 +227,25 @@ async fn test_rate_limit_window_reset() {
     );
 }
 
-/// **Row:** `test_check_dig_extension_limits` — [`RateLimiter::check_dig_extension`] honors `dig_wire`.
+/// **Row:** `test_check_dig_extension_limits` — [`DigRateLimiter::check`] honors the DIG table.
 #[test]
 fn test_check_dig_extension_limits() {
-    let mut limits = (*V2_RATE_LIMITS).clone();
-    limits.dig_wire = dig_extension_rate_limits_map();
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    let mut lim = dig_limiter(1.0);
     let t = DigMessageType::NewAttestation as u8;
     for _ in 0..100 {
-        assert!(lim.check_dig_extension(t, 100));
+        assert!(lim.check(t, 100));
     }
     assert!(
-        !lim.check_dig_extension(t, 100),
+        !lim.check(t, 100),
         "101st attestation exceeds frequency=100"
     );
 }
 
-/// Unknown DIG opcode has no `dig_wire` row — must fail-open (`true`) until a limit is registered.
+/// Unknown DIG opcode has no row — must fail-open (`true`) until a limit is registered.
 #[test]
 fn test_check_dig_extension_unknown_wire_allowed() {
-    let limits = gossip_inbound_rate_limits();
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
-    assert!(lim.check_dig_extension(255, 1_000_000));
+    let mut lim = dig_limiter(1.0);
+    assert!(lim.check(255, 1_000_000));
 }
 
 /// **Row:** `test_holdings_announce_222_row_bounds` (#1720) — opcode 222 (HoldingsAnnounce) has a
@@ -282,14 +272,12 @@ fn test_holdings_announce_222_row_bounds() {
 /// rejected, so a hostile peer cannot force 100 P-256 verifies/min/conn via the old default.
 #[test]
 fn test_holdings_announce_222_frequency_bounded() {
-    let mut limits = (*V2_RATE_LIMITS).clone();
-    limits.dig_wire = dig_extension_rate_limits_map();
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    let mut lim = dig_limiter(1.0);
     for _ in 0..20 {
-        assert!(lim.check_dig_extension(HOLDINGS_ANNOUNCE, 1024));
+        assert!(lim.check(HOLDINGS_ANNOUNCE, 1024));
     }
     assert!(
-        !lim.check_dig_extension(HOLDINGS_ANNOUNCE, 1024),
+        !lim.check(HOLDINGS_ANNOUNCE, 1024),
         "21st holdings-announce in the window exceeds frequency=20"
     );
 }
@@ -337,17 +325,15 @@ fn test_holdings_announce_222_max_batch_not_clipped() {
         "legit MAX_CHANGES holdings-announce ({} bytes) must fit under max_size ({max_size})",
         encoded.len()
     );
-    let mut limits = (*V2_RATE_LIMITS).clone();
-    limits.dig_wire = map;
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    let mut lim = dig_limiter(1.0);
     assert!(
-        lim.check_dig_extension(HOLDINGS_ANNOUNCE, encoded.len() as u32),
+        lim.check(HOLDINGS_ANNOUNCE, encoded.len() as u32),
         "a legit full-holdings frame must be admitted, not clipped"
     );
 }
 
 // The live-gate 220-band flood guards for opcodes 221/222 live in the crate's own
 // `connection::inbound_limits::tests` module (`real_gate_bounds_store_melted_221`,
-// `real_gate_bounds_holdings_announce_222`), which drive the REAL `inbound_gate_allows`. The
+// `real_gate_bounds_holdings_announce_222`), which drive the REAL `InboundRateLimiter::allows`. The
 // external mirrors that once lived here re-implemented the gate's branch and so could not detect a
 // broken production gate; they were removed (#1760 E) in favour of the authoritative in-crate tests.

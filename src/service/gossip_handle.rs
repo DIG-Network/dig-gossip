@@ -853,7 +853,7 @@ impl GossipHandle {
         );
         self.inner.address_manager.add_to_new_table(capped, &src, 0);
 
-        // CON-005: one inbound [`RateLimiter`] per live slot (insert **before** the forwarder).
+        // CON-005: one inbound [`InboundRateLimiter`] per live slot (insert **before** the forwarder).
         let inbound_limiter = Arc::new(Mutex::new(
             crate::connection::inbound_limits::new_inbound_rate_limiter(
                 self.inner.config.peer_options.rate_limit_factor,
@@ -999,12 +999,7 @@ impl GossipHandle {
                 let lim_fwd = lim;
                 tokio::spawn(async move {
                     while let Some(msg) = inbound_rx.recv().await {
-                        let allowed = lim_fwd
-                            .lock()
-                            .map(|mut g| {
-                                crate::connection::inbound_limits::inbound_gate_allows(&mut g, &msg)
-                            })
-                            .unwrap_or(true);
+                        let allowed = lim_fwd.lock().map(|mut g| g.allows(&msg)).unwrap_or(true);
                         if !allowed {
                             // Drop the frame unconditionally (the #1720 per-connection cap), but charge
                             // a reputation penalty only when attributable to this connection: a size-

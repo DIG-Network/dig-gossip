@@ -10,9 +10,6 @@ pub struct RateLimits {
     pub non_tx_max_total_size: f64,
     pub tx: HashMap<ProtocolMessageTypes, RateLimit>,
     pub other: HashMap<ProtocolMessageTypes, RateLimit>,
-    /// DIG L2 wire discriminants (`200+`) not representable as [`ProtocolMessageTypes`].
-    /// Consumed by `RateLimiter::check_dig_extension` (dig-gossip CON-005).
-    pub dig_wire: HashMap<u8, RateLimit>,
 }
 
 impl RateLimits {
@@ -22,7 +19,6 @@ impl RateLimits {
         self.non_tx_max_total_size = other.non_tx_max_total_size;
         self.tx.extend(other.tx.clone());
         self.other.extend(other.other.clone());
-        self.dig_wire.extend(other.dig_wire.clone());
     }
 }
 
@@ -70,7 +66,6 @@ pub static V1_RATE_LIMITS: Lazy<RateLimits> = Lazy::new(|| RateLimits {
     default_settings: RateLimit::new(100.0, 1024.0 * 1024.0, Some(100.0 * 1024.0 * 1024.0)),
     non_tx_frequency: 1000.0,
     non_tx_max_total_size: 100.0 * 1024.0 * 1024.0,
-    dig_wire: HashMap::new(),
     tx: settings! {
         NewTransaction => 5000, 100, 5000 * 100;
         RequestTransaction => 5000, 100, 5000 * 100;
@@ -182,7 +177,6 @@ static V2_RATE_LIMIT_CHANGES: Lazy<RateLimits> = Lazy::new(|| RateLimits {
     default_settings: RateLimit::new(100.0, 1024.0 * 1024.0, Some(100.0 * 1024.0 * 1024.0)),
     non_tx_frequency: 1000.0,
     non_tx_max_total_size: 100.0 * 1024.0 * 1024.0,
-    dig_wire: HashMap::new(),
     tx: settings! {
         RequestBlockHeader => 500, 100;
         RespondBlockHeader => 500, 500 * 1024;

@@ -554,3 +554,33 @@ and the release commit, so a tagged release can never ship a stale lock even if 
 gained a `lock` job (`cargo metadata --locked`) plus `--locked` on both test invocations, so the drift
 reds the PR instead of landing. `cargo metadata --locked` is the right probe — it fails on exactly
 this condition and needs no build.
+
+## The DIG rate limiter never needed the `chia-sdk-client` fork (dig_ecosystem#2228)
+
+DIG's per-opcode inbound bound lived inside the vendored `chia-sdk-client` fork for a long time as
+`RateLimits::dig_wire` + `RateLimiter::check_dig_extension`, and that placement was read as evidence
+that the fork was load-bearing for rate limiting. It was not, and the giveaway was in the field type:
+`dig_wire` is `HashMap<u8, RateLimit>` — keyed by the **raw opcode byte**, never by
+`ProtocolMessageTypes`. A bound that never names the Chia enum cannot depend on the crate that owns
+it. The accounting was equally unentangled: `dig_message_counts` / `dig_message_sizes` were parallel
+maps sharing only a 60-second window boundary and the `limit_factor` scalar, both trivially
+reproducible. It was bolted into upstream's struct for convenience, not necessity.
+
+Two consequences worth remembering:
+
+- **A doc comment can encode a design claim that the rest of the tree contradicts.** The `dig_wire`
+  comment said DIG discriminants are "not representable as `ProtocolMessageTypes`", while the
+  sibling `chia-protocol` fork exists precisely to make 210-222 representable. Two vendored forks
+  disagreeing about the same question is a signal that at least one of them is unnecessary.
+- **The extraction's real risk was the shared window, not the limits.** Splitting one struct into two
+  turns a single `period` field — which could not disagree with itself — into two objects that only
+  stay in step because both derive the window as `unix_secs / reset_seconds` (ABSOLUTE), not from
+  their own construction time. A test that constructs both at the same instant cannot tell those
+  apart; `window_boundary_is_absolute_and_shared_with_the_chia_limiter` staggers construction by
+  ~1 s of a 2 s window so an elapsed-since-construction implementation is observably RED.
+
+Also recorded: **the fork delta of record is the diff against the pristine crates.io tarball, never
+a hand-written README.** Both vendored READMEs understated their fork, and a hand-maintained list was
+wrong twice in one investigation. `vendor/fork-delta.sh <crate>` regenerates it; the vendored trees
+are unpacked tarballs of a known version, so the same-version registry source is an exact baseline
+and everything the diff reports is DIG's by construction.
