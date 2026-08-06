@@ -85,7 +85,7 @@ The design is derived from Chia's production networking stack, primarily consume
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | Reuse `chia-sdk-client::Peer` for connections | `Peer` already handles WebSocket TLS connections, message framing (4-byte length prefix), `Streamable` serialization, request/response correlation via message IDs, and outbound rate limiting. No reason to reimplement. |
-| 2 | Reuse `chia-sdk-client::RateLimiter` + `V2_RATE_LIMITS` | Complete Chia-compatible rate limiting with V1/V2 limit tables. We extend with DIG-specific message types only. |
+| 2 | Reuse `chia-sdk-client::RateLimiter` + `V2_RATE_LIMITS` | Complete Chia-compatible rate limiting with V1/V2 limit tables. The DIG per-opcode table is keyed by the raw wire byte and is dig-gossip's own (`DigRateLimiter`), composed with the Chia bound rather than merged into it. |
 | 3 | Reuse `chia-protocol::Handshake` for connection setup | The handshake struct has `network_id`, `protocol_version`, `software_version`, `server_port`, `node_type`, `capabilities`. We pass DIG-specific values, not a new struct. `connect_peer()` handles the full handshake flow. |
 | 4 | Reuse `chia-ssl` for TLS | `ChiaCertificate::generate()`, `load_ssl_cert()`, and `create_native_tls_connector()` / `create_rustls_connector()` already exist. |
 | 5 | Reuse `chia-sdk-client::Network` for DNS seeding | `Network::lookup_all()` handles DNS resolution with timeout and batching. We configure with DIG DNS servers. |
@@ -519,7 +519,7 @@ canonical constant is exported as `dig_gossip::DIG_MESSAGE` (mirrored by
 | `frame_envelope(&[u8], Option<u16>) -> Message` | Build the outbound opcode-220 frame. |
 
 **Opcode 220 (`DigMessage`, directed envelope) — base-bounded by design (accepted).**
-Unlike the 221/222 public-flood broadcasts, opcode 220 carries a *directed* (unicast) dig-message envelope as opaque bytes; dig-gossip is pure transport and never opens, decodes, or verifies the envelope. Opcode 220 therefore has NO dedicated `dig_wire` rate-limit row and is deliberately bounded only by the Chia `default_settings` base limit — 100 frames/min, 1 MiB/frame, 100 MiB cumulative per connection — applied FIRST and unconditionally by `RateLimiter::handle_message` inside `inbound_gate_allows`. This bound is REAL and non-fail-open: the fail-open `check_dig_extension` runs only afterward and can add, never loosen, a restriction.
+Unlike the 221/222 public-flood broadcasts, opcode 220 carries a *directed* (unicast) dig-message envelope as opaque bytes; dig-gossip is pure transport and never opens, decodes, or verifies the envelope. Opcode 220 therefore has NO dedicated DIG rate-limit row and is deliberately bounded only by the Chia `default_settings` base limit — 100 frames/min, 1 MiB/frame, 100 MiB cumulative per connection — applied FIRST and unconditionally by `RateLimiter::handle_message` inside `InboundRateLimiter::allows`. This bound is REAL and non-fail-open: the fail-open `DigRateLimiter::check` runs only afterward and can add, never loosen, a restriction.
 
 This is a conscious classification (`BASE_BOUND_ONLY_BAND_OPCODES`), asserted by the `every_220_band_opcode_is_classified` completeness guard. A tighter dedicated row is intentionally NOT added because (a) dig-gossip performs no per-frame crypto on a 220 frame (the envelope is opaque), so the per-frame cost the base bound already caps is only buffering + service broadcast; and (b) opcode 220 is the directed-message STREAMING transport (`StreamFrame` OPEN/DATA/CLOSE ride inside the opaque payload), so legitimate transfers fragment into many 220 frames and require high per-connection frame cadence — a tighter row would clip legitimate streaming while adding no security benefit against any abuse the base per-connection bound does not already cover.
 
@@ -605,7 +605,7 @@ free `220..=255` band, after `STORE_MELTED = 221`); the canonical constant is ex
   to everyone, so `classify_broadcast(HoldingsAnnounce) = Plumtree` (eager/lazy flood) at
   **Bulk** priority. The transport `seen_set` dedups by the announcement bytes; a later
   `seq` from the same provider supersedes an earlier one.
-- **Inbound rate limit (CON-005, #1720).** Opcode 222 carries a DELIBERATE `dig_wire` row —
+- **Inbound rate limit (CON-005, #1720).** Opcode 222 carries a DELIBERATE DIG rate-limit row —
   `frequency = 20`/min, `max_size = 131072` (128 KiB) — NOT the loose `default_settings`
   (100 frames/min, 1 MiB) it would otherwise fall through to. The row bounds the expensive
   post-decode P-256 verify a hostile peer can force, while `frequency` (~2x the 221 anchor of
@@ -1651,19 +1651,17 @@ This matches Chia's mTLS design where both client and server present certificate
 
 ### 5.4 Rate Limiting
 
-Uses `chia-sdk-client::RateLimiter` directly:
+Uses `chia-sdk-client::RateLimiter` for the Chia bound, composed with dig-gossip's own
+`DigRateLimiter` for the DIG per-opcode bound (dig_ecosystem#2228):
 
 ```rust
 // Outbound: RateLimiter is built into Peer::send_raw()
 // (it loops with 1s sleep until rate limit clears)
 
-// Inbound: create a separate RateLimiter for each connection
-let inbound_limiter = RateLimiter::new(
-    true,   // incoming
-    60,     // reset_seconds
-    config.peer_options.rate_limit_factor,
-    V2_RATE_LIMITS.clone(),
-);
+// Inbound: create a separate admission gate for each connection. It composes the Chia
+// RateLimiter (V2_RATE_LIMITS, keyed by ProtocolMessageTypes) with DigRateLimiter
+// (dig_extension_rate_limits_map(), keyed by the raw opcode byte) behind one lock.
+let inbound_limiter = InboundRateLimiter::new(config.peer_options.rate_limit_factor);
 
 // For DIG extension messages, extend V2_RATE_LIMITS with additional entries
 ```
@@ -2303,7 +2301,7 @@ opcode's dispatch outcome-class equals its `route_dig_message` classification (t
 | Wire protocol types | `chia-protocol` | **Reuse** (re-export) |
 | Peer connection (WebSocket + TLS) | `chia-sdk-client::Peer` | **Reuse** |
 | Handshake flow | `chia-sdk-client::connect_peer()` | **Reuse** |
-| Rate limiting | `chia-sdk-client::RateLimiter` | **Reuse** + extend with DIG types |
+| Rate limiting | `chia-sdk-client::RateLimiter` (Chia bound) + `DigRateLimiter` (DIG per-opcode bound) | **Reuse** the Chia table; the DIG table is dig-gossip's own |
 | TLS certificates | `chia-ssl` + `chia-sdk-client` TLS utils | **Reuse** |
 | DNS resolution | `chia-sdk-client::Network` | **Reuse** |
 | Ban/trust management | `chia-sdk-client::ClientState` | **Reuse** + extend with reputation |
@@ -2548,7 +2546,7 @@ minisketch-rs = "0.2"
 - **Introducer flow**: mock introducer, verify registration and peer discovery.
 - **Relay fallback**: mock relay, verify message delivery when direct P2P unavailable.
 - **NAT traversal upgrade**: two nodes on relay, simulate successful hole punch, verify traffic migrates to direct connection.
-- **Rate limiting**: verify `chia-sdk-client::RateLimiter` enforces limits on DIG message types.
+- **Rate limiting**: verify `InboundRateLimiter` enforces both the Chia bound and the DIG per-opcode bound on DIG message types.
 - **Address manager persistence**: save, reload, verify peers restored.
 - **AS-level diversity**: verify outbound connections span distinct AS numbers, reject second connection to same AS.
 

@@ -34,7 +34,7 @@ A `Ping` message MUST be sent at `PING_INTERVAL_SECS` (30-second) intervals. If 
 
 ### CON-005: Per-Connection Rate Limiting
 
-Inbound connections MUST each have a separate `chia-sdk-client::RateLimiter` instance initialized with `V2_RATE_LIMITS`. DIG extension message types (200+ range) MUST be added to the rate limit configuration. Outbound rate limiting is handled internally by `Peer::send_raw()`.
+Inbound connections MUST each have a separate `InboundRateLimiter` instance, composing a `chia-sdk-client::RateLimiter` initialized with `V2_RATE_LIMITS` with dig-gossip's own `DigRateLimiter` over the DIG extension table. DIG extension message types (200+ range) MUST be bounded by that table, keyed by the raw opcode byte. Outbound rate limiting is handled internally by `Peer::send_raw()`.
 
 **Spec reference:** SPEC Section 5.3 (Rate Limiting)
 
