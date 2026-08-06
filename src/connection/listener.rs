@@ -674,7 +674,8 @@ where
     let our_handshake = Handshake {
         network_id: net.clone(),
         protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
-        software_version: format!("dig-gossip/{}", env!("CARGO_PKG_VERSION")),
+        // #2215: the ONE configured value, identical to what the dial path sends.
+        software_version: state.config.software_version.clone(),
         server_port: listen_port_for_handshake(&state),
         node_type: NodeType::FullNode,
         capabilities: vec![

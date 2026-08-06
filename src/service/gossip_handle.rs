@@ -800,9 +800,15 @@ impl GossipHandle {
         let opts = self.inner.config.peer_options;
 
         let out =
-            crate::connection::outbound::connect_outbound_peer(network_id, connector, addr, opts)
-                .await
-                .map_err(GossipError::from)?;
+            crate::connection::outbound::connect_outbound_peer(
+                network_id,
+                connector,
+                addr,
+                opts,
+                self.inner.config.software_version.clone(),
+            )
+            .await
+            .map_err(GossipError::from)?;
 
         let peer_id = peer_id_from_tls_spki_der(&out.remote_spki_der);
         // #1584: self-connection guard by verified identity. The address-based `dial_targets_local_listen`
@@ -1391,6 +1397,38 @@ impl GossipHandle {
         // logs. The silent drop is why 10k+ redundant re-dials churned invisibly for days.
         tracing::info!(peer_id = %peer_id, remote = %remote, ?method, "pool connection established");
         Ok(peer_id)
+    }
+
+    /// Snapshot each connected peer's ADVERTISED SOFTWARE BUILD: `(peer_id, software_version)`
+    /// for every connected peer (dig_ecosystem#2215).
+    ///
+    /// The string is the peer's Chia `Handshake.software_version` after CON-008 Cc/Cf sanitization
+    /// — the raw value it advertised, carried verbatim. This crate deliberately does NOT interpret
+    /// it: the string-to-`PeerSoftware` mapping (including the legacy `"0.0.0"` sentinel that every
+    /// pre-#2215 peer advertises) belongs at the control boundary, in
+    /// `dig-node-control-interface`, so it is defined once and this transport gains no dependency
+    /// on an RPC schema.
+    ///
+    /// # Peers with no handshake
+    ///
+    /// Stub and adopted `dig-nat` slots never performed a Chia handshake, so they report the empty
+    /// string — the same value a peer that advertises nothing sends, and the same "unknown"
+    /// reading. They are INCLUDED rather than filtered out, because a census that silently omits
+    /// peers reports a smaller network than the one that is connected.
+    pub fn connected_pool_peers_with_software(&self) -> Vec<(PeerId, String)> {
+        let Ok(peers) = self.inner.peers.lock() else {
+            return Vec::new();
+        };
+        peers
+            .iter()
+            .map(|(pid, slot)| {
+                let software = match slot {
+                    PeerSlot::Live(l) => l.remote_software_version_sanitized.clone(),
+                    PeerSlot::Stub(_) | PeerSlot::Nat(_) => String::new(),
+                };
+                (*pid, software)
+            })
+            .collect()
     }
 
     /// Snapshot the connected pool: `(peer_id, remote_addr, is_outbound)` for every connected peer
@@ -2157,6 +2195,7 @@ impl GossipHandle {
             self.inner.config.network_id,
             self.inner.config.peer_options,
             timeout,
+            &self.inner.config.software_version,
         )
         .await
     }
@@ -2201,6 +2240,7 @@ impl GossipHandle {
             self.inner.config.peer_options,
             timeout,
             &registration,
+            &self.inner.config.software_version,
         )
         .await
     }

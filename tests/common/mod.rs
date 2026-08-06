@@ -198,6 +198,9 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         reaper_interval_secs: None,
         peer_pool: None,
         nat_identity: None,
+        // #2215: a test-identifiable build, distinct from both pre-#2215 literals so a test that
+        // cares which value went on the wire sets its own and a test that does not stays unaffected.
+        software_version: "dig-gossip-test/0".to_string(),
     }
 }
 
