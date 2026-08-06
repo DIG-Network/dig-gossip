@@ -326,9 +326,16 @@ pub struct GossipConfig {
     /// Advertising an exact build is a fingerprinting aid: it tells an observer precisely which
     /// peers run a version with a publicly disclosed defect, turning a disclosure into a target
     /// list. The diagnostic value was judged to outweigh that for a pre-release network. An
-    /// operator who disagrees can coarsen the value (`dig-node/0.99`) or set it to the **empty
-    /// string**, which is indistinguishable on the wire from a peer built before this field was
-    /// populated and reads as "unknown" at the far end. An empty value never blocks a connection.
+    /// operator who disagrees can coarsen the value or set it to the **empty string**, which is
+    /// indistinguishable on the wire from a peer built before this field was populated and reads as
+    /// "unknown" at the far end. An empty value never blocks a connection.
+    ///
+    /// **Do not invent a coarsening spelling here.** `dig-node-control-interface`'s
+    /// `SoftwareVersionDetail` renders the supported levels, and getting this wrong is silent: a
+    /// two-part `dig-node/0.99` is not valid semver, so a peer reads it as *unknown* — the operator
+    /// asked to say less and accidentally said nothing. Whatever is set MUST be either the empty
+    /// string or a full `product/MAJOR.MINOR.PATCH`, and MUST NOT be version zero in any form
+    /// (`0.0.0`, `0.0.0-rc.1`), which the wire reserves to mean "unknown".
     pub software_version: String,
 }
 

@@ -162,17 +162,25 @@ async fn legacy_zero_sentinel_connects_and_is_carried_verbatim() {
     );
 }
 
-/// The default advertised value names dig-gossip, never the bare `"0.0.0"` that the dial path used
-/// to send — an application that forgets to set the field is identifiable, not anonymous-looking.
+/// The default advertised value names dig-gossip and is a real build — an application that forgets
+/// to set the field is identifiable, not anonymous-looking.
+///
+/// The sentinel check is over the CLASS, version zero, not the string `"0.0.0"`: a default of
+/// `dig-gossip/0.0.0-rc.1` would read as *unknown* at every far end just as surely as the bare
+/// literal, and asserting only against the literal would not see it.
 #[test]
-fn default_software_version_names_the_crate_and_is_not_the_legacy_sentinel() {
+fn default_software_version_names_the_crate_and_is_never_version_zero() {
     let default = dig_gossip::GossipConfig::default().software_version;
+    let Some((product, version)) = default.rsplit_once('/') else {
+        panic!("default must be UA-shaped `product/semver`, got {default:?}");
+    };
+    assert_eq!(product, "dig-gossip", "the default must name this crate");
+
+    let version: semver::Version = version
+        .parse()
+        .unwrap_or_else(|e| panic!("default version {version:?} must be valid semver: {e}"));
     assert!(
-        default.starts_with("dig-gossip/"),
-        "default must be UA-shaped and name this crate, got {default:?}"
-    );
-    assert_ne!(
-        default, "0.0.0",
-        "the legacy sentinel must never be a default"
+        !(version.major == 0 && version.minor == 0 && version.patch == 0),
+        "the default must never be version zero — the wire reserves it to mean \"unknown\", so a          version-zero default would advertise this node as having no build at all (got {default:?})"
     );
 }

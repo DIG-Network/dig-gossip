@@ -220,6 +220,10 @@ unicode-general-category = "1.1"
 # — the same kind a node generates on first run — so peer_id derivation + the mux transport are tested
 # against a REAL certificate with NO real network.
 rcgen = "0.13"
+# #2215: assert the DEFAULT advertised build is never version zero as a CLASS (`0.0.0-rc.1` reads
+# as "unknown" just as surely as the bare literal), which needs a real semver parse, not a string
+# compare. Test-only — this crate carries the advertised string opaquely and never parses it.
+semver = "1"
 # Self dev-dependency: enables the `test-util` feature for the crate's own test/doctest builds so
 # the cfg-gated test hooks (e.g. `__connect_stub_peer_with_direction`) are compiled for integration
 # tests WITHOUT leaking into the production library. Standard Cargo idiom for test-only lib features.

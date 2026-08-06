@@ -962,15 +962,22 @@ who prefers not to advertise sets the empty string and is indistinguishable from
 
 **This crate does not interpret the value.** A received `software_version` is carried as an opaque
 sanitized string, exposed by `GossipHandle::connected_pool_peers_with_software()`. The mapping to a
-build — including the legacy `"0.0.0"` sentinel that every pre-#2215 peer advertises, which means
-"unknown", not "version zero" — is defined once, at the control boundary, by
-`dig-node-control-interface`'s `PeerSoftware`.
+build — including VERSION ZERO, the legacy sentinel that every pre-#2215 peer advertises, which
+means "unknown" rather than a real version, in any decoration (`0.0.0`, `0.0.0-rc.1`, `0.0.0+build`)
+— is defined once, at the control boundary, by `dig-node-control-interface`'s `PeerSoftware`.
 
 **Privacy trade-off (accepted).** Advertising an exact build is a fingerprinting aid: it tells an
 observer precisely which peers run a version with a publicly disclosed defect, turning a disclosure
 into a target list. This was accepted for the diagnostic value on a pre-release network. The
-mitigation available to an operator is to coarsen the advertised value (`dig-node/0.99`) or to
-disable it entirely with the empty string; neither affects connectivity.
+mitigation available to an operator is to coarsen the advertised value or to disable it entirely
+with the empty string; neither affects connectivity.
+
+An advertised value MUST be either the empty string or a full `product/MAJOR.MINOR.PATCH`, and MUST
+NOT be version zero in any form. A two-part `dig-node/0.99` is NOT a valid coarsening: it is not
+valid semver, so the far end reads it as *unknown* — an operator who asked to say less would
+accidentally have said nothing. The supported coarsening levels are rendered by
+`dig-node-control-interface`'s `SoftwareVersionDetail`; an implementation MUST NOT hand-roll a
+spelling of its own.
 
 ### 2.11 IntroducerConfig
 

@@ -247,6 +247,7 @@ impl IntroducerClient {
         _peer_options: PeerOptions,
         _operation_timeout: Duration,
         _registration: &PeerRegistration,
+        _software_version: &str,
     ) -> Result<RegisterAck, GossipError> {
         Err(ClientError::UnsupportedTls.into())
     }
@@ -260,6 +261,7 @@ impl IntroducerClient {
         _network_id: Bytes32,
         _peer_options: PeerOptions,
         _operation_timeout: Duration,
+        _software_version: &str,
     ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
         Err(ClientError::UnsupportedTls.into())
     }
