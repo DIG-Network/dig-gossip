@@ -22,6 +22,8 @@ Inbound connections MUST be accepted via `TcpListener`, TLS handshake, `tokio_tu
 
 Handshake validation MUST reject peers with mismatched `network_id`. Incompatible `protocol_version` values MUST be rejected. The `software_version` field MUST be sanitized by stripping Unicode Cc and Cf characters. The `software_version` MUST be no longer than 128 bytes after sanitization.
 
+A node MUST advertise `GossipConfig::software_version` on EVERY handshake it sends — the outbound dial hello, the inbound accept reply, and both introducer dials — so a peer learns the same build regardless of which side dialled. `software_version` MUST NOT be used to accept or reject a peer; that is `protocol_version`'s role. An empty `software_version` MUST be accepted normally (it is what a peer predating the field sends). See SPEC §2.10.1.
+
 **Spec reference:** SPEC Section 5.1, 5.2; Chia ws_connection.py:61-63
 
 ### CON-004: Keepalive via Ping/Pong
