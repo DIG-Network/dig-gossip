@@ -294,6 +294,58 @@ pub struct GossipConfig {
     /// Held behind an [`Arc`](std::sync::Arc) because [`NodeCert`](dig_tls::NodeCert) deliberately does
     /// not derive `Clone` (its private key lives in `Zeroizing`); the `Arc` keeps `GossipConfig: Clone`.
     pub nat_identity: Option<std::sync::Arc<dig_tls::NodeCert>>,
+
+    /// The SOFTWARE build this node advertises to peers on the Chia
+    /// [`Handshake`](chia_protocol::Handshake), in BOTH directions — the hello sent when this node
+    /// dials and the reply sent when it accepts (dig_ecosystem#2215).
+    ///
+    /// # Format
+    ///
+    /// UA-shaped `product/semver`, e.g. `dig-node/0.99.1`. Sanitized and length-capped at the far
+    /// end by [`crate::connection::handshake::validate_remote_handshake`] (CON-008 /
+    /// [`MAX_SOFTWARE_VERSION_BYTES`](crate::connection::handshake::MAX_SOFTWARE_VERSION_BYTES)),
+    /// so keep it comfortably short.
+    ///
+    /// # This is NOT the protocol version
+    ///
+    /// Compatibility is gated by
+    /// [`ADVERTISED_PROTOCOL_VERSION`](crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION),
+    /// a separate field. Two nodes can speak the same protocol while running builds months apart;
+    /// this value reports the latter and MUST NOT be used to accept or reject a peer.
+    ///
+    /// # The application must set this
+    ///
+    /// The default names *this crate*, which is the transport, not the product a peer wants to
+    /// know about. An embedding application (dig-node) sets `dig-node/<its own version>`.
+    /// dig-gossip cannot know the application's version and deliberately does not guess — guessing
+    /// is how the pre-#2215 values (`"0.0.0"` when dialling, the crate version when accepting) came
+    /// to be advertised as if they were the node's build.
+    ///
+    /// # Privacy trade-off (accepted, dig_ecosystem#2215)
+    ///
+    /// Advertising an exact build is a fingerprinting aid: it tells an observer precisely which
+    /// peers run a version with a publicly disclosed defect, turning a disclosure into a target
+    /// list. The diagnostic value was judged to outweigh that for a pre-release network. An
+    /// operator who disagrees can coarsen the value or set it to the **empty string**, which is
+    /// indistinguishable on the wire from a peer built before this field was populated and reads as
+    /// "unknown" at the far end. An empty value never blocks a connection.
+    ///
+    /// **Do not invent a coarsening spelling here.** `dig-node-control-interface`'s
+    /// `SoftwareVersionDetail` renders the supported levels, and getting this wrong is silent: a
+    /// two-part `dig-node/0.99` is not valid semver, so a peer reads it as *unknown* — the operator
+    /// asked to say less and accidentally said nothing. Whatever is set MUST be either the empty
+    /// string or a full `product/MAJOR.MINOR.PATCH`, and MUST NOT be version zero in any form
+    /// (`0.0.0`, `0.0.0-rc.1`), which the wire reserves to mean "unknown".
+    pub software_version: String,
+}
+
+/// The default [`GossipConfig::software_version`] — this crate, UA-shaped.
+///
+/// Deliberately not the bare `"0.0.0"` the dial path used to send: an application that forgets to
+/// set the field stays identifiable as "a dig-gossip of this version" rather than masquerading as
+/// a versionless peer.
+fn default_software_version() -> String {
+    format!("dig-gossip/{}", env!("CARGO_PKG_VERSION"))
 }
 
 impl Default for GossipConfig {
@@ -335,6 +387,7 @@ impl Default for GossipConfig {
             reaper_interval_secs: None,
             peer_pool: None,
             nat_identity: None,
+            software_version: default_software_version(),
         }
     }
 }

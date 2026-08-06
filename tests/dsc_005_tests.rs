@@ -98,6 +98,7 @@ async fn test_register_introducer_success() {
         PeerOptions::default(),
         Duration::from_secs(10),
         &reg,
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect("register");
@@ -136,6 +137,7 @@ async fn test_register_introducer_rejected() {
         PeerOptions::default(),
         Duration::from_secs(10),
         &reg,
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect("wire ok");
@@ -174,6 +176,7 @@ async fn test_register_introducer_timeout() {
         PeerOptions::default(),
         Duration::from_millis(500),
         &reg,
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect_err("timeout");
@@ -205,6 +208,7 @@ async fn test_register_introducer_connect_fail() {
         PeerOptions::default(),
         Duration::from_secs(2),
         &reg,
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect_err("connect should fail");

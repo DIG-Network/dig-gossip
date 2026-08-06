@@ -172,6 +172,10 @@ pub(crate) fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientE
 ///
 /// **TLS features:** requires `native-tls` and/or `rustls` on this crate (STR-004).
 ///
+/// **`software_version`** is [`GossipConfig::software_version`](crate::types::config::GossipConfig::software_version)
+/// verbatim, the same value the inbound listener replies with, so this node advertises one build
+/// regardless of who dialled (dig_ecosystem#2215).
+///
 /// **IPv6-first ordering + local∩candidate intersection happen upstream, not here:** this function
 /// dials exactly ONE already-resolved [`SocketAddr`] and has no multi-candidate list of its own to
 /// reorder or filter. The ecosystem-wide IPv6-first / IPv4-fallback rule (CLAUDE.md §5.2 / SPEC
@@ -191,6 +195,7 @@ pub(crate) async fn connect_outbound_peer(
     connector: Connector,
     socket_addr: SocketAddr,
     options: PeerOptions,
+    software_version: String,
 ) -> Result<OutboundConnectResult, ClientError> {
     let uri = format!("wss://{socket_addr}/ws");
     // Bound the transport buffer on the dial side too (CON-001 / §5.2) so a hostile server
@@ -213,7 +218,9 @@ pub(crate) async fn connect_outbound_peer(
     peer.send(Handshake {
         network_id: network_id.clone(),
         protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
-        software_version: "0.0.0".to_string(),
+        // #2215: the ONE configured value ([`GossipConfig::software_version`]), identical to what
+        // the listener replies with, so a peer learns the same build from us either way.
+        software_version,
         server_port: 0,
         node_type: NodeType::Wallet,
         capabilities: vec![

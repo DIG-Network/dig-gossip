@@ -929,8 +929,55 @@ pub struct GossipConfig {
     pub peers_file_path: PathBuf,
     /// Peer connection options (rate_limit_factor).
     pub peer_options: PeerOptions,
+    /// The SOFTWARE build advertised on the handshake in BOTH directions. Default:
+    /// `dig-gossip/<crate version>`. See §2.10.1.
+    pub software_version: String,
 }
 ```
+
+#### 2.10.1 `software_version` — the advertised software build
+
+`GossipConfig::software_version` is the ONE value a node advertises as
+`Handshake.software_version`. It MUST be used by every handshake this node sends: the outbound dial
+hello, the inbound accept reply, and both introducer dials. A node MUST NOT advertise a different
+build depending on the direction of the connection.
+
+**Format.** UA-shaped `product/semver`, e.g. `dig-node/0.99.1`. The value is sanitized (CON-008) and
+length-capped (CON-003) by the receiver, so it MUST stay under `MAX_SOFTWARE_VERSION_BYTES`.
+
+**This is not the protocol version.** Compatibility is gated by `protocol_version`
+(`ADVERTISED_PROTOCOL_VERSION` / `MIN_COMPATIBLE_PROTOCOL_VERSION`). Two peers can speak the same
+protocol while running builds months apart. An implementation MUST NOT accept or reject a peer on
+`software_version`.
+
+**The application sets it.** The default names this crate, which is the transport, not the product a
+peer wants to know about. An embedding application sets its own name and version. This crate does
+not infer the application's version, and MUST NOT: doing so is how the pre-#2215 values (`"0.0.0"`
+on the dial path, the crate version on the accept path) came to be advertised as if they were the
+node's build.
+
+**Empty means "not advertising".** `Handshake.software_version` is a non-optional string, so a peer
+that predates this field sends `""`. An implementation MUST accept such a peer normally. An operator
+who prefers not to advertise sets the empty string and is indistinguishable from such a peer.
+
+**This crate does not interpret the value.** A received `software_version` is carried as an opaque
+sanitized string, exposed by `GossipHandle::connected_pool_peers_with_software()`. The mapping to a
+build — including VERSION ZERO, the legacy sentinel that every pre-#2215 peer advertises, which
+means "unknown" rather than a real version, in any decoration (`0.0.0`, `0.0.0-rc.1`, `0.0.0+build`)
+— is defined once, at the control boundary, by `dig-node-control-interface`'s `PeerSoftware`.
+
+**Privacy trade-off (accepted).** Advertising an exact build is a fingerprinting aid: it tells an
+observer precisely which peers run a version with a publicly disclosed defect, turning a disclosure
+into a target list. This was accepted for the diagnostic value on a pre-release network. The
+mitigation available to an operator is to coarsen the advertised value or to disable it entirely
+with the empty string; neither affects connectivity.
+
+An advertised value MUST be either the empty string or a full `product/MAJOR.MINOR.PATCH`, and MUST
+NOT be version zero in any form. A two-part `dig-node/0.99` is NOT a valid coarsening: it is not
+valid semver, so the far end reads it as *unknown* — an operator who asked to say less would
+accidentally have said nothing. The supported coarsening levels are rendered by
+`dig-node-control-interface`'s `SoftwareVersionDetail`; an implementation MUST NOT hand-roll a
+spelling of its own.
 
 ### 2.11 IntroducerConfig
 

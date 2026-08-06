@@ -72,6 +72,9 @@ impl IntroducerClient {
     /// * `network_id` — DIG genesis id; encoded for the Chia handshake string via [`network_id_handshake_string`].
     /// * `peer_options` — forwarded to [`Peer::connect_full_uri`](dig_peer_protocol::Peer::connect_full_uri) (rate limits, etc.).
     /// * `operation_timeout` — hard cap for **connect + handshake + introducer request** (DSC-004 acceptance).
+    /// * `software_version` — [`GossipConfig::software_version`](crate::types::config::GossipConfig::software_version),
+    ///   advertised to the introducer exactly as it is to any other peer (dig_ecosystem#2215). An
+    ///   introducer that logs peer builds sees the same value a direct peer would.
     ///
     /// # Returns
     ///
@@ -85,6 +88,7 @@ impl IntroducerClient {
         network_id: Bytes32,
         peer_options: PeerOptions,
         operation_timeout: Duration,
+        software_version: &str,
     ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
         let network_string = network_id_handshake_string(network_id);
 
@@ -96,7 +100,7 @@ impl IntroducerClient {
             peer.send(Handshake {
                 network_id: network_string.clone(),
                 protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
-                software_version: "0.0.0".to_string(),
+                software_version: software_version.to_string(),
                 server_port: 0,
                 node_type: NodeType::Wallet,
                 capabilities: vec![
@@ -167,6 +171,7 @@ impl IntroducerClient {
         peer_options: PeerOptions,
         operation_timeout: Duration,
         registration: &PeerRegistration,
+        software_version: &str,
     ) -> Result<RegisterAck, GossipError> {
         let network_string = network_id_handshake_string(network_id);
 
@@ -178,7 +183,7 @@ impl IntroducerClient {
             peer.send(Handshake {
                 network_id: network_string.clone(),
                 protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
-                software_version: "0.0.0".to_string(),
+                software_version: software_version.to_string(),
                 server_port: 0,
                 node_type: NodeType::Wallet,
                 capabilities: vec![
@@ -242,6 +247,7 @@ impl IntroducerClient {
         _peer_options: PeerOptions,
         _operation_timeout: Duration,
         _registration: &PeerRegistration,
+        _software_version: &str,
     ) -> Result<RegisterAck, GossipError> {
         Err(ClientError::UnsupportedTls.into())
     }
@@ -255,6 +261,7 @@ impl IntroducerClient {
         _network_id: Bytes32,
         _peer_options: PeerOptions,
         _operation_timeout: Duration,
+        _software_version: &str,
     ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
         Err(ClientError::UnsupportedTls.into())
     }

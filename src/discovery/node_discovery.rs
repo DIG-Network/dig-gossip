@@ -593,6 +593,7 @@ async fn try_introducer_query(
         config.network_id,
         config.peer_options,
         timeout,
+        &config.software_version,
     )
     .await?;
 
