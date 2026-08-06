@@ -117,7 +117,10 @@ async fn empty_advertised_version_connects_and_is_read_as_empty() {
     let (_ds, _ss, server, bound) = node_advertising("").await;
     let (_dc, _sc, client, _c_addr) = node_advertising(B_SOFTWARE).await;
 
-    client.connect_to(bound).await.expect("connect with off mode");
+    client
+        .connect_to(bound)
+        .await
+        .expect("connect with off mode");
 
     assert_eq!(
         sole_peer_software(&client),
@@ -142,7 +145,10 @@ async fn legacy_zero_sentinel_connects_and_is_carried_verbatim() {
     let (_ds, _ss, server, bound) = node_advertising("0.0.0").await;
     let (_dc, _sc, client, _c_addr) = node_advertising(A_SOFTWARE).await;
 
-    client.connect_to(bound).await.expect("legacy peer connects");
+    client
+        .connect_to(bound)
+        .await
+        .expect("legacy peer connects");
 
     assert_eq!(
         sole_peer_software(&client),

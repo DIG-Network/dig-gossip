@@ -84,6 +84,7 @@ async fn test_query_introducer_success() {
         common::test_network_id(),
         PeerOptions::default(),
         Duration::from_secs(10),
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect("query_peers");
@@ -117,6 +118,7 @@ async fn test_query_introducer_empty_list() {
         common::test_network_id(),
         PeerOptions::default(),
         Duration::from_secs(10),
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect("empty list is Ok");
@@ -148,6 +150,7 @@ async fn test_query_introducer_timeout() {
         common::test_network_id(),
         PeerOptions::default(),
         Duration::from_millis(400),
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect_err("must time out");
@@ -179,6 +182,7 @@ async fn test_query_introducer_connect_fail() {
         common::test_network_id(),
         PeerOptions::default(),
         Duration::from_secs(2),
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect_err("nothing listens on :7");
@@ -214,6 +218,7 @@ async fn test_query_introducer_handshake_wrong_network() {
         common::test_network_id(),
         PeerOptions::default(),
         Duration::from_secs(5),
+        common::TEST_SOFTWARE_VERSION,
     )
     .await
     .expect_err("wrong network must fail handshake validation");

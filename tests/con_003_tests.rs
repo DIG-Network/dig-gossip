@@ -228,16 +228,19 @@ async fn test_validation_both_directions() {
         .__con003_peer_versions_for_tests(from_b_on_a)
         .expect("A stores LiveSlot for inbound peer");
     assert_eq!(prot_a, "0.0.37");
-    // Outbound client hello uses placeholder software_version until it is customized (CON-001).
-    assert_eq!(soft_b_to_a, "0.0.0");
+    // #2215: both directions advertise the ONE configured `GossipConfig::software_version`. This
+    // assertion previously pinned the literal `"0.0.0"` the dial path hardcoded, against the crate
+    // version the listener replied with — the asymmetry that made a peer's reported build depend
+    // on who dialled. Both sides now report the same configured value.
+    assert_eq!(soft_b_to_a, common::TEST_SOFTWARE_VERSION);
 
     let (prot_b, soft_a_to_b) = handle_b
         .__con003_peer_versions_for_tests(peer_a_tls_id)
         .expect("B stores LiveSlot for outbound peer");
     assert_eq!(prot_b, "0.0.37");
-    let expected_soft = format!("dig-gossip/{}", env!("CARGO_PKG_VERSION"));
     assert_eq!(
-        soft_a_to_b, expected_soft,
-        "A’s listener replies with crate software tag"
+        soft_a_to_b,
+        common::TEST_SOFTWARE_VERSION,
+        "the accepting node advertises the same configured build the dialling node does"
     );
 }

@@ -84,6 +84,7 @@ fn test_config_all_fields_exist() {
         reaper_interval_secs: Some(11),
         peer_pool: Some(dig_gossip::PeerPoolConfig::default()),
         nat_identity: None,
+        software_version: common::TEST_SOFTWARE_VERSION.to_string(),
     };
 
     assert_eq!(cfg.listen_addr, "192.0.2.1:9000".parse().unwrap());

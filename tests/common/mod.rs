@@ -164,6 +164,13 @@ pub fn test_network() -> Network {
 /// **STR-005 alignment:** `listen_addr` uses port `0` for OS assignment; `target_outbound_count`
 /// and `max_connections` match the STR-005 example (`2` / `10`). [`PeerOptions`] uses defaults
 /// from `chia-sdk-client`.
+/// The software build every test harness node advertises (#2215).
+///
+/// Deliberately unlike BOTH pre-#2215 literals (`"0.0.0"` and `dig-gossip/<version>`) so a test
+/// that pins what went on the wire fails loudly if a hardcode returns, rather than coincidentally
+/// matching it.
+pub const TEST_SOFTWARE_VERSION: &str = "dig-gossip-test/0";
+
 pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
     GossipConfig {
         listen_addr: "127.0.0.1:0".parse().expect("parse 127.0.0.1:0"),
@@ -198,9 +205,7 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         reaper_interval_secs: None,
         peer_pool: None,
         nat_identity: None,
-        // #2215: a test-identifiable build, distinct from both pre-#2215 literals so a test that
-        // cares which value went on the wire sets its own and a test that does not stays unaffected.
-        software_version: "dig-gossip-test/0".to_string(),
+        software_version: TEST_SOFTWARE_VERSION.to_string(),
     }
 }
 

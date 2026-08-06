@@ -245,6 +245,9 @@ mod medium_3_introducer_cap {
             // introducers) so DNS seeding always returns nothing and the loop reliably falls
             // through to the introducer path this test exercises.
             network: super::common::test_network(),
+            // The mock introducer rejects any handshake not advertising this build, which is what
+            // makes this path a guard on `node_discovery`'s introducer dial site (#2215).
+            software_version: super::common::TEST_SOFTWARE_VERSION.to_string(),
             dns_seed_timeout: Duration::from_millis(50),
             dns_seed_batch_size: 1,
             introducer: Some(IntroducerConfig {

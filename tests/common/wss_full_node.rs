@@ -195,6 +195,16 @@ async fn serve_introducer_one_client(
             hs.network_id, client_expected_network_id
         ));
     }
+    // #2215: the two introducer dial paths used to hardcode `"0.0.0"` instead of the configured
+    // build, exactly as the peer dial path did. Rejecting anything but the harness's configured
+    // value makes every DSC-004/DSC-005 test a real-wire guard on those send sites: if either one
+    // stops forwarding its `software_version` argument, this handshake fails and they go red.
+    if hs.software_version != super::TEST_SOFTWARE_VERSION {
+        return Err(format!(
+            "client software_version mismatch: got {:?} expect {:?} — an introducer dial site is not advertising the configured build",
+            hs.software_version, super::TEST_SOFTWARE_VERSION
+        ));
+    }
 
     let reply_hs = Handshake {
         network_id: server_handshake_network_id.to_string(),
@@ -298,6 +308,16 @@ async fn serve_introducer_register_one_client(
         return Err(format!(
             "client network_id mismatch: got {} expect {}",
             hs.network_id, client_expected_network_id
+        ));
+    }
+    // #2215: the two introducer dial paths used to hardcode `"0.0.0"` instead of the configured
+    // build, exactly as the peer dial path did. Rejecting anything but the harness's configured
+    // value makes every DSC-004/DSC-005 test a real-wire guard on those send sites: if either one
+    // stops forwarding its `software_version` argument, this handshake fails and they go red.
+    if hs.software_version != super::TEST_SOFTWARE_VERSION {
+        return Err(format!(
+            "client software_version mismatch: got {:?} expect {:?} — an introducer dial site is not advertising the configured build",
+            hs.software_version, super::TEST_SOFTWARE_VERSION
         ));
     }
 

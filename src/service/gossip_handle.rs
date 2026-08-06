@@ -799,16 +799,15 @@ impl GossipHandle {
             crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
         let opts = self.inner.config.peer_options;
 
-        let out =
-            crate::connection::outbound::connect_outbound_peer(
-                network_id,
-                connector,
-                addr,
-                opts,
-                self.inner.config.software_version.clone(),
-            )
-            .await
-            .map_err(GossipError::from)?;
+        let out = crate::connection::outbound::connect_outbound_peer(
+            network_id,
+            connector,
+            addr,
+            opts,
+            self.inner.config.software_version.clone(),
+        )
+        .await
+        .map_err(GossipError::from)?;
 
         let peer_id = peer_id_from_tls_spki_der(&out.remote_spki_der);
         // #1584: self-connection guard by verified identity. The address-based `dial_targets_local_listen`
