@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.21.1] - 2026-08-07
+
+### Bug Fixes
+- Fail on tag-push when publishing to crates.io is blocked (#2228) (#57)
+
 ## [0.21.0] - 2026-08-06
 
 ### Refactor
