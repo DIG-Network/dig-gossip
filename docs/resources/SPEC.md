@@ -1870,6 +1870,49 @@ the RLY-002 `payload` is a `Vec<u8>` the relay cannot interpret, so a directed g
 the transport is carried verbatim (the same frame the direct path carries) and no plaintext-to-relay
 path is introduced.
 
+**The RESPONDER half of a relayed circuit is a pool member too (#870/#1871).** A relay circuit has two
+ends. The dialer's end is adopted through `adopt_nat_connection`; the reservation HOLDER's end — the
+authenticated `PeerConnection` `dig_nat::RelayAcceptor::accept` returns for a circuit a peer opened
+through the relay — MUST be registered through `GossipHandle::adopt_relayed_inbound`. A node serving a
+peer over such a circuit and reporting `connected_peers = 0` is a defect: the pool is what every
+subsystem reads to answer "am I connected".
+
+The registration is normatively:
+
+- **Authenticated only.** The caller MUST pass a connection whose `peer_id` came from a completed mTLS
+  handshake — the `PeerConnection` `dig_nat` produces once its verifier has captured the peer's
+  certificate-derived id. A relay MUST NOT be able to inflate a node's peer count with peers it never
+  authenticated; it cannot, because it is not in the node's process and cannot invoke this path. This
+  is an obligation on the CALLER, not a guarantee of the argument type: `dig_nat::PeerConnection` has
+  public fields, so an in-process caller can construct one carrying any identity.
+- **Relay-typed and INBOUND.** The slot carries `TraversalKind::Relayed` and `is_outbound = false`; it
+  reports `Via::Relay`, and it occupies NO outbound diversity group and NO `max_relayed_outbound` slot
+  (the responder dialed nothing).
+- **Non-dialable, structurally.** Every relayed slot — in EITHER direction — has
+  `ConnectedPoolPeer::dial_addr == None` and MUST NOT appear in `dialable_pool_peers()`. A relayed
+  link's recorded remote is the relay endpoint (unspecified for an accepted circuit), never an address
+  the peer answers at; offering it to a dialer produces a guaranteed failure and risks evicting the
+  working circuit already carrying that peer's traffic. Non-dialability belongs to the TIER, not the
+  direction.
+- **Bounded.** At most `max_relayed_inbound = max_connections − max(max_connections/4, 1)` accepted
+  circuits (**6** at `max_connections = 8`), enforced under the same `peers`-lock hold as the insert, so
+  a single relay cannot fill the pool with peers of its own choosing (eclipse by introduction). The
+  reserved quarter is the same derivation as `max_relayed_outbound` and the direct-dial floor. The cap
+  counts slots that are themselves accepted circuits — relayed and INBOUND; a relayed OUTBOUND peer
+  MUST NOT consume it, or a node that dials out over relays refuses legitimate circuits while under
+  its own cap.
+- **A held slot exempts only the budget it occupies.** Re-adopting an identity that already holds an
+  accepted circuit is charged nothing (the map does not grow and the circuit already exists), but
+  converting a relayed OUTBOUND slot into an accepted circuit MUST still be charged the
+  `max_relayed_inbound` cap. A blanket held-slot exemption makes the cap a formality: any peer a relay
+  can get admitted by another path could then be converted into a circuit, and iterated over distinct
+  peers that fills `max_connections` entirely with relay-introduced circuits.
+- **A circuit never supersedes a NON-relayed slot.** A peer already holding a direct slot is REFUSED
+  here. Superseding it would drop a dialable peer's dial address and demote it to non-dialable at that
+  peer's own initiative, and the direct link is the better path regardless.
+- Re-adoption is otherwise newest-wins on the #1762 terms, and the self (#1584) / ban (CON-007) guards
+  run first.
+
 Two accounting rules govern how relay-reachable peers feed the dial budget:
 
 - **Union, not sum.** The connected total counts the UNION of directly-connected and relay-reachable
