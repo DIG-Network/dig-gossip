@@ -224,7 +224,9 @@ pub(crate) struct NatSlot {
     pub conn: crate::nat::NatPeerConnection,
     /// Remote endpoint (peer, or relay for a relayed link).
     pub remote: SocketAddr,
-    /// Direction — pool-dialed connections are always outbound.
+    /// Direction — `true` when THIS node dialed the peer (the pool auto-dial and every manual
+    /// `connect_via_nat`), `false` for a circuit this node ACCEPTED as the responder
+    /// ([`GossipHandle::adopt_relayed_inbound`](crate::service::gossip_handle::GossipHandle::adopt_relayed_inbound)).
     pub is_outbound: bool,
     /// Which `dig-nat` traversal tier established this link (#924 B2). [`TraversalKind::Relayed`] marks
     /// a **relay-transport** peer — reached by tunnelling through the relay's RLY-002 forwarder rather
@@ -242,6 +244,22 @@ impl NatSlot {
             Via::Relay
         } else {
             Via::Direct
+        }
+    }
+
+    /// The address at which this peer may be DIALED, or `None` when it has none.
+    ///
+    /// A relayed link's [`remote`](Self::remote) is the RELAY endpoint (for an ACCEPTED circuit, an
+    /// unspecified address), never a place the peer answers — so every relayed slot reports `None`
+    /// and can never be handed to a dialer. Dialling it would fail on every attempt and, worse, could
+    /// evict the working circuit that is already carrying the peer's traffic.
+    ///
+    /// The property belongs to the TIER, not to the direction: an outbound relayed peer is as
+    /// undialable as an accepted one.
+    pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
+        match self.method {
+            dig_nat::TraversalKind::Relayed => None,
+            _ => Some(self.remote),
         }
     }
 }

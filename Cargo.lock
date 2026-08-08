@@ -1460,6 +1460,7 @@ dependencies = [
  "ring",
  "rustls",
  "rustls-pemfile",
+ "rustls-pki-types",
  "semver",
  "serde",
  "serde_json",

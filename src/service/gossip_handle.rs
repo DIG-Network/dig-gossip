@@ -1425,6 +1425,178 @@ impl GossipHandle {
             .collect()
     }
 
+    /// Register the RESPONDER half of an authenticated relayed circuit into the connected pool
+    /// (**#870 / #1871**) — relay-typed, inbound, and structurally non-dialable.
+    ///
+    /// The reservation holder does not dial: `dig-nat`'s
+    /// [`RelayAcceptor`](dig_nat::RelayAcceptor) hands it a circuit a peer opened THROUGH the relay,
+    /// already carrying the identical mTLS a direct link gets. Before this path existed, that peer
+    /// entered no pool at all — so a node actively serving it reported `connected_peers = 0`, and
+    /// every subsystem that answers "am I connected" from the pool (health, metrics, peer selection)
+    /// saw an isolated node while bytes were flowing.
+    ///
+    /// # Authenticated only
+    ///
+    /// A [`NatPeerConnection`](crate::nat::NatPeerConnection) can only be built from a
+    /// `dig_nat::PeerConnection`, which `dig-nat` produces **after** the mTLS handshake completes and
+    /// its verifier has captured the peer's certificate-derived `peer_id`. So the identity registered
+    /// here is proven by construction — a relay cannot inflate this node's peer count with peers it
+    /// never authenticated, because it has no way to produce this argument for one.
+    ///
+    /// # Non-dialable by type
+    ///
+    /// The registered slot carries [`TraversalKind::Relayed`](dig_nat::TraversalKind), so
+    /// [`Self::dialable_pool_peers`] cannot return it and
+    /// [`ConnectedPoolPeer::dial_addr`](crate::service::peer_pool::ConnectedPoolPeer::dial_addr) is
+    /// `None`. That is deliberate rather than conventional: the peer answers at no address, so a
+    /// selection path that dialed it would fail every attempt and might evict the working circuit.
+    ///
+    /// # Admission
+    ///
+    /// Refuses this node itself ([`GossipError::SelfConnection`]), a banned peer
+    /// ([`GossipError::PeerBanned`]), a full pool ([`GossipError::MaxConnectionsReached`]), a
+    /// non-relayed connection (that is [`Self::adopt_nat_connection`]'s job), and more than
+    /// [`max_relayed_inbound`](crate::service::peer_pool::max_relayed_inbound) accepted circuits —
+    /// the last so a single relay cannot fill the pool with peers of its choosing. No OUTBOUND
+    /// diversity budget is charged: the responder dialed nothing, so it occupies no outbound group.
+    /// Re-adoption is newest-wins for the same reasons as [`Self::adopt_nat_connection`].
+    pub async fn adopt_relayed_inbound(
+        &self,
+        conn: crate::nat::NatPeerConnection,
+    ) -> Result<PeerId, GossipError> {
+        self.require_running()?;
+        let peer_id = conn.peer_id();
+        let remote = conn.remote_addr();
+        let method = conn.method();
+
+        if !matches!(method, dig_nat::TraversalKind::Relayed) {
+            return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                format!("adopt_relayed_inbound: not a relayed circuit ({method:?})"),
+            )));
+        }
+        if peer_id == self.inner.config.peer_id {
+            return Err(GossipError::SelfConnection);
+        }
+        if self
+            .inner
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await
+        {
+            return Err(GossipError::PeerBanned(peer_id));
+        }
+
+        // Both budgets and the insert are decided under ONE `peers`-lock hold, so no two concurrent
+        // circuits can both pass the last free slot (the #1710 atomicity rule).
+        let superseded = {
+            let mut peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+
+            // Replacing a held slot neither grows the map nor adds a circuit, so it is charged
+            // against neither budget (mirrors the #1762 exemption).
+            let replaces_held_slot = peers.contains_key(&peer_id);
+            if !replaces_held_slot {
+                if peers.len() >= self.inner.config.max_connections {
+                    return Err(GossipError::MaxConnectionsReached(
+                        self.inner.config.max_connections,
+                    ));
+                }
+                let accepted_relayed = peers
+                    .values()
+                    .filter(|s| crate::service::state::is_relayed(s) && !s.is_outbound())
+                    .count();
+                let cap = crate::service::peer_pool::max_relayed_inbound(
+                    self.inner.config.max_connections,
+                );
+                if accepted_relayed >= cap {
+                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                        format!("#870: accepted relayed circuit cap reached ({cap})"),
+                    )));
+                }
+            }
+
+            peers.insert(
+                peer_id,
+                PeerSlot::Nat(super::state::NatSlot {
+                    conn,
+                    remote,
+                    is_outbound: false,
+                    method,
+                }),
+            )
+        };
+
+        // Newest-wins supersede — tear the displaced slot down after the lock is released, exactly as
+        // `adopt_nat_connection` does (a stale keepalive must be aborted before its socket closes, or
+        // its teardown fires against this newer session — the #1691 ghost-keepalive race).
+        if let Some(PeerSlot::Live(stale)) = superseded {
+            stale.keepalive_task.abort();
+            let _ = stale.peer.close().await;
+        }
+
+        // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
+        if let Ok(mut pt) = self.inner.plumtree.lock() {
+            pt.add_peer(peer_id);
+        }
+        self.inner
+            .total_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner
+            .pool
+            .publish(crate::service::peer_pool::PoolEvent::PeerAdded {
+                peer_id,
+                addr: remote,
+            });
+        Ok(peer_id)
+    }
+
+    /// Snapshot every connected pool member with the facts a peer SELECTOR needs — identity,
+    /// [`Via`](crate::nat::peer_record::Via), direction, and whether it may be dialed at all.
+    ///
+    /// Prefer this over [`Self::connected_pool_peers`] when the address is going to be USED: this view
+    /// separates the endpoint a session runs over from an address the peer can be reached at, which
+    /// are different things for every relayed peer.
+    pub fn connected_pool_peers_detailed(
+        &self,
+    ) -> Vec<crate::service::peer_pool::ConnectedPoolPeer> {
+        use crate::nat::peer_record::Via;
+        use crate::service::peer_pool::ConnectedPoolPeer;
+        let Ok(peers) = self.inner.peers.lock() else {
+            return Vec::new();
+        };
+        peers
+            .iter()
+            .map(|(pid, slot)| {
+                let (via, dial_addr) = match slot {
+                    super::state::PeerSlot::Nat(n) => (n.via(), n.dial_addr()),
+                    // Stub / live TLS peers are direct by construction: their remote IS the peer.
+                    other => (Via::Direct, Some(other.remote())),
+                };
+                ConnectedPoolPeer {
+                    peer_id: *pid,
+                    via,
+                    is_outbound: slot.is_outbound(),
+                    dial_addr,
+                    session_addr: slot.remote(),
+                }
+            })
+            .collect()
+    }
+
+    /// The connected peers that may be DIALED, with the address to dial them at.
+    ///
+    /// Relayed peers are absent — in either direction, since a relayed link's endpoint is the relay's,
+    /// not the peer's. This is the surface a peer-selection or reconnect path should read; reading
+    /// [`Self::connected_pool_peers`] instead would hand it relay endpoints as if they were peers.
+    pub fn dialable_pool_peers(&self) -> Vec<(PeerId, std::net::SocketAddr)> {
+        self.connected_pool_peers_detailed()
+            .into_iter()
+            .filter_map(|p| p.dial_addr.map(|a| (p.peer_id, a)))
+            .collect()
+    }
+
     /// Snapshot the connected pool: `(peer_id, remote_addr, is_outbound)` for every connected peer
     /// (live TLS, adopted `dig-nat`, or stub). This is the "list connected peers" surface dig-node uses
     /// to choose a peer for an RPC or to plan a multi-source download.
