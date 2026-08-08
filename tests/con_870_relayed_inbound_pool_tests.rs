@@ -519,3 +519,43 @@ async fn a_relayed_outbound_peer_does_not_consume_the_accepted_relayed_cap() {
     svc.stop().await.expect("stop");
     drop(keep_alive);
 }
+
+/// **A circuit never demotes a peer's own direct slot, EMPTY POOL included.** The cap is not what
+/// stops this: with one peer connected and seven slots free, no budget is binding, so only the
+/// non-relayed-held-slot refusal can. Otherwise a peer that this node can dial could — at its own
+/// initiative, by opening a circuit through any relay — replace its dialable slot with a non-dialable
+/// one and erase the address this node reaches it at.
+#[tokio::test]
+async fn a_circuit_cannot_demote_a_peers_direct_slot_while_the_pool_is_nearly_empty() {
+    let (svc, handle, _dir) = running_handle().await; // 1 of 8 used — no budget binds
+
+    let (direct, s_direct) = loopback_nat_conn(
+        [160; 32],
+        addr("[2001:db8::60]:9445"),
+        TraversalKind::Direct,
+    );
+    let peer_id = direct.peer_id();
+    handle.adopt_nat_connection(direct).await.expect("direct");
+
+    let (circuit, s_circuit) =
+        loopback_nat_conn([160; 32], accepted_relayed_remote(), TraversalKind::Relayed);
+    let err = handle
+        .adopt_relayed_inbound(circuit)
+        .await
+        .expect_err("a circuit does not supersede the direct link this node already holds");
+    assert!(matches!(err, GossipError::ConnectionFiltered(_)), "{err:?}");
+
+    let view = handle
+        .connected_pool_peers_detailed()
+        .into_iter()
+        .find(|p| p.peer_id == peer_id)
+        .expect("the direct slot is still held");
+    assert_eq!(view.via, dig_gossip::Via::Direct, "still a direct slot");
+    assert!(
+        view.dial_addr.is_some(),
+        "and still carries the address this node dials it at"
+    );
+
+    svc.stop().await.expect("stop");
+    drop((s_direct, s_circuit));
+}
