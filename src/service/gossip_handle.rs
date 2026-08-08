@@ -1512,12 +1512,10 @@ impl GossipHandle {
             // A circuit NEVER supersedes a direct link. Doing so would demote a dialable peer to a
             // non-dialable one and drop its dial address, at the peer's own initiative — and the
             // direct link is strictly the better path anyway. The peer keeps the slot it has.
-            if let Some(slot) = held {
-                if !crate::service::state::is_relayed(slot) {
-                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
-                        format!("#870: {peer_id} already holds a direct slot; a circuit does not supersede it"),
-                    )));
-                }
+            if matches!(held, Some(slot) if !crate::service::state::is_relayed(slot)) {
+                return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                    format!("#870: {peer_id} holds a direct slot; a circuit does not supersede it"),
+                )));
             }
 
             // The map grows only for an identity holding no slot at all.
@@ -1529,7 +1527,10 @@ impl GossipHandle {
             // The accepted-relayed budget is occupied only by a slot that is ITSELF an accepted
             // circuit. A relayed OUTBOUND held slot occupies the map but not this budget, so
             // converting it into an accepted circuit is net-new occupancy and is charged.
-            let replaces_accepted_circuit = matches!(held, Some(slot) if crate::service::state::is_relayed(slot) && !slot.is_outbound());
+            let replaces_accepted_circuit = matches!(
+                held,
+                Some(slot) if crate::service::state::is_relayed(slot) && !slot.is_outbound()
+            );
             if !replaces_accepted_circuit {
                 let accepted_relayed = peers
                     .values()
