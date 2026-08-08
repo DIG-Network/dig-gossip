@@ -20,7 +20,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.21.1"
+version = "0.22.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -224,6 +224,13 @@ rcgen = "0.13"
 # as "unknown" just as surely as the bare literal), which needs a real semver parse, not a string
 # compare. Test-only — this crate carries the advertised string opaquely and never parses it.
 semver = "1"
+# #870 relayed-inbound tests: run the REAL dig-tls mTLS handshake (the same `*_config_spki_pinned`
+# pair `dig_nat::RelayAcceptor` and `MtlsDialer` use) over an in-memory duplex, so the adopted
+# `peer_id` comes from an actual certificate instead of a literal stamped into a mock. Dev-only: the
+# production `rustls` feature still owns the optional `tokio-rustls` dependency. `default-features =
+# false` because the crypto provider comes from the dig-tls-built config, not from this dependency.
+tokio-rustls = { version = "0.26", default-features = false }
+rustls-pki-types = "1"
 # Self dev-dependency: enables the `test-util` feature for the crate's own test/doctest builds so
 # the cfg-gated test hooks (e.g. `__connect_stub_peer_with_direction`) are compiled for integration
 # tests WITHOUT leaking into the production library. Standard Cargo idiom for test-only lib features.

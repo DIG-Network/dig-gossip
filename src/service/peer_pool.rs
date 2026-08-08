@@ -299,7 +299,51 @@ fn min_direct_peers(cfg: &PeerPoolConfig) -> usize {
 /// Mirrors the #870 direct-floor derivation (`target/4`, min 1): reserve a quarter of the outbound
 /// budget for the diversity-checked tier, cap the rest as relayed → **6** with the default target of 8.
 pub(crate) fn max_relayed_outbound(target_outbound_count: usize) -> usize {
-    target_outbound_count.saturating_sub((target_outbound_count / 4).max(1))
+    reserving_a_quarter(target_outbound_count)
+}
+
+/// The maximum number of ACCEPTED (responder-side) relayed circuits the pool admits (#870/#1871).
+///
+/// A relay introduces circuits to a reservation holder, so — left ungated — a single misbehaving
+/// relay could occupy the node's entire connection budget with peers it chose, an eclipse by
+/// introduction rather than by dialing. Bounding accepted circuits at `max_connections` less a
+/// reserved quarter keeps at least one slot per four for peers reached any other way.
+///
+/// Derived identically to [`max_relayed_outbound`] and the #870 direct-dial floor, so the reserve is
+/// ONE rule with three applications rather than three constants that can drift apart.
+pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
+    reserving_a_quarter(max_connections)
+}
+
+/// `n` less a reserved quarter (at least one) — the ecosystem's single "leave room for the other
+/// tier" derivation. `reserving_a_quarter(8) == 6`.
+fn reserving_a_quarter(n: usize) -> usize {
+    n.saturating_sub((n / 4).max(1))
+}
+
+/// A connected pool member as PEER SELECTION sees it: who it is, how it is reached, which side
+/// opened it, and — the load-bearing field — whether it may be dialed at all.
+///
+/// [`Self::dial_addr`] is the reason this type exists. A relayed peer is genuinely connected but has
+/// no address at which it answers, so "connected" and "dialable" are different questions and a caller
+/// that conflates them will dial the relay endpoint forever. Encoding the distinction as an
+/// `Option<SocketAddr>` makes the mistake unexpressible rather than merely documented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectedPoolPeer {
+    /// The verified peer identity.
+    pub peer_id: PeerId,
+    /// How this node reaches the peer — [`Via::Relay`](crate::nat::peer_record::Via) for a peer whose
+    /// traffic is tunnelled through a relay, [`Via::Direct`](crate::nat::peer_record::Via) otherwise.
+    pub via: crate::nat::peer_record::Via,
+    /// Whether THIS node initiated the connection. An accepted relayed circuit is inbound.
+    pub is_outbound: bool,
+    /// The address at which this peer may be dialed, or `None` when it has none (every relayed
+    /// peer). A `None` here is a structural refusal, not a missing lookup: there is no address to
+    /// find.
+    pub dial_addr: Option<SocketAddr>,
+    /// The endpoint the session actually runs over — the peer, or the relay for a relayed link.
+    /// Observability only; NEVER a dial target (that is [`Self::dial_addr`]).
+    pub session_addr: SocketAddr,
 }
 
 /// Free-slot budget that lets relay-reachable peers reduce redundant direct dialing WITHOUT letting

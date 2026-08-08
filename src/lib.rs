@@ -160,7 +160,7 @@ pub use nat::{unified_discover, UnifiedDiscoveryConfig};
 // replenishing on churn. This is the surface the dig-node peer-RPC + download layers use to list /
 // borrow connected peers and observe pool churn.
 pub use service::peer_pool::{
-    DialBackoff, Dialer, PoolCandidate, PoolEvent, PoolRemovalReason, PoolStats,
+    ConnectedPoolPeer, DialBackoff, Dialer, PoolCandidate, PoolEvent, PoolRemovalReason, PoolStats,
 };
 pub use types::config::PeerPoolConfig;
 
