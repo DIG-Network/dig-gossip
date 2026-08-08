@@ -1437,11 +1437,12 @@ impl GossipHandle {
     ///
     /// # Authenticated only
     ///
-    /// A [`NatPeerConnection`](crate::nat::NatPeerConnection) can only be built from a
-    /// `dig_nat::PeerConnection`, which `dig-nat` produces **after** the mTLS handshake completes and
-    /// its verifier has captured the peer's certificate-derived `peer_id`. So the identity registered
-    /// here is proven by construction — a relay cannot inflate this node's peer count with peers it
-    /// never authenticated, because it has no way to produce this argument for one.
+    /// The caller MUST pass a connection whose `peer_id` came from a completed mTLS handshake — which
+    /// is what `dig-nat` hands the reservation holder, its verifier having captured the peer's
+    /// certificate-derived id. A relay therefore cannot inflate this node's peer count with peers it
+    /// never authenticated: it is not in this process and cannot call this at all. The guarantee is
+    /// that of the CALLER, not of the type — `dig_nat::PeerConnection` has public fields, so an
+    /// in-process caller could stamp any id it liked (this crate's own test harness does exactly that).
     ///
     /// # Non-dialable by type
     ///
@@ -1455,11 +1456,17 @@ impl GossipHandle {
     ///
     /// Refuses this node itself ([`GossipError::SelfConnection`]), a banned peer
     /// ([`GossipError::PeerBanned`]), a full pool ([`GossipError::MaxConnectionsReached`]), a
-    /// non-relayed connection (that is [`Self::adopt_nat_connection`]'s job), and more than
+    /// non-relayed connection (that is [`Self::adopt_nat_connection`]'s job), a peer already holding a
+    /// NON-relayed slot (a circuit never demotes a dialable peer to a non-dialable one), and more than
     /// [`max_relayed_inbound`](crate::service::peer_pool::max_relayed_inbound) accepted circuits —
     /// the last so a single relay cannot fill the pool with peers of its choosing. No OUTBOUND
     /// diversity budget is charged: the responder dialed nothing, so it occupies no outbound group.
-    /// Re-adoption is newest-wins for the same reasons as [`Self::adopt_nat_connection`].
+    ///
+    /// A held slot exempts an adoption only from a budget it ALREADY occupies: re-adopting an accepted
+    /// circuit is free, while converting a relayed OUTBOUND slot into an accepted one still pays the
+    /// accepted-relayed cap. Exempting every held slot would make that cap a formality — any peer the
+    /// relay could get admitted by another path could then be converted into a circuit.
+    /// Re-adoption is otherwise newest-wins for the same reasons as [`Self::adopt_nat_connection`].
     pub async fn adopt_relayed_inbound(
         &self,
         conn: crate::nat::NatPeerConnection,
@@ -1494,15 +1501,36 @@ impl GossipHandle {
                 .lock()
                 .map_err(|_| GossipError::ChannelClosed)?;
 
-            // Replacing a held slot neither grows the map nor adds a circuit, so it is charged
-            // against neither budget (mirrors the #1762 exemption).
-            let replaces_held_slot = peers.contains_key(&peer_id);
-            if !replaces_held_slot {
-                if peers.len() >= self.inner.config.max_connections {
-                    return Err(GossipError::MaxConnectionsReached(
-                        self.inner.config.max_connections,
-                    ));
+            // A held slot exempts this adoption ONLY from a budget it already occupies — the narrower
+            // #1762 shape `adopt_nat_connection` uses, not a blanket exemption. A blanket one is a
+            // bypass: hold any slot for an identity and its circuit is charged nothing, so a relay
+            // that can get a peer admitted by ANY other path can then convert it into a circuit and
+            // fill `max_connections` entirely with peers of its own choosing — the eclipse the
+            // reserved quarter exists to prevent.
+            let held = peers.get(&peer_id);
+
+            // A circuit NEVER supersedes a direct link. Doing so would demote a dialable peer to a
+            // non-dialable one and drop its dial address, at the peer's own initiative — and the
+            // direct link is strictly the better path anyway. The peer keeps the slot it has.
+            if let Some(slot) = held {
+                if !crate::service::state::is_relayed(slot) {
+                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                        format!("#870: {peer_id} already holds a direct slot; a circuit does not supersede it"),
+                    )));
                 }
+            }
+
+            // The map grows only for an identity holding no slot at all.
+            if held.is_none() && peers.len() >= self.inner.config.max_connections {
+                return Err(GossipError::MaxConnectionsReached(
+                    self.inner.config.max_connections,
+                ));
+            }
+            // The accepted-relayed budget is occupied only by a slot that is ITSELF an accepted
+            // circuit. A relayed OUTBOUND held slot occupies the map but not this budget, so
+            // converting it into an accepted circuit is net-new occupancy and is charged.
+            let replaces_accepted_circuit = matches!(held, Some(slot) if crate::service::state::is_relayed(slot) && !slot.is_outbound());
+            if !replaces_accepted_circuit {
                 let accepted_relayed = peers
                     .values()
                     .filter(|s| crate::service::state::is_relayed(s) && !s.is_outbound())
@@ -1528,13 +1556,11 @@ impl GossipHandle {
             )
         };
 
-        // Newest-wins supersede — tear the displaced slot down after the lock is released, exactly as
-        // `adopt_nat_connection` does (a stale keepalive must be aborted before its socket closes, or
-        // its teardown fires against this newer session — the #1691 ghost-keepalive race).
-        if let Some(PeerSlot::Live(stale)) = superseded {
-            stale.keepalive_task.abort();
-            let _ = stale.peer.close().await;
-        }
+        // Newest-wins supersede. The admission above refuses a circuit that would displace a
+        // non-relayed slot, so anything displaced here is a `dig-nat` relayed slot: it owns no
+        // keepalive task and its transport closes when the slot drops. The #1691 ghost-keepalive
+        // teardown `adopt_nat_connection` performs therefore has nothing to do on this path.
+        drop(superseded);
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
