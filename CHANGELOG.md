@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.22.0] - 2026-08-08
+
+### Features
+- **pool:** Adopt an authenticated relayed INBOUND circuit into the connected-peer pool (#54)
+
 ## [0.21.1] - 2026-08-07
 
 ### Bug Fixes
