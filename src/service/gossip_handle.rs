@@ -1569,16 +1569,16 @@ impl GossipHandle {
         peers
             .iter()
             .map(|(pid, slot)| {
-                let (via, dial_addr) = match slot {
-                    super::state::PeerSlot::Nat(n) => (n.via(), n.dial_addr()),
-                    // Stub / live TLS peers are direct by construction: their remote IS the peer.
-                    other => (Via::Direct, Some(other.remote())),
+                // Stub / live TLS peers are direct by construction: their remote IS the peer.
+                let via = match slot {
+                    super::state::PeerSlot::Nat(n) => n.via(),
+                    _ => Via::Direct,
                 };
                 ConnectedPoolPeer {
                     peer_id: *pid,
                     via,
                     is_outbound: slot.is_outbound(),
-                    dial_addr,
+                    dial_addr: slot.dial_addr(),
                     session_addr: slot.remote(),
                 }
             })

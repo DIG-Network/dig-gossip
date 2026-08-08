@@ -246,22 +246,6 @@ impl NatSlot {
             Via::Direct
         }
     }
-
-    /// The address at which this peer may be DIALED, or `None` when it has none.
-    ///
-    /// A relayed link's [`remote`](Self::remote) is the RELAY endpoint (for an ACCEPTED circuit, an
-    /// unspecified address), never a place the peer answers — so every relayed slot reports `None`
-    /// and can never be handed to a dialer. Dialling it would fail on every attempt and, worse, could
-    /// evict the working circuit that is already carrying the peer's traffic.
-    ///
-    /// The property belongs to the TIER, not to the direction: an outbound relayed peer is as
-    /// undialable as an accepted one.
-    pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
-        match self.method {
-            dig_nat::TraversalKind::Relayed => None,
-            _ => Some(self.remote),
-        }
-    }
 }
 
 impl fmt::Debug for NatSlot {
@@ -344,6 +328,25 @@ impl PeerSlot {
             PeerSlot::Live(l) => l.meta.is_outbound,
             PeerSlot::Nat(n) => n.is_outbound,
         }
+    }
+
+    /// The address at which this peer may be DIALED, or `None` when it has none.
+    ///
+    /// A relayed peer reports `None`: its [`remote()`](Self::remote) is the RELAY endpoint (for a
+    /// circuit this node ACCEPTED, an unspecified address), never a place the peer answers. Dialing
+    /// it would fail on every attempt and could evict the working circuit already carrying that
+    /// peer's traffic. The property belongs to the TIER, not the direction — an outbound relayed
+    /// peer is as undialable as an accepted one.
+    ///
+    /// This is the ONE definition of "reachable by dialing", read by both the pool planner's
+    /// skip-connected keys ([`ServiceState::connected_pool_keys`]) and the public
+    /// [`ConnectedPoolPeer::dial_addr`](crate::service::peer_pool::ConnectedPoolPeer::dial_addr), so
+    /// the two can never drift apart.
+    pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
+        if is_relayed(self) {
+            return None;
+        }
+        Some(self.remote())
     }
 
     /// The node type declared by the remote during the Chia `Handshake`.
@@ -858,9 +861,10 @@ impl ServiceState {
                 let mut keys = Vec::with_capacity(g.len() * 2);
                 for (pid, slot) in g.iter() {
                     keys.push(CandidateKey::Id(*pid));
-                    // A relayed peer's `remote` is the relay, not the peer — don't key it by address.
-                    if !is_relayed(slot) {
-                        keys.push(CandidateKey::Addr(slot.remote()));
+                    // Only an address the peer can actually be dialed at is a recognisable candidate
+                    // key — a relayed peer has none (`dial_addr`).
+                    if let Some(addr) = slot.dial_addr() {
+                        keys.push(CandidateKey::Addr(addr));
                     }
                 }
                 keys
