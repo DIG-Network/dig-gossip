@@ -25,6 +25,19 @@ The patch block is marked **dig-gossip vendor patch**. See the comment at that s
 `chia_ca.crt` is copied from the matching `chia-ssl` release (the Chia Network's vendored CA
 bundle).
 
+## Why upstream cannot replace this
+
+`native-tls` is dig-gossip's **default** feature, and `connection::listener::native_tls_acceptor` is
+compiled under `all(feature = "native-tls", not(feature = "rustls"))` — so a stock `cargo build` runs
+through this patched acceptor. Upstream's `TlsAcceptorBuilder` exposes only `min_protocol_version`,
+`max_protocol_version`, `accept_alpn` and `build`; it offers no way to request or require a client
+certificate. Dropping the patch would therefore not fail to compile — it would silently accept inbound
+peers presenting **no client certificate at all**, defeating CON-009 mTLS.
+
+Only a consumer that opts out reaches a different path: dig-node takes dig-gossip with
+`default-features = false, features = ["rustls", "relay"]` and uses the rustls inbound acceptor
+instead.
+
 ## Platform scope
 
 OpenSSL backend is used on Linux/Android; macOS (SecureTransport) and Windows (SChannel) paths are

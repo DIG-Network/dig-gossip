@@ -100,7 +100,11 @@ fn register_ack_frame_is_byte_stable() {
 fn dig_message_frame_is_byte_stable() {
     // dc = 220, 01 = id present, 0007 = id 7, 3-byte opaque payload.
     assert_eq!(
-        frame_hex(ProtocolMessageTypes::DigMessage, Some(7), &[0xaa, 0xbb, 0xcc]),
+        frame_hex(
+            ProtocolMessageTypes::DigMessage,
+            Some(7),
+            &[0xaa, 0xbb, 0xcc]
+        ),
         "dc01000700000003aabbcc"
     );
 
@@ -146,6 +150,9 @@ fn dig_frames_round_trip_through_the_vendored_decoder() {
         let encoded = original.to_bytes().expect("encodes");
         let decoded = Message::from_bytes(&encoded)
             .expect("the vendored enum must accept a DIG opcode off the wire");
-        assert_eq!(decoded, original, "round trip changed the frame for {opcode:?}");
+        assert_eq!(
+            decoded, original,
+            "round trip changed the frame for {opcode:?}"
+        );
     }
 }

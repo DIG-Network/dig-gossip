@@ -42,6 +42,18 @@ because `Peer`'s fields are private — so all three are genuine upstream candid
 fork retires. Note that item 3 is a behavioural fix rather than pure API addition, so it needs to be
 argued as such in that PR (dig_ecosystem#2228 S3).
 
+As of upstream **0.34.0** none of the three has landed: there is no `send_protocol_message`, no
+`from_server_websocket`, the split halves are still the concrete `SplitSink` / `SplitStream`, and
+inbound `RequestPeers` is still matched against the outbound `RequestMap`. So the fork cannot yet
+retire on any of the three counts.
+
+## Rebasing onto a newer upstream — read this first
+
+The same cascade constraint as the sibling `chia-protocol` fork applies, for the same reason:
+`dig-peer-protocol` pins `chia-sdk-client = "0.28"`, and a `[patch.crates-io]` entry whose version
+does not satisfy that requirement is **silently dropped with a warning**, not an error. See
+`vendor/chia-protocol/README.dig-gossip.md` for the measured evidence and the ordering.
+
 ## What used to be here and no longer is
 
 `RateLimits::dig_wire` and `RateLimiter::check_dig_extension` were removed in dig_ecosystem#2228.

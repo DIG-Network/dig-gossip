@@ -584,3 +584,59 @@ a hand-written README.** Both vendored READMEs understated their fork, and a han
 wrong twice in one investigation. `vendor/fork-delta.sh <crate>` regenerates it; the vendored trees
 are unpacked tarballs of a known version, so the same-version registry source is an exact baseline
 and everything the diff reports is DIG's by construction.
+
+## Rebasing the vendored chia forks is a cross-repo cascade, not a local bump
+
+Attempting to move `vendor/chia-protocol` from 0.26.0 to 0.36.1 produced the most dangerous shape a
+build failure can take: **none at all**.
+
+```
+$ cargo metadata --offline          # after setting vendor/chia-protocol version = "0.36.1"
+warning: patch `chia-protocol v0.36.1 (vendor/chia-protocol)` was not used in the crate graph
+     Locking 1 package to latest compatible version
+      Adding chia-protocol v0.26.0 (available: v0.47.0)
+EXIT=0
+```
+
+`[patch.crates-io]` only substitutes a package where the patched version SATISFIES the existing
+requirement. dig-gossip does not depend on `chia-protocol` alone — it depends on
+**`dig-peer-protocol`, which pins `chia-protocol = "0.26"` and `chia-sdk-client = "0.28"`** (still
+true at the latest published `dig-peer-protocol` 0.3.0). A 0.36.1 patch satisfies neither, so Cargo
+**silently drops the patch and resolves the pristine upstream crate** — with a warning, and exit 0.
+
+Two things follow, and both are load-bearing:
+
+- **The chia version is not independently choosable here.** Rebasing the forks requires
+  `dig-peer-protocol` to move first and be republished (release-first, §4.1), then dig-gossip's own
+  direct `chia-protocol` / `chia_streamable_macro` pins, then the vendored trees. A lane scoped to
+  dig-gossip alone cannot do it.
+- **An unused patch is a warning, not an error.** The only reason this fails loudly at all is that
+  `ProtocolMessageTypes::RegisterPeer` ceases to exist without the fork, so the code and the golden
+  vectors stop compiling. That compile break is the real guard — treat it as one, and never "fix" a
+  patch-not-used warning by deleting the reference that surfaces it.
+
+### Can each fork die instead of being rebased? Measured, three noes
+
+- **`chia-protocol` — no, not without moving the wire off the typed `Message`.** Upstream's
+  `ProtocolMessageTypes` still stops at `RespondCostInfo = 107` at 0.26.0, 0.36.1 **and 0.47.0**, so
+  there is no collision with DIG's 200-222 and no forced renumber. But the enum is a closed
+  `#[repr(u8)]` (not `#[non_exhaustive]`) and `Message.msg_type` is typed as it, so `Message::from_bytes`
+  rejects a DIG opcode without the fork. `dig_peer_protocol::DigMessage` is a raw-`u8` envelope with the
+  identical layout and is the escape hatch, but adopting it means the inbound decode, the broadcast
+  classifier and the rate-limit keying all stop being enum-typed — a redesign, not a deletion, and one
+  that only moves the delta into the `chia-sdk-client` fork we keep anyway.
+- **`chia-sdk-client` — no.** Upstream **0.34.0** has none of the three fork items: no
+  `send_protocol_message`, no `from_server_websocket` (its `Sink`/`Stream` are still the concrete
+  `SplitSink`/`SplitStream`), and no inbound-`RequestPeers` routing. The "ten files for one method"
+  framing is wrong twice over — the delta is ONE file, and it is three items, of which the
+  type-erasure for the rustls inbound acceptor (#1371) is the largest.
+- **`native-tls` — no, and it is security-load-bearing.** `native-tls` is dig-gossip's DEFAULT feature
+  and `native_tls_acceptor` is compiled under `all(feature = "native-tls", not(feature = "rustls"))`,
+  so a stock `cargo build` uses the patched acceptor. Upstream `TlsAcceptorBuilder` exposes only
+  `min_protocol_version` / `max_protocol_version` / `accept_alpn` / `build` — there is no way to
+  request a client certificate. Dropping the patch would silently accept inbound peers with no client
+  cert at all. Only dig-node escapes this path, via `default-features = false, features = ["rustls",
+  "relay"]`.
+
+The `RateLimits::dig_wire` item sometimes listed as a fourth delta **no longer exists** — it was
+removed in dig_ecosystem#2228 and now lives in `connection::dig_rate_limiter`.
