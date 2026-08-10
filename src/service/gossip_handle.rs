@@ -44,7 +44,9 @@
 //! `Clone` — callers must borrow it. Our `Arc` wrapper avoids lifetime gymnastics in async code.
 
 use dig_nat::SafeText;
-use dig_peer_protocol::Peer;
+use dig_peer_protocol::DigLink;
+
+use crate::connection::link_adapter::send_chia_message;
 use dig_peer_protocol::{
     ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
     TimestampedPeerInfo,
@@ -285,7 +287,7 @@ impl GossipHandle {
         // Stubs (test-only) always get counted as delivered.
         let (stub_deliveries, eager_jobs, lazy_pids): (
             usize,
-            Vec<(Peer, PeerId, u64)>,
+            Vec<(DigLink, PeerId, u64)>,
             Vec<PeerId>,
         ) = {
             let peers = self
@@ -340,7 +342,7 @@ impl GossipHandle {
 
         // INT-001: Eager push — full message to eager peers (SPEC §8.1 step 5)
         for (peer, pid, wl) in eager_jobs.iter() {
-            peer.send_protocol_message(message.clone())
+            send_chia_message(&peer, message.clone())
                 .await
                 .map_err(GossipError::from)?;
             record_live_peer_outbound_bytes(&self.inner, *pid, *wl);
@@ -587,7 +589,7 @@ impl GossipHandle {
             }
         };
         if let Some(p) = maybe_live {
-            p.send_protocol_message(msg)
+            send_chia_message(&p, msg)
                 .await
                 .map_err(GossipError::from)?;
             record_live_peer_outbound_bytes(&self.inner, peer_id, wire_len);
@@ -797,7 +799,7 @@ impl GossipHandle {
             .map_err(GossipError::from)?;
         let network_id =
             crate::connection::outbound::network_id_handshake_string(self.inner.config.network_id);
-        let opts = self.inner.config.peer_options;
+        let opts = crate::connection::link_adapter::link_options_from(self.inner.config.peer_options);
 
         let out = crate::connection::outbound::connect_outbound_peer(
             network_id,
@@ -1023,7 +1025,7 @@ impl GossipHandle {
                                     data: body.into(),
                                 };
                                 let wl_out = message_wire_len(&reply).ok();
-                                let _ = peer_rpc.send_protocol_message(reply).await;
+                                let _ = send_chia_message(&peer_rpc, reply).await;
                                 if let Some(w) = wl_out {
                                     record_live_peer_outbound_bytes(&state_fwd, pid_task, w);
                                 }

@@ -66,7 +66,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{ClientError, DigLink, PeerOptions};
+
+use crate::connection::link_adapter::{
+    link_options_from, send_chia_message, InboundMessages,
+};
 use dig_peer_protocol::{
     Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
 };
@@ -553,7 +557,7 @@ async fn relay_new_peer_to_live_peers(
     state: &ServiceState,
     new_row: TimestampedPeerInfo,
 ) -> Result<(), ClientError> {
-    let peers: Vec<Peer> = {
+    let peers: Vec<DigLink> = {
         let g = state
             .peers
             .lock()
@@ -755,7 +759,9 @@ where
     // `from_server_websocket` (not `from_websocket`) because the server rustls stream cannot inhabit
     // the client-oriented `MaybeTlsStream`; the peer address is already known so no stream
     // introspection is needed. Byte-identical behaviour for the native-tls path (#1371).
-    let (peer, mut inbound_rx) = Peer::from_server_websocket(ws, remote_addr, opts)?;
+    let (peer, inbound_rx) =
+        DigLink::from_server_websocket(ws, remote_addr, link_options_from(opts));
+    let mut inbound_rx = InboundMessages::new(inbound_rx);
 
     // --- Phase 8: Per-connection inbound rate limiter (CON-005) + peer map insert ---
     // SPEC §5.4 — "Inbound: create a separate rate limiter for each connection"
@@ -862,7 +868,7 @@ where
                                 data: body.into(),
                             };
                             let wl_out = message_wire_len(&reply).ok();
-                            let _ = peer_rpc.send_protocol_message(reply).await;
+                            let _ = send_chia_message(&peer_rpc, reply).await;
                             if let Some(w) = wl_out {
                                 record_live_peer_outbound_bytes(&state_fwd, pid_task, w);
                             }

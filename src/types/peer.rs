@@ -27,11 +27,12 @@ use crate::constants::{
     BUCKET_SIZE, HORIZON_DAYS, MAX_FAILURES, MAX_RETRIES, MIN_FAIL_DAYS,
     NEW_BUCKETS_PER_SOURCE_GROUP, NEW_BUCKET_COUNT, TRIED_BUCKETS_PER_GROUP, TRIED_BUCKET_COUNT,
 };
-use dig_peer_protocol::Peer;
+use dig_peer_protocol::DigLink;
+
+use crate::connection::link_adapter::InboundMessages;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{Bytes32, Message, NodeType};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
 
 use super::reputation::PeerReputation;
 
@@ -356,7 +357,7 @@ pub fn aggregate_peer_connection_io(peers: &[PeerConnection]) -> (u64, u64, u64,
 /// connection-domain requirements (CON-*, API-005).
 pub struct PeerConnection {
     /// Underlying Chia light-wallet-protocol peer handle.
-    pub peer: Peer,
+    pub peer: DigLink,
     /// Unique peer identifier (TLS cert hash / Chia rules).
     pub peer_id: PeerId,
     /// Remote socket address.
@@ -388,7 +389,7 @@ pub struct PeerConnection {
     /// Reputation snapshot (API-006).
     pub reputation: PeerReputation,
     /// Inbound wire messages for this connection (`connect_peer` / `Peer::from_websocket`).
-    pub inbound_rx: mpsc::Receiver<Message>,
+    pub inbound_rx: InboundMessages,
 }
 
 impl fmt::Debug for PeerConnection {
@@ -410,7 +411,7 @@ impl fmt::Debug for PeerConnection {
             .field("messages_received", &self.messages_received)
             .field("last_message_time", &self.last_message_time)
             .field("reputation", &self.reputation)
-            .field("inbound_rx", &"<mpsc::Receiver<Message>>")
+            .field("inbound_rx", &"<InboundMessages>")
             .finish()
     }
 }

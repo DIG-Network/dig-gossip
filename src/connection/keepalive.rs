@@ -81,7 +81,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dig_peer_protocol::Peer;
+use dig_peer_protocol::DigLink;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{RequestPeers, RespondPeers};
 
@@ -143,7 +143,7 @@ pub(crate) fn spawn_keepalive_task(
     state: Arc<ServiceState>,
     peer_id: PeerId,
     generation: u64,
-    peer: Peer,
+    peer: DigLink,
 ) -> tokio::task::AbortHandle {
     tokio::spawn(async move { keepalive_loop(state, peer_id, generation, peer).await })
         .abort_handle()
@@ -172,7 +172,7 @@ pub(crate) fn spawn_keepalive_task(
 /// The loop checks [`ServiceState::is_running`](crate::service::state::ServiceState::is_running)
 /// both before sleeping *and* after waking. This ensures prompt exit when the
 /// service is shutting down even if the sleep was already in flight.
-async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u64, peer: Peer) {
+async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u64, peer: DigLink) {
     // Resolve config overrides once — they are immutable for the connection lifetime.
     let ping_secs = state
         .config
@@ -228,7 +228,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u
                 if RespondPeers::from_bytes(&wire_msg.data).is_err() {
                     continue;
                 }
-                let wl = wire_msg.to_bytes().map(|b| b.len() as u64).unwrap_or(0);
+                let wl = wire_msg.to_bytes().len() as u64;
                 record_live_peer_inbound_bytes(&state, peer_id, wl);
                 last_success = std::time::Instant::now();
                 let rtt_ms = start.elapsed().as_millis() as u64;

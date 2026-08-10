@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dig_peer_protocol::ChiaCertificate;
-use dig_peer_protocol::{ClientState, Peer};
+use dig_peer_protocol::{ClientState, DigLink};
 use dig_peer_protocol::{Message, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
@@ -142,7 +142,7 @@ pub(crate) struct LiveSlot {
     /// Common metadata (direction, node type, remote address) shared with [`StubPeer`].
     pub meta: StubPeer,
     /// The `chia-sdk-client` WebSocket handle for sending/receiving wire messages.
-    pub peer: Peer,
+    pub peer: DigLink,
     /// Remote’s declared protocol version string from the Chia `Handshake`, retained
     /// after [`crate::connection::handshake::validate_remote_handshake`] succeeds (CON-003).
     pub remote_protocol_version: String,

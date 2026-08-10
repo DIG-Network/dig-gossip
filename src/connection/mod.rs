@@ -14,6 +14,8 @@ pub mod dig_rate_limiter;
 
 /// CON-005 inbound admission gate: Chia's `V2_RATE_LIMITS` bound composed with the DIG bound.
 pub mod inbound_limits;
+/// Adapts the frame-tolerant `DigLink` transport to this crate's `Message` currency (#2391).
+pub mod link_adapter;
 
 pub mod listener;
 

@@ -49,12 +49,13 @@ use std::net::SocketAddr;
 
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Handshake, Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{Handshake, NodeType, ProtocolMessageTypes};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use dig_peer_protocol::{ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{ClientError, DigLink, LinkOptions};
+
+use crate::connection::link_adapter::{client_error_from_link, InboundMessages};
 
 use crate::connection::handshake::{validate_remote_handshake, ADVERTISED_PROTOCOL_VERSION};
 
@@ -70,8 +71,8 @@ use dig_peer_protocol::Connector;
 /// `remote_spki_der` is the **SubjectPublicKeyInfo** raw bytes inside the peer’s leaf certificate
 /// (same slice API-005 tests take from `x509-parser`).
 pub struct OutboundConnectResult {
-    pub peer: Peer,
-    pub inbound_rx: mpsc::Receiver<Message>,
+    pub peer: DigLink,
+    pub inbound_rx: InboundMessages,
     pub their_handshake: Handshake,
     /// Raw SPKI DER bytes for [`crate::types::peer::peer_id_from_tls_spki_der`].
     pub remote_spki_der: Vec<u8>,
@@ -194,7 +195,7 @@ pub(crate) async fn connect_outbound_peer(
     network_id: String,
     connector: Connector,
     socket_addr: SocketAddr,
-    options: PeerOptions,
+    options: LinkOptions,
     software_version: String,
 ) -> Result<OutboundConnectResult, ClientError> {
     let uri = format!("wss://{socket_addr}/ws");
@@ -210,7 +211,8 @@ pub(crate) async fn connect_outbound_peer(
     .await?;
 
     let remote_spki_der = remote_spki_der_from_ws(&ws)?;
-    let (peer, mut receiver) = Peer::from_websocket(ws, options)?;
+    let (peer, receiver) = DigLink::from_websocket(ws, options).map_err(client_error_from_link)?;
+    let mut receiver = InboundMessages::new(receiver);
 
     // SPEC §5.1 step 3 — "Sends chia-protocol::Handshake with DIG network_id."
     // SPEC §1.5 #1 — "connect_peer() sends chia-protocol::Handshake with capabilities list."
@@ -229,7 +231,8 @@ pub(crate) async fn connect_outbound_peer(
             (3, "1".to_string()), // RATE_LIMITS_V2 capability
         ],
     })
-    .await?;
+    .await
+    .map_err(client_error_from_link)?;
 
     let Some(message) = receiver.recv().await else {
         return Err(ClientError::MissingHandshake);

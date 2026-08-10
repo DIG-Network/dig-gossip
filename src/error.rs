@@ -371,6 +371,17 @@ pub enum GossipError {
 /// not the value directly. The `#[from]` derive attribute cannot be used with `Arc`
 /// wrapping, so we implement it by hand (API-004 acceptance criterion: "ClientError can
 /// be converted to GossipError via `?` operator").
+/// A [`LinkError`](dig_peer_protocol::LinkError) reaches consumers as the same
+/// [`ClientError`](Self::ClientError) variant a `chia-sdk-client` failure always did, so adopting
+/// the `DigLink` transport (dig_ecosystem#2391) changed no error a caller can observe. The
+/// translation is
+/// [`client_error_from_link`](crate::connection::link_adapter::client_error_from_link).
+impl From<dig_peer_protocol::LinkError> for GossipError {
+    fn from(value: dig_peer_protocol::LinkError) -> Self {
+        Self::from(crate::connection::link_adapter::client_error_from_link(value))
+    }
+}
+
 impl From<dig_peer_protocol::ClientError> for GossipError {
     fn from(value: dig_peer_protocol::ClientError) -> Self {
         Self::ClientError(Arc::new(value))
