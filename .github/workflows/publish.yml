@@ -40,13 +40,15 @@ jobs:
       - name: Fail crates.io publish on tag push (#2228)
         if: github.event_name != 'workflow_dispatch'
         run: |
-          echo "Cannot publish to crates.io: dig-gossip has three vendored fork dependencies"
-          echo "in [patch.crates-io] (chia-protocol, chia-sdk-client, native-tls) that cargo"
-          echo "publish strips from the published metadata. This causes cargo package --locked"
-          echo "to fail with 19 compile errors against the bare crates.io versions, making"
-          echo "it impossible to publish the crate."
+          echo "Cannot publish to crates.io: dig-gossip carries [patch.crates-io] vendored fork"
+          echo "dependencies (chia-protocol, chia-sdk-client, native-tls) that cargo publish"
+          echo "strips from the published metadata. A published dig-gossip would silently resolve"
+          echo "to the bare upstream crates, which lack the necessary opcodes 218/219 (peer"
+          echo "registration), full-duplex RPC application channel, and inbound mTLS acceptor."
+          echo "External consumers would obtain a broken crate."
           echo ""
-          echo "See dig_ecosystem#2228 for the resolution path."
+          echo "Flipping this job to manual dispatch does NOT make it safe; the publish blocker"
+          echo "is structural. The forks must be resolved first (dig_ecosystem#2228)."
           echo ""
           echo "The git + Cargo.lock consumer path (dig-node) is unaffected."
           exit 1
