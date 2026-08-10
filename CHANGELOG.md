@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.22.2] - 2026-08-10
+
+### Chores
+- Clarify crates.io publish blocker in #2228 (#61)
+
 ## [0.22.1] - 2026-08-09
 
 ### Documentation
