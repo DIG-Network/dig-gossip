@@ -22,7 +22,7 @@ use std::net::SocketAddr;
 use dig_gossip::ChiaCertificate;
 use dig_gossip::Streamable;
 use dig_gossip::{
-    Handshake, DigMessage, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
+    DigMessage, Handshake, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
 };
 use dig_gossip::{RegisterAck, RegisterPeer, RequestPeersIntroducer, RespondPeersIntroducer};
 use futures_util::{SinkExt, StreamExt};

@@ -18,8 +18,8 @@ mod common;
 
 use std::sync::Arc;
 
-use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
 use dig_gossip::{Admission, OpcodeRateLimiter, OpcodeRateLimits, RateLimit, V2_RATE_LIMITS};
+use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
 
 use dig_gossip::{
     apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, load_ssl_cert,
@@ -61,10 +61,7 @@ fn test_separate_limiter_per_connection() {
     let handshake = || m(ProtocolMessageTypes::Handshake);
     assert!(a.allow(&handshake()));
     assert!(!a.allow(&handshake()));
-    assert!(
-        b.allow(&handshake()),
-        "B must still accept first handshake"
-    );
+    assert!(b.allow(&handshake()), "B must still accept first handshake");
 }
 
 /// **Row:** `test_dig_message_types_added` — merged limits include CON-005 table entries `200..=208`
@@ -213,10 +210,7 @@ fn test_rate_limit_factor_scaling() {
     for _ in 0..5 {
         assert!(strict.allow(&msg));
     }
-    assert!(
-        !strict.allow(&msg),
-        "6th message should exceed 10*0.5=5"
-    );
+    assert!(!strict.allow(&msg), "6th message should exceed 10*0.5=5");
     for _ in 0..10 {
         assert!(loose.allow(&msg));
     }

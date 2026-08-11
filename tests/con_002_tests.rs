@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use dig_gossip::Streamable;
 use dig_gossip::{
-    create_native_tls_connector, load_ssl_cert, Bytes32, GossipHandle, GossipService, Handshake,
-    DigMessage, PeerId, ProtocolMessageTypes, RespondPeers,
+    create_native_tls_connector, load_ssl_cert, Bytes32, DigMessage, GossipHandle, GossipService,
+    Handshake, PeerId, ProtocolMessageTypes, RespondPeers,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMsg;
@@ -217,9 +217,7 @@ async fn test_inbound_network_id_reject() {
         id: None,
         data: hs.to_bytes().expect("hs").into(),
     };
-    ws.send(WsMsg::Binary(wire.to_bytes()))
-        .await
-        .ok();
+    ws.send(WsMsg::Binary(wire.to_bytes())).await.ok();
 
     // Wait for the server to process and reject (close frame or socket drop).
     let _ = tokio::time::timeout(Duration::from_secs(2), ws.next())

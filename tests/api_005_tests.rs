@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use dig_gossip::ChiaCertificate;
 use dig_gossip::{
-    peer_id_from_tls_spki_der, DigMessage, NodeType, DigLink, PeerId, LinkOptions, PeerReputation,
+    peer_id_from_tls_spki_der, DigLink, DigMessage, LinkOptions, NodeType, PeerId, PeerReputation,
     ProtocolMessageTypes, RequestPeers,
 };
 use tokio::net::TcpListener;

@@ -528,7 +528,7 @@ mod low_5_broadcast_lock_scope {
     use std::time::Duration;
 
     use dig_gossip::{
-        Bytes32, GossipHandle, GossipService, DigMessage, NewPeak, ProtocolMessageTypes, Streamable,
+        Bytes32, DigMessage, GossipHandle, GossipService, NewPeak, ProtocolMessageTypes, Streamable,
     };
 
     async fn running_server() -> (tempfile::TempDir, GossipService, GossipHandle, SocketAddr) {

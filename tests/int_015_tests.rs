@@ -77,7 +77,7 @@ async fn test_full_lifecycle() {
 #[cfg(feature = "native-tls")]
 #[tokio::test]
 async fn test_broadcast_no_peers() {
-    use dig_gossip::{GossipService, DigMessage, ProtocolMessageTypes};
+    use dig_gossip::{DigMessage, GossipService, ProtocolMessageTypes};
 
     let service = GossipService::new(lifecycle_config()).unwrap();
     let handle = service.start().await.unwrap();

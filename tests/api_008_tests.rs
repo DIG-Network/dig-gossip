@@ -18,8 +18,8 @@ mod common;
 use std::net::SocketAddr;
 
 use dig_gossip::{
-    Bytes32, GossipHandle, GossipService, GossipStats, DigMessage, NewPeak,
-    NodeType, RelayConfig, RelayStats, RequestPeers, Streamable,
+    Bytes32, DigMessage, GossipHandle, GossipService, GossipStats, NewPeak, NodeType, RelayConfig,
+    RelayStats, RequestPeers, Streamable,
 };
 
 /// Spin up a [`GossipService`] with harness defaults and return both the service (for

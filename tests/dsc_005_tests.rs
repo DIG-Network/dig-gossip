@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use dig_gossip::Streamable;
 use dig_gossip::{
-    load_ssl_cert, ChiaCertificate, GossipError, IntroducerClient, NodeType, LinkOptions,
+    load_ssl_cert, ChiaCertificate, GossipError, IntroducerClient, LinkOptions, NodeType,
     PeerRegistration, RegisterAck, RegisterPeer,
 };
 

@@ -41,9 +41,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use dig_gossip::{
-    Bytes32, ChiaProtocolMessage, GossipError, GossipHandle, GossipService, IntroducerConfig,
-    DigMessage, NewPeak, NodeType, ProtocolMessageTypes, RelayConfig, RequestPeers, RespondBlock,
-    RespondPeers, Streamable,
+    Bytes32, ChiaProtocolMessage, DigMessage, GossipError, GossipHandle, GossipService,
+    IntroducerConfig, NewPeak, NodeType, ProtocolMessageTypes, RelayConfig, RequestPeers,
+    RespondBlock, RespondPeers, Streamable,
 };
 
 /// Build a minimal [`NewPeak`] message suitable for broadcast tests.

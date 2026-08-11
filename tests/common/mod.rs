@@ -35,8 +35,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dig_gossip::{
-    Bytes32, ChiaCertificate, GossipConfig, GossipHandle, GossipService, Network, DigLink,
-    PeerConnection, PeerId, LinkOptions, PeerReputation,
+    Bytes32, ChiaCertificate, DigLink, GossipConfig, GossipHandle, GossipService, LinkOptions,
+    Network, PeerConnection, PeerId, PeerReputation,
 };
 use rand::Rng;
 use tokio::net::TcpListener;

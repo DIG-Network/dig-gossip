@@ -67,9 +67,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chia_protocol::{Handshake, RespondPeers, TimestampedPeerInfo};
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use dig_peer_protocol::ChiaCertificate;
+use dig_peer_protocol::DigMessage;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{ClientError, DigLink, LinkOptions};
-use dig_peer_protocol::DigMessage;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;

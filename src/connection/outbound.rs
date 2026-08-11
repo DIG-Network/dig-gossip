@@ -51,8 +51,8 @@ use std::net::SocketAddr;
 
 use chia_protocol::Handshake;
 use dig_peer_protocol::ChiaCertificate;
-use dig_peer_protocol::Streamable;
 use dig_peer_protocol::DigMessage;
+use dig_peer_protocol::Streamable;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};

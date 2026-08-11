@@ -27,10 +27,9 @@ use dig_gossip::ErlayConfig;
 #[cfg(feature = "tor")]
 use dig_gossip::TorConfig;
 use dig_gossip::{
-    BackpressureConfig, Bytes32, GossipConfig, IntroducerConfig, Network, PeerId,
-    PeerIdRotationConfig, LinkOptions, RelayConfig, DEFAULT_DNS_SEED_BATCH_SIZE,
-    DEFAULT_DNS_SEED_TIMEOUT_SECS, DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT,
-    DEFAULT_TARGET_OUTBOUND_COUNT,
+    BackpressureConfig, Bytes32, GossipConfig, IntroducerConfig, LinkOptions, Network, PeerId,
+    PeerIdRotationConfig, RelayConfig, DEFAULT_DNS_SEED_BATCH_SIZE, DEFAULT_DNS_SEED_TIMEOUT_SECS,
+    DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT, DEFAULT_TARGET_OUTBOUND_COUNT,
 };
 
 // ----------------------------------------------------------------------------- test plan: all fields
