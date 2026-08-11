@@ -229,7 +229,7 @@ impl GossipHandle {
     ///
     /// # Wire behaviour (CON-001+ / CON-006)
     ///
-    /// **Live** peers receive [`DigLink::send_protocol_message`](dig_peer_protocol::DigLink::send_protocol_message)
+    /// **Live** peers receive [`DigLink::send_message`](dig_peer_protocol::DigLink::send_message)
     /// with a cloned [`DigMessage`]; each successful send increments that slot’s CON-006 counters by the
     /// shared serialized length. **Stub** peers do not have a transport — the legacy
     /// [`ServiceState::messages_sent`] / [`ServiceState::bytes_sent`] atomics record the same
@@ -984,9 +984,9 @@ impl GossipHandle {
         }
 
         // Answer inbound `RequestPeers` (keepalive / discovery) with correlated `RespondPeers`.
-        // Upstream `DigLink` routes `id: Some` messages through a local `RequestMap`; remote request
-        // ids are forwarded on `inbound_rx` (see `vendor/chia-sdk-client` patch) and must be
-        // replied to with [`DigLink::send_protocol_message`].
+        // `DigLink` routes `id: Some` REPLIES through its local `RequestMap`; an inbound remote
+        // REQUEST matches nothing there, so it is forwarded on `inbound_rx` and must be answered
+        // explicitly with `DigLink::send_message` carrying the same correlation id.
         let peer_inbound_rpc = peer_for_keepalive.clone();
         if let Ok(g) = self.inner.inbound_tx.lock() {
             if let Some(tx) = g.as_ref() {

@@ -12,11 +12,12 @@
 //!
 //! # Design decisions
 //!
-//! - **Mirror `dig_peer_protocol::connect_peer` handshake:** Upstream
-//!   [`connect_peer`](dig_peer_protocol::connect_peer) only accepts a [`std::net::SocketAddr`].
+//! - **Mirror the one-call dial's handshake:** [`DigLink::connect`](dig_peer_protocol::DigLink::connect)
+//!   only accepts a [`std::net::SocketAddr`].
 //!   Introducers advertise a full `wss://…/ws` URL ([`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig)),
 //!   so we call [`DigLink::connect_full_uri`](dig_peer_protocol::DigLink::connect_full_uri) then replay the same
-//!   outbound [`Handshake`] + FullNode validation as `vendor/chia-sdk-client/src/connect.rs` —
+//!   outbound [`Handshake`] + FullNode validation the one-call dial performs internally
+//!   (see [`src/connection/outbound.rs`](crate::connection::outbound) for how the dial sequence is replayed);
 //!   any drift vs upstream should be fixed in lockstep when bumping `chia-sdk-client`.
 //! - **Whole-operation timeout:** DSC-004 requires one timeout covering connect + handshake + RPC.
 //!   We wrap the async block in [`tokio::time::timeout`]; on expiry we return

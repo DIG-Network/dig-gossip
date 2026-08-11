@@ -9,14 +9,13 @@
 //!
 //! These bodies used to be declared here with `#[streamable(message)]`, which makes the
 //! proc-macro emit a `ProtocolMessageTypes::RegisterPeer` path — a variant that exists only
-//! in a **forked** `chia-protocol`. That single attribute was one of the two things keeping
-//! `vendor/chia-protocol` alive (dig_ecosystem#2228).
+//! in a **forked** `chia-protocol`. This forced a fork just to name the opcodes.
 //!
 //! `dig-peer-protocol` declares them with plain `#[streamable]` and pairs each with
 //! `to_dig_message` / `from_dig_message`, carrying opcode 218/219 as a raw
-//! [`DigMessage`](dig_peer_protocol::DigMessage) byte. That needs no enum variant, so the
-//! fork is no longer required — and the bodies now have a single definition shared with
-//! every other consumer instead of one per repo.
+//! [`DigMessage`](dig_peer_protocol::DigMessage) byte. Since DIG opcodes travel as raw `msg_type`
+//! bytes—not as enum variants—the fork is no longer required. The bodies now have a single
+//! definition shared with every other consumer instead of one per repo (dig_ecosystem#2228).
 //!
 //! The encoded bytes are unchanged; `tests/wire_golden_vectors_tests.rs` pins them.
 //!
