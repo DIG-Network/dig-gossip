@@ -1,4 +1,4 @@
-//! Outbound peer establishment via `chia-sdk-client` TLS + WebSocket + Chia handshake.
+//! Outbound peer establishment via `dig-peer-protocol` TLS + WebSocket + Chia handshake.
 //!
 //! ## SPEC traceability
 //!
@@ -22,20 +22,19 @@
 //! `connect_peer()` semantics (TLS connector, `Handshake`, `FullNode` peer validation, DIG
 //! `network_id` as the Chia **string** field).
 //!
-//! ## Why this module exists (vs calling `dig_peer_protocol::connect_peer` directly)
+//! ## Why this module exists (vs calling [`DigLink::connect`](dig_peer_protocol::DigLink::connect) directly)
 //!
-//! Upstream [`dig_peer_protocol::connect_peer`](https://docs.rs/chia-sdk-client/latest/chia_sdk_client/fn.connect_peer.html)
-//! validates the handshake but **drops** the parsed [`Handshake`] and never exposes the remote TLS
-//! **SubjectPublicKeyInfo** bytes. DIG [`PeerConnection`](crate::types::peer::PeerConnection) and
+//! The one-call dial validates the handshake but **drops** the parsed [`Handshake`] and never exposes
+//! the remote TLS **SubjectPublicKeyInfo** bytes. DIG [`PeerConnection`](crate::types::peer::PeerConnection) and
 //! [`PeerId`](crate::types::peer::PeerId) (API-005) require:
 //!
 //! 1. Metadata from the responder’s [`Handshake`] (`protocol_version`, `software_version`, …).
 //! 2. `PeerId = SHA256(remote SPKI DER)` via [`crate::types::peer::peer_id_from_tls_spki_der`].
 //!
-//! We therefore mirror the small `connect.rs` flow from `chia-sdk-client` **after** capturing
-//! `remote_spki_der` from the pre-`DigLink::from_websocket` [`WebSocketStream`] (see upstream
-//! [`chia-sdk-client/src/connect.rs`](https://github.com/Chia-Network/chia-wallet-sdk) — keep in sync
-//! when bumping `chia-sdk-client`).
+//! We therefore drive the dial ourselves and capture `remote_spki_der` from the
+//! [`WebSocketStream`] **before** handing it to [`DigLink::from_websocket`], which consumes it. The
+//! flow mirrors the upstream one-call dial step for step, so keep it in sync when bumping
+//! `dig-peer-protocol`.
 //!
 //! ## `network_id` typing
 //!

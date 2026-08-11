@@ -15,8 +15,8 @@
 //! - **SPEC §5.3** — mandatory mutual TLS (mTLS) via `chia-ssl`:
 //!   "ALL peer-to-peer connections MUST use mutual TLS. Both client and server present
 //!   certificates." Matches Chia `server.py:54-71`, `server.py:67 verify_mode = ssl.CERT_REQUIRED`.
-//! - **SPEC §1.7 #4** — "Inbound connection listener": `chia-sdk-client`'s `DigLink` only does
-//!   outbound connections; we add a `TcpListener` accepting inbound.
+//! - **SPEC §1.7 #4** — "Inbound connection listener": `dig-peer-protocol`'s [`DigLink`] dials
+//!   outbound; we add a `TcpListener` accepting inbound and hand the accepted socket to it.
 //! - **SPEC §1.6 #2** — "Inbound peer relay": when an inbound connection arrives, add peer
 //!   to address manager and relay to other peers (`node_discovery.py:112-127`).
 //! - **SPEC §1.5 #8** — peer ban/trust: `ClientState::ban()` / `is_banned()` checked before
@@ -37,9 +37,11 @@
 //!
 //! - **`native-tls` (default):** [`native_tls::TlsAcceptor`] + [`tokio_native_tls`], matching
 //!   CON-001 integration tests ([`tests/common/wss_full_node.rs`](../../../tests/common/wss_full_node.rs)).
-//! - **`rustls` without `native-tls` (outbound):** [`chia_sdk_client`] uses rustls for `wss://` dials.
-//!   **Inbound** still uses [`native_tls::TlsAcceptor`] so [`MaybeTlsStream::NativeTls`] matches
-//!   [`DigLink::from_websocket`] (upstream only types **client** `MaybeTlsStream::Rustls`).
+//! - **`rustls` without `native-tls` (outbound):** rustls backs the `wss://` dial, forwarded through
+//!   [`dig_peer_protocol`]. **Inbound** still uses [`native_tls::TlsAcceptor`] so
+//!   [`MaybeTlsStream::NativeTls`] matches [`DigLink::from_websocket`], which types only the
+//!   **client** side of `MaybeTlsStream::Rustls`; the server stream reaches `DigLink` through
+//!   [`DigLink::from_server_websocket`](dig_peer_protocol::DigLink::from_server_websocket) instead.
 //! - **CON-009 (mTLS):** On **Linux / non-Apple Unix** (OpenSSL-backed `native-tls`), we use a
 //!   **vendored** [`native-tls`](../../../vendor/native-tls/README.dig-gossip.md) fork that sets
 //!   `CERT_REQUIRED` + Chia CA trust (Chia `server.py:67`). **Windows (SChannel)** and **macOS
@@ -55,8 +57,9 @@
 //! `tests/con_008_tests.rs` (matrix + “matches Chia category policy”); **CON-003** adds protocol /
 //! network gates around the same helper (`tests/con_003_tests.rs`).
 
-// CON-002: Large `ClientError` payloads are intentional — they propagate upstream
-// `chia_sdk_client` variants verbatim, matching the API-004 `GossipError::ClientError` wrapper.
+// CON-002: Large `ClientError` payloads are intentional — they propagate
+// `dig_peer_protocol::ClientError` variants verbatim, matching the API-004
+// `GossipError::ClientError` wrapper.
 #![allow(clippy::result_large_err)]
 
 use crate::connection::chia_opcodes;
@@ -592,9 +595,11 @@ async fn relay_new_peer_to_live_peers(
 /// **Why defer `DigLink::from_websocket` until after one `RequestPeers` on the raw socket?** The first
 /// outbound packet from [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle::connect_to)
 /// may arrive before our `DigLink` reader task exists, so we answer that **initial** probe on the raw
-/// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives use the vendored
-/// [`chia_sdk_client`] patch (`vendor/chia-sdk-client`): inbound `RequestPeers` is forwarded to the
-/// application and answered with [`DigLink::send_protocol_message`](dig_peer_protocol::DigLink::send_protocol_message).
+/// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives need no such special
+/// handling: [`DigLink`] forwards every unmatched inbound message on the receiver it returns, and we
+/// answer from there with [`DigLink::send`](dig_peer_protocol::DigLink::send). (This is why the
+/// `chia-sdk-client` fork could be deleted — upstream's `Peer` swallowed unmatched inbound messages,
+/// which is the behaviour that fork existed to patch.)
 async fn read_next_wire_message<S>(ws: &mut WebSocketStream<S>) -> Result<DigMessage, ClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -760,7 +765,7 @@ where
     // SPEC §5.2 step 9 — "Relay peer info (node_discovery.py:126-127)."
     relay_new_peer_to_live_peers(&state, new_row).await?;
 
-    // --- Phase 7: Upgrade to `DigLink` (chia_sdk_client managed reader/writer) ---
+    // --- Phase 7: Upgrade to `DigLink` (dig-peer-protocol's managed reader/writer) ---
     // After this point the WebSocket is consumed; all further communication goes through
     // the `DigLink` handle (send) and the `inbound_rx` channel (receive). We use
     // `from_server_websocket` (not `from_websocket`) because the server rustls stream cannot inhabit
