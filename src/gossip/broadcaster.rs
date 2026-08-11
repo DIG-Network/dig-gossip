@@ -89,10 +89,7 @@ pub fn classify_broadcast(
         #[cfg(feature = "erlay")]
         NewTransaction if erlay_enabled => BroadcastStrategy::Erlay,
 
-        // Plumtree: gossip messages use eager/lazy push. `StoreMelted` (opcode 221) is a
-        // PUBLIC all-peers flood (store-melt propagation, #1316) — it disseminates like the
-        // other announce broadcasts, terminating via the receiver's seen_set + the dig-node
-        // "only rebroadcast on a real holding→deleted transition" guard (#3).
+        // Plumtree: gossip messages use eager/lazy push.
         NewPeak | NewTransaction | NewUnfinishedBlock | RespondBlock | RespondUnfinishedBlock => {
             BroadcastStrategy::Plumtree
         }

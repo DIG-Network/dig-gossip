@@ -296,19 +296,29 @@ mod tests {
     //! `default_settings` and these tests go RED (proven by reverting the branch). The external
     //! mirror in `tests/con_005_tests.rs` cannot detect that regression and is only a secondary check.
 
-    use dig_peer_protocol::{Bytes, ProtocolMessageTypes, Streamable};
+    use dig_peer_protocol::{Bytes, ProtocolMessageTypes, Streamable, ALL_DIG_OPCODES};
 
     use super::*;
+
+    /// Chia's `Handshake` wire opcode, derived from the enum rather than hard-coded so the contrast
+    /// fixture below tracks upstream if the discriminant ever moves.
+    fn handshake_opcode() -> u8 {
+        *ProtocolMessageTypes::Handshake
+            .to_bytes()
+            .expect("ProtocolMessageTypes is a single-byte streamable enum")
+            .first()
+            .expect("its encoding is exactly one byte")
+    }
 
     /// #1760 D — completeness guard for the DIG 220-band rate-limit rows.
     ///
     /// [`DigRateLimiter::check`] **fails OPEN**: an opcode in the 220 band with no
     /// [`dig_extension_rate_limits_map`] row silently falls through to the loose Chia
     /// `default_settings` (100/min, 1 MiB) instead of a deliberate bound (the class of gap #1720
-    /// closed for 221/222). This test enumerates every ≥[`DIG_WIRE_BAND_START`]
-    /// [`ProtocolMessageTypes`] variant that actually exists (probed via the wire discriminant, so
-    /// it can never go stale against a hand-copied list) and asserts each is CLASSIFIED — either it
-    /// carries a dedicated rate-limit row, or it is a documented member of
+    /// closed for 221/222). This test enumerates every ≥[`DIG_WIRE_BAND_START`] opcode DIG has
+    /// actually assigned — taken from `dig_peer_protocol::ALL_DIG_OPCODES`, the canonical
+    /// namespace list, so it can never go stale against a hand-copied literal — and asserts each is
+    /// CLASSIFIED: either it carries a dedicated rate-limit row, or it is a documented member of
     /// [`BASE_BOUND_ONLY_BAND_OPCODES`]. A newly-added 220-band opcode that is neither fails this
     /// test, forcing a deliberate rate-limit decision rather than a silent fail-open default.
     #[test]
@@ -321,12 +331,15 @@ mod tests {
         const BASE_BOUND_ONLY_BAND_OPCODES: &[u8] = &[crate::service::dig_message::DIG_MESSAGE];
 
         let map = dig_extension_rate_limits_map();
-        for opcode in DIG_WIRE_BAND_START..=u8::MAX {
-            // Probe whether this opcode is a real `ProtocolMessageTypes` variant via its wire
-            // discriminant — the authoritative source, so the guard tracks the enum, not a literal.
-            if ProtocolMessageTypes::from_bytes(&[opcode]).is_err() {
-                continue;
-            }
+        let band: Vec<u8> = ALL_DIG_OPCODES
+            .into_iter()
+            .filter(|opcode| *opcode >= DIG_WIRE_BAND_START)
+            .collect();
+        assert!(
+            !band.is_empty(),
+            "the assigned 220-band opcode set must be non-empty, or this guard checks nothing"
+        );
+        for opcode in band {
             let has_row = map.contains_key(&opcode);
             let base_bound_only = BASE_BOUND_ONLY_BAND_OPCODES.contains(&opcode);
             assert!(
@@ -345,7 +358,7 @@ mod tests {
     #[test]
     fn real_gate_bounds_holdings_announce_222() {
         let announce_frame = || DigMessage {
-            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            msg_type: crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
             id: None,
             data: Bytes::new(vec![0u8; 1024]), // well under the 128 KiB max_size
         };
@@ -378,23 +391,37 @@ mod tests {
     }
 
     /// #1626 — the public-flood exemption set is EXACTLY `StoreMelted` (221) and `HoldingsAnnounce`
-    /// (222), enumerated over the real wire enum so it can never drift against the canonical
-    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping or a hand-typed
-    /// list.
+    /// (222), enumerated over the WHOLE opcode space so the classification can never silently widen
+    /// away from the canonical
+    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping.
+    ///
+    /// Every one of the 256 opcodes is asked directly. There is deliberately no decode filter: 221
+    /// and 222 have no `ProtocolMessageTypes` variant, so filtering on a successful decode would
+    /// skip exactly the two opcodes this test is named after and leave it asserting the empty set.
     #[test]
     fn public_flood_opcode_set_is_exactly_221_and_222() {
+        let mut flood = Vec::new();
         for opcode in 0u8..=u8::MAX {
-            let Ok(msg_type) = ProtocolMessageTypes::from_bytes(&[opcode]) else {
-                continue;
-            };
             let expected = opcode == crate::service::store_melted::STORE_MELTED
                 || opcode == crate::service::holdings_announce::HOLDINGS_ANNOUNCE;
             assert_eq!(
-                is_public_flood_opcode(msg_type),
+                is_public_flood_opcode(opcode),
                 expected,
                 "opcode {opcode} public-flood classification"
             );
+            if is_public_flood_opcode(opcode) {
+                flood.push(opcode);
+            }
         }
+        // Belt and braces against a future refactor that makes the loop body vacuous: the set is
+        // named, in full, not merely agreed with opcode by opcode.
+        assert_eq!(
+            flood,
+            vec![
+                crate::service::store_melted::STORE_MELTED,
+                crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+            ]
+        );
     }
 
     /// #1626 — a 222 (HoldingsAnnounce) frame the REAL gate rejects for exceeding the per-connection
@@ -406,7 +433,7 @@ mod tests {
     #[test]
     fn over_cap_holdings_announce_222_is_dropped_but_not_penalised() {
         let frame = |seed: u32| DigMessage {
-            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            msg_type: crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
             id: None,
             data: Bytes::new({
                 // Distinct payloads (well under the 128 KiB cap) so each is a real, non-duplicate frame.
@@ -439,7 +466,7 @@ mod tests {
     #[test]
     fn over_cap_store_melted_221_is_dropped_but_not_penalised() {
         let frame = |seed: u32| DigMessage {
-            msg_type: ProtocolMessageTypes::StoreMelted,
+            msg_type: crate::service::store_melted::STORE_MELTED,
             id: None,
             data: Bytes::new({
                 let mut v = vec![0u8; 164];
@@ -471,7 +498,7 @@ mod tests {
     #[test]
     fn over_cap_non_flood_opcode_is_still_penalised() {
         let frame = || DigMessage {
-            msg_type: ProtocolMessageTypes::Handshake,
+            msg_type: handshake_opcode(),
             id: None,
             data: Bytes::new(vec![0u8; 16]),
         };
@@ -501,7 +528,7 @@ mod tests {
     #[test]
     fn oversized_holdings_announce_222_is_penalised() {
         let over_size = DigMessage {
-            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+            msg_type: crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
             id: None,
             data: Bytes::new(vec![
                 0u8;
@@ -527,7 +554,7 @@ mod tests {
     #[test]
     fn oversized_store_melted_221_is_penalised() {
         let over_size = DigMessage {
-            msg_type: ProtocolMessageTypes::StoreMelted,
+            msg_type: crate::service::store_melted::STORE_MELTED,
             id: None,
             data: Bytes::new(vec![0u8; crate::service::store_melted::ENCODED_LEN + 1]),
         };
@@ -562,7 +589,7 @@ mod tests {
     #[test]
     fn real_gate_bounds_store_melted_221() {
         let melted_frame = || DigMessage {
-            msg_type: ProtocolMessageTypes::StoreMelted,
+            msg_type: crate::service::store_melted::STORE_MELTED,
             id: None,
             data: Bytes::new(vec![0u8; 164]), // fixed StoreMeltedAnnounce ENCODED_LEN
         };

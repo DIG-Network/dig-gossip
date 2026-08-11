@@ -43,7 +43,7 @@
 //! and [`MessagePriority`](crate::gossip::priority::MessagePriority).
 
 use chia_protocol::Bytes32;
-use dig_peer_protocol::{Bytes, DigMessage, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, DigMessage};
 use dig_tls::bls::{sign_message, verify_signature, SecretKey};
 use sha2::{Digest, Sha256};
 
@@ -350,14 +350,11 @@ mod tests {
 
         // Public all-peers flood at bulk priority — never unicast, never consensus-critical.
         assert_eq!(
-            classify_broadcast(ProtocolMessageTypes::StoreMelted, false),
+            classify_broadcast(STORE_MELTED, false),
             BroadcastStrategy::Plumtree
         );
-        assert_eq!(
-            MessagePriority::from_chia_type(ProtocolMessageTypes::StoreMelted),
-            MessagePriority::Bulk
-        );
-        // The u8 path agrees with the enum path so both classifications route identically.
+        // Only the raw-opcode path can classify 221: upstream `ProtocolMessageTypes` is a closed
+        // enum with no `StoreMelted` variant, so `from_chia_type` cannot be asked about it.
         assert_eq!(
             MessagePriority::from_dig_type(STORE_MELTED),
             MessagePriority::Bulk

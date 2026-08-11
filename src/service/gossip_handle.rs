@@ -47,7 +47,7 @@ use crate::connection::chia_opcodes;
 use chia_protocol::{RequestPeers, RespondPeers, TimestampedPeerInfo};
 use dig_nat::SafeText;
 use dig_peer_protocol::DigLink;
-use dig_peer_protocol::{ChiaProtocolMessage, DigMessage, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{ChiaProtocolMessage, DigMessage, NodeType};
 
 use crate::discovery::introducer_client::{
     load_local_certificate_for_introducer, IntroducerClient, PeerRegistration,

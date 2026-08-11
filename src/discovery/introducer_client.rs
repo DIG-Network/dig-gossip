@@ -32,7 +32,7 @@ use dig_peer_protocol::LinkError;
 use std::time::Duration;
 
 use chia_protocol::{Bytes32, Handshake, TimestampedPeerInfo};
-use dig_peer_protocol::{NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::NodeType;
 
 use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};

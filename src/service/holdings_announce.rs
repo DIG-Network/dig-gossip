@@ -50,7 +50,7 @@
 //! therefore checks the SPKI→peer_id binding, that the SPKI is a P-256 key, the ECDSA
 //! signature over the exact message, and the change-count cap — fail-closed on any mismatch.
 
-use dig_peer_protocol::{Bytes, DigMessage, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, DigMessage};
 use dig_tls::peer_id_from_tls_spki_der;
 use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
 use sha2::{Digest, Sha256};
@@ -1209,13 +1209,11 @@ mod tests {
 
         // Public all-peers flood at bulk priority — never unicast, never consensus-critical.
         assert_eq!(
-            classify_broadcast(ProtocolMessageTypes::HoldingsAnnounce, false),
+            classify_broadcast(HOLDINGS_ANNOUNCE, false),
             BroadcastStrategy::Plumtree
         );
-        assert_eq!(
-            MessagePriority::from_chia_type(ProtocolMessageTypes::HoldingsAnnounce),
-            MessagePriority::Bulk
-        );
+        // Only the raw-opcode path can classify 222: upstream `ProtocolMessageTypes` is a closed
+        // enum with no `HoldingsAnnounce` variant, so `from_chia_type` cannot be asked about it.
         assert_eq!(
             MessagePriority::from_dig_type(HOLDINGS_ANNOUNCE),
             MessagePriority::Bulk

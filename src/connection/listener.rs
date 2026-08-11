@@ -69,7 +69,7 @@ use chia_protocol::{Handshake, RespondPeers, TimestampedPeerInfo};
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{ClientError, DigLink, LinkOptions};
-use dig_peer_protocol::{DigMessage, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::DigMessage;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;

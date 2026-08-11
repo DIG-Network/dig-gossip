@@ -77,12 +77,12 @@ impl MessagePriority {
             // Plumtree control → Normal
             214..=217 => Self::Normal,
             // StoreMelted (opcode 221) → Bulk: small, infrequent public broadcast (#1316).
-            // Kept in agreement with `from_chia_type` (221 is a `ProtocolMessageTypes`
-            // variant) so both classification paths route store-melted to the bulk lane.
+            // This is the ONLY path that classifies it: upstream `ProtocolMessageTypes` is a
+            // closed enum with no `StoreMelted` variant (dig_ecosystem#2228).
             crate::service::store_melted::STORE_MELTED => Self::Bulk,
             // HoldingsAnnounce (opcode 222) → Bulk: small, periodic public discovery
-            // broadcast (#1428). Kept in agreement with `from_chia_type` (222 is a
-            // `ProtocolMessageTypes` variant) so both paths route holdings to the bulk lane.
+            // broadcast (#1428). This is the ONLY path that classifies it: upstream
+            // `ProtocolMessageTypes` has no `HoldingsAnnounce` variant (dig_ecosystem#2228).
             crate::service::holdings_announce::HOLDINGS_ANNOUNCE => Self::Bulk,
             // Default
             _ => Self::Normal,
