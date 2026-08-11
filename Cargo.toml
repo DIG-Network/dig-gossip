@@ -39,7 +39,7 @@ categories = ["network-programming", "cryptography::cryptocurrencies"]
 # `dig-peer-protocol` is the rename of the former `dig-protocol` crate (#1383); the crate name in
 # code is `dig_peer_protocol`. TLS backends are forwarded through it to chia-sdk-client, so we keep
 # `default-features = false` and select the backend exclusively via our own `native-tls` / `rustls`
-# feature flags (see the `chia-sdk-client` shape rationale at the top of this manifest).
+# feature flags (see the `dig-peer-protocol` shape rationale at the top of this manifest).
 dig-peer-protocol = { version = "0.5", default-features = false }
 # Unified DIG Node peer transport (L7 peer-network spec): mTLS `connect(peer)` over the NAT-traversal
 # ladder (direct → UPnP → NAT-PMP → PCP → hole-punch → relay-last) yielding a yamux-multiplexed
@@ -145,7 +145,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 # Inbound TLS termination (CON-002) — paired with `native-tls` / `rustls` features (STR-004).
 # Inbound listener (CON-002) uses `native_tls::TlsAcceptor` even when outbound uses rustls — `tokio_tungstenite::MaybeTlsStream::Rustls`
-# only wraps **client** `tokio_rustls` streams; [`chia_sdk_client::Peer::from_websocket`] matches `NativeTls` / client `Rustls` (STR-004 note).
+# only wraps **client** `tokio_rustls` streams; [`dig_peer_protocol::DigLink::from_websocket`] matches `NativeTls` / client `Rustls` (STR-004 note).
 native-tls = { version = "0.2", optional = true }
 tokio-native-tls = { version = "0.3", optional = true }
 
@@ -154,7 +154,7 @@ tokio-native-tls = { version = "0.3", optional = true }
 # vendored `native-tls` [patch] (which does not propagate through a git dependency — the root cause of
 # the "peer cert never requested → peer_id underivable → inbound dropped on Linux" bug). rustls
 # requests + captures the client cert directly, sidestepping the [patch] propagation entirely. Pinned
-# to the SAME rustls 0.23 + aws_lc_rs backend the vendored `chia-sdk-client` outbound connector uses,
+# to the SAME rustls 0.23 + aws_lc_rs backend the upstream `chia-sdk-client` outbound connector uses,
 # so ONE rustls resolves across the peer stack.
 rustls = { version = "0.23", optional = true, default-features = false, features = ["aws_lc_rs", "std"] }
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["aws_lc_rs"] }
@@ -165,7 +165,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
 
-# `StreamExt` / `SinkExt` for raw WebSocket framing in CON-002 (before [`chia_sdk_client::Peer`]).
+# `StreamExt` / `SinkExt` for raw WebSocket framing in CON-002 (before [`dig_peer_protocol::DigLink`]).
 futures-util = "0.3"
 
 # Cancellation tokens for task lifecycle (DSC-006 discovery loop, CNC-004 shutdown).
