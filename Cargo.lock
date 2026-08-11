@@ -1542,9 +1542,9 @@ dependencies = [
 
 [[package]]
 name = "dig-peer-protocol"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e464779607ec9edecc4c82bcc2a4be6a428b5d3bae716d1f79c9c02548d9f4"
+checksum = "05ae7bfaf7d9535ef214ba53b019be888560d410b7472b3ad76a0ef07b62654b"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",
