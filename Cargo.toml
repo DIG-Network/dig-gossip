@@ -5,12 +5,13 @@
 # - Specs: docs/requirements/domains/crate_structure/specs/STR-001.md, STR-004.md
 # - Master spec: docs/resources/SPEC.md (Sections 1.2, 10.3, 10.4)
 #
-# Rationale for `chia-sdk-client` shape:
+# Rationale for the `dig-peer-protocol` shape:
 # STR-001 requires both `native-tls` and `rustls` feature forwards to
-# `chia-sdk-client/*`. If we hard-coded `features = ["native-tls"]` on the
-# dependency itself, `cargo check --no-default-features --features rustls` could
-# not cleanly select the rustls backend. We therefore set `default-features = false`
-# on the dependency and enable TLS exclusively via our feature flags.
+# `dig-peer-protocol/*` (which forwards them on to `chia-sdk-client`). If we
+# hard-coded `features = ["native-tls"]` on the dependency itself,
+# `cargo check --no-default-features --features rustls` could not cleanly select
+# the rustls backend. We therefore set `default-features = false` on the
+# dependency and enable TLS exclusively via our feature flags.
 #
 # Rationale for optional `siphasher` / `minisketch-rs`:
 # STR-001's implementation notes state these are gated behind `compact-blocks`
