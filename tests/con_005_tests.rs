@@ -8,7 +8,7 @@
 //!
 //! ## Proof strategy
 //!
-//! Outbound limiting stays inside [`chia_sdk_client::Peer`] (not duplicated here). These tests
+//! Outbound limiting stays inside [`dig_peer_protocol::DigLink`] transport layer (not duplicated here). These tests
 //! prove the **DIG-specific** pieces: the DIG per-opcode table, independent limiters per
 //! connection, [`OpcodeRateLimiter::allow`] / [`DigRateLimiter::check`] behavior,
 //! and the **penalty** path exercised through [`dig_gossip::apply_inbound_rate_limit_violation`]

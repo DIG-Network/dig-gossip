@@ -16,8 +16,8 @@
 //!   `dig_gossip` API plus this module. Helpers intentionally live under `tests/common/` (not
 //!   `#[cfg(test)]` in `src/`) so they stay available to **integration** tests — library unit
 //!   tests cannot share `tests/common` without duplication (Cargo limitation).
-//! - **Mock [`Peer`](chia_sdk_client::Peer):** `chia-sdk-client` exposes peers only after a
-//!   WebSocket exists (`Peer::connect`, `DigLink::from_websocket`). For [`mock_peer_connection`]
+//! - **Mock [`DigLink`](dig_peer_protocol::DigLink):** The transport type is `DigLink` from the `dig_peer_protocol`
+//!   crate, obtained after a WebSocket connection exists. For [`mock_peer_connection`]
 //!   we open a **plain** `ws://` loopback pair (no TLS) so [`DigLink::from_websocket`] can hash a
 //!   socket address for peer id plumbing. This is **not** a production handshake path (CON-001
 //!   uses `wss://` + mutual TLS); it exists solely to obtain a well-formed [`PeerConnection`]

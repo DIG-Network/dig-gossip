@@ -1,9 +1,9 @@
 //! One-shot **Chia-shaped WSS full node** for CON-001 integration tests.
 //!
-//! **Why not `Peer::from_websocket` on the server?** Upstream [`chia_sdk_client::Peer`]’s inbound
-//! dispatcher routes messages with `id` as **responses to this peer’s outbound requests**, not as
+//! **Why not `DigLink::from_websocket` on the server?** The [`dig_peer_protocol::DigLink`] transport
+//! routes messages with `id` as **responses to this peer’s outbound requests**, not as
 //! requests *from* the remote client. A minimal full node that answers `RequestPeers` is therefore
-//! implemented with raw [`tokio_tungstenite`] binary frames + [`chia_protocol::DigMessage`] parsing.
+//! implemented with raw [`tokio_tungstenite`] binary frames + [`dig_gossip::DigMessage`] parsing.
 //!
 //! **Traceability:** [`CON-001.md`](../../docs/requirements/domains/connection/specs/CON-001.md) —
 //! `test_outbound_connect_handshake` / `test_request_peers_after_connect`.
@@ -13,7 +13,7 @@
 //! - SPEC §5.1 steps 1-7 — outbound connection lifecycle (this mock is the server half).
 //! - SPEC §5.2 steps 1-6 — inbound connection: receive Handshake, validate network_id, send reply.
 //! - SPEC §1.5#1 — Handshake with capabilities (capabilities list passed in Handshake struct).
-//! - SPEC §1.5#7 — network_id validation: connect_peer() rejects peers with mismatched network_id.
+//! - SPEC §1.5#7 — network_id validation: outbound connections reject peers with mismatched network_id.
 //! - SPEC §1.6#1 — peer exchange on outbound connect: send RequestPeers after handshake.
 //! - SPEC §5.3 — mandatory mutual TLS: ChiaCertificate identity for both client and server.
 

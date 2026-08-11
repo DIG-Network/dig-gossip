@@ -557,7 +557,7 @@ mod low_5_broadcast_lock_scope {
     /// The audit flagged `broadcast()`'s eager-peer classification block for acquiring the
     /// `peers` + `plumtree` locks TOGETHER, then sending while (potentially) still holding them.
     /// `std::sync::MutexGuard` is `!Send`, so if EITHER guard were held across the
-    /// `peer.send_protocol_message(...).await` point, the `broadcast()` future itself would
+    /// `peer.send_message(...).await` point, the `broadcast()` future itself would
     /// become `!Send` — and `tokio::spawn` (which requires `F: Future + Send`) would fail to
     /// COMPILE. This test spawns `broadcast()` onto its own task via `tokio::spawn`: it is a
     /// compile-time proof, not a timing heuristic — if a future change re-introduces a

@@ -12,13 +12,13 @@
 //! DSC-005 defines a **DIG-only** introducer extension: after the standard Chia [`Handshake`](dig_gossip::Handshake),
 //! the client sends [`RegisterPeer`](dig_gossip::RegisterPeer) and must receive [`RegisterAck`](dig_gossip::RegisterAck)
 //! on the same mutually-authenticated WSS session. Unlike DSC-004 (opcodes **63/64** already present in upstream
-//! [`ProtocolMessageTypes`](dig_gossip::ProtocolMessageTypes)), **218/219** require the vendored `chia-protocol` fork
-//! so [`Message::from_bytes`](dig_gossip::DigMessage::from_bytes) can decode replies — see `vendor/chia-protocol/README.dig-gossip.md`.
+//! [`ProtocolMessageTypes`](dig_gossip::ProtocolMessageTypes)), **218/219** are DIG-specific extensions
+//! so [`Message::from_bytes`](dig_gossip::DigMessage::from_bytes) can decode the introducer replies.
 //!
 //! ## Causal chain (examples)
 //!
 //! - `test_register_introducer_wire_message_types` — if [`ChiaProtocolMessage::msg_type`] drifted from the enum
-//!   discriminants patched into `vendor/chia-protocol`, [`Peer::request_infallible`](dig_gossip::DigLink::request_infallible)
+//!   discriminants for opcodes **218/219**, [`DigLink::request_infallible`](dig_gossip::DigLink::request_infallible)
 //!   would serialize the wrong opcode and the mock introducer would reject the frame.
 //! - `test_register_introducer_success` — end-to-end TLS + handshake + RPC proves [`IntroducerClient::register_with_introducer`]
 //!   matches the acceptance table row *test_register_success*.

@@ -23,8 +23,8 @@
 //! - `test_query_introducer_timeout` — [`tokio::time::timeout`] inside [`IntroducerClient::query_peers`]
 //!   must surface [`GossipError::IntroducerError`] when the server stalls after receiving the request;
 //!   otherwise discovery could hang forever (violates DSC-004 acceptance).
-//! - `test_query_introducer_handshake_wrong_network` — handshake validation mirrors
-//!   [`chia_sdk_client::connect_peer`]; a spoofed `network_id` in the server [`Handshake`] must abort
+//! - `test_query_introducer_handshake_wrong_network` — handshake validation mirrors standard outbound
+//!   connection semantics; a spoofed `network_id` in the server [`Handshake`] must abort
 //!   before any introducer RPC is sent.
 
 mod common;

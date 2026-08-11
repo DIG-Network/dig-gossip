@@ -177,7 +177,7 @@ async fn test_handle_after_stop() {
 /// **Extra:** invalid `network_id` (all zero) must fail fast with [`GossipError::InvalidConfig`].
 ///
 /// SPEC §2.10 — GossipConfig.network_id (e.g., SHA256("dig_mainnet")).
-/// SPEC §1.5#7 — network_id validation: connect_peer() rejects peers with mismatched network_id.
+/// SPEC §1.5#7 — network_id validation: outbound connections reject peers with mismatched network_id.
 ///
 /// A zeroed-out network_id (Bytes32::default) is invalid because it could cause the node
 /// to accidentally connect to peers on any network. The constructor must reject this upfront.

@@ -1,4 +1,4 @@
-//! Integration + unit tests for **CON-001: outbound connection via `connect_peer` semantics**.
+//! Integration + unit tests for **CON-001: outbound connection establishment via TLS + handshake**.
 //!
 //! ## Traceability
 //!
@@ -10,7 +10,7 @@
 //!
 //! **TLS / connector rows** exercise [`dig_gossip::load_ssl_cert`] and [`dig_gossip::create_native_tls_connector`]
 //! (rustls equivalent when `--features rustls` only — STR-004). **Integration rows** spin up the local
-//! [`common::wss_full_node`] acceptor so [`dig_gossip::GossipHandle::connect_to`] runs the full
+//! [`common::wss_full_node`] acceptor so [`dig_gossip::GossipHandle::connect_to`] establishes the full
 //! `wss://` + [`Handshake`](dig_gossip::Handshake) + [`RequestPeers`](dig_gossip::RequestPeers) sequence
 //! against a [`NodeType::FullNode`](dig_gossip::NodeType) responder, then assert [`AddressManager`] ingestion
 //! via the [`GossipHandle::__con001_last_address_batch_for_tests`] hook.
@@ -125,7 +125,7 @@ async fn running_client() -> (tempfile::TempDir, GossipService, GossipHandle) {
 /// **Row:** `test_outbound_connect_handshake` — TLS client completes Chia handshake with matching `network_id`.
 ///
 /// Proves SPEC §5.1 steps 1-7 — full outbound connection lifecycle: load TLS cert, create
-/// connector, call connect_peer(), wrap in PeerConnection, add to address manager, send
+/// connector, establish via dial + handshake, wrap in PeerConnection, add to address manager, send
 /// RequestPeers, spawn message loop.
 /// SPEC §5.3 — mandatory mutual TLS with chia-ssl certificates.
 /// SPEC §1.6#1 — peer exchange on outbound connect: send RequestPeers after handshake.
