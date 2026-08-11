@@ -27,6 +27,7 @@
 //!   (`UnsupportedTls`) so `--no-default-features` builds remain coherent.
 
 use crate::connection::chia_opcodes;
+use crate::types::dig_messages::DigMessageType;
 use dig_peer_protocol::LinkError;
 use std::time::Duration;
 
@@ -233,7 +234,19 @@ impl IntroducerClient {
                 registration.port,
                 registration.node_type,
             );
-            peer.request_infallible::<RegisterAck, _>(body).await
+            // Opcode 218/219 have no `ProtocolMessageTypes` variant, so they travel as raw
+            // DIG opcodes rather than through the Chia-typed `request_infallible` path.
+            let reply = peer
+                .request_dig(DigMessageType::RegisterPeer as u8, body.to_bytes()?.into())
+                .await?;
+            RegisterAck::from_dig_message(&reply)
+                .ok_or_else(|| {
+                    LinkError::InvalidResponse(
+                        vec![DigMessageType::RegisterAck as u8],
+                        reply.msg_type,
+                    )
+                })?
+                .map_err(LinkError::from)
         };
 
         match tokio::time::timeout(operation_timeout, work).await {

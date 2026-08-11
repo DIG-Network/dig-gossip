@@ -174,10 +174,12 @@ pub use chia_protocol::{
 pub use dig_peer_protocol::ChiaCertificate;
 pub use dig_peer_protocol::Streamable;
 pub use dig_peer_protocol::{
-    load_ssl_cert, Client, ClientError, ClientState, LinkOptions, Network, Peer, RateLimit,
-    RateLimiter, RateLimits, V2_RATE_LIMITS,
+    load_ssl_cert, Client, ClientError, ClientState, LinkOptions, Network, OpcodeRateLimiter,
+    OpcodeRateLimits, RateLimit, RateLimits, V2_RATE_LIMITS,
 };
-use dig_peer_protocol::{Bytes, ChiaProtocolMessage, DigMessage, NodeType, ProtocolMessageTypes};
+pub use dig_peer_protocol::{
+    Bytes, ChiaProtocolMessage, DigLink, DigMessage, LinkError, NodeType, ProtocolMessageTypes,
+};
 
 // -- Feature-gated public types --
 #[cfg(feature = "native-tls")]

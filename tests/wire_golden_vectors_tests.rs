@@ -42,28 +42,31 @@ use chia_traits::Streamable;
 use dig_gossip::{
     frame_dig_message, frame_envelope, DigMessageType, NodeType, RegisterAck, RegisterPeer,
 };
-use dig_peer_protocol::{ChiaProtocolMessage, Message};
+use dig_peer_protocol::DigMessage;
 
 /// Lowercase hex of a byte slice, for readable assertion diffs.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Wrap an already-serialized opcode body in the standard `Message` envelope and
-/// return its full on-wire bytes.
+/// Wrap an already-serialized opcode body in the standard frame envelope and return
+/// its full on-wire bytes.
 ///
-/// This is the same envelope `Peer::send`/`request_infallible` puts on the socket
-/// for the introducer opcodes, reproduced here so the vector pins the *frame*
-/// rather than just the body.
-fn envelope_bytes<T: Streamable + ChiaProtocolMessage>(body: &T, id: Option<u16>) -> Vec<u8> {
-    Message {
-        msg_type: T::msg_type(),
-        id,
-        data: body.to_bytes().expect("body serializes").into(),
-    }
-    .to_bytes()
-    .expect("envelope serializes")
+/// This is the same envelope `DigLink` puts on the socket for the introducer opcodes,
+/// reproduced here so the vector pins the *frame* rather than just the body.
+///
+/// The opcode is passed in rather than derived from the body type: 218/219 have no
+/// `ProtocolMessageTypes` variant to derive one from, which is the whole reason this
+/// path moved off the forked enum.
+fn envelope_bytes<T: Streamable>(body: &T, opcode: u8, id: Option<u16>) -> Vec<u8> {
+    DigMessage::new(opcode, id, body.to_bytes().expect("body serializes").into()).to_bytes()
 }
+
+/// Wire opcode 218 — `RegisterPeer`.
+const REGISTER_PEER: u8 = DigMessageType::RegisterPeer as u8;
+
+/// Wire opcode 219 — `RegisterAck`.
+const REGISTER_ACK: u8 = DigMessageType::RegisterAck as u8;
 
 /// A payload whose two ends differ, so a reversed or truncated body is visible.
 const ENVELOPE_PAYLOAD: &[u8] = &[0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x7f];
@@ -74,25 +77,19 @@ const ENVELOPE_PAYLOAD: &[u8] = &[0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x7f
 
 #[test]
 fn golden_opcode_220_dig_message_with_correlation_id() {
-    let frame = frame_envelope(ENVELOPE_PAYLOAD, Some(0x1234))
-        .to_bytes()
-        .expect("frame serializes");
+    let frame = frame_envelope(ENVELOPE_PAYLOAD, Some(0x1234)).to_bytes();
     assert_eq!(hex(&frame), "dc01123400000008deadbeef0102037f");
 }
 
 #[test]
 fn golden_opcode_220_dig_message_without_correlation_id() {
-    let frame = frame_envelope(ENVELOPE_PAYLOAD, None)
-        .to_bytes()
-        .expect("frame serializes");
+    let frame = frame_envelope(ENVELOPE_PAYLOAD, None).to_bytes();
     assert_eq!(hex(&frame), "dc0000000008deadbeef0102037f");
 }
 
 #[test]
 fn golden_opcode_220_dig_message_empty_envelope() {
-    let frame = frame_envelope(&[], None)
-        .to_bytes()
-        .expect("frame serializes");
+    let frame = frame_envelope(&[], None).to_bytes();
     assert_eq!(hex(&frame), "dc0000000000");
 }
 
@@ -102,9 +99,8 @@ fn golden_opcode_220_dig_message_empty_envelope() {
 
 #[test]
 fn golden_consensus_band_first_opcode_200() {
-    let frame = frame_dig_message(DigMessageType::NewAttestation, ENVELOPE_PAYLOAD.to_vec())
-        .to_bytes()
-        .expect("frame serializes");
+    let frame =
+        frame_dig_message(DigMessageType::NewAttestation, ENVELOPE_PAYLOAD.to_vec()).to_bytes();
     assert_eq!(hex(&frame), "c80000000008deadbeef0102037f");
 }
 
@@ -114,8 +110,7 @@ fn golden_consensus_band_last_opcode_217() {
         DigMessageType::PlumtreeRequestByHash,
         ENVELOPE_PAYLOAD.to_vec(),
     )
-    .to_bytes()
-    .expect("frame serializes");
+    .to_bytes();
     assert_eq!(hex(&frame), "d90000000008deadbeef0102037f");
 }
 
@@ -127,7 +122,7 @@ fn golden_consensus_band_last_opcode_217() {
 fn golden_opcode_218_register_peer_full_node() {
     let body = RegisterPeer::new("192.0.2.88".into(), 9555, NodeType::FullNode);
     assert_eq!(
-        hex(&envelope_bytes(&body, Some(0x0007))),
+        hex(&envelope_bytes(&body, REGISTER_PEER, Some(0x0007))),
         "da010007000000110000000a3139322e302e322e3838255301"
     );
 }
@@ -136,7 +131,7 @@ fn golden_opcode_218_register_peer_full_node() {
 fn golden_opcode_218_register_peer_introducer_no_id() {
     let body = RegisterPeer::new("2001:db8::1".into(), 9444, NodeType::Introducer);
     assert_eq!(
-        hex(&envelope_bytes(&body, None)),
+        hex(&envelope_bytes(&body, REGISTER_PEER, None)),
         "da00000000120000000b323030313a6462383a3a3124e405"
     );
 }
@@ -144,7 +139,11 @@ fn golden_opcode_218_register_peer_introducer_no_id() {
 #[test]
 fn golden_opcode_219_register_ack_success() {
     assert_eq!(
-        hex(&envelope_bytes(&RegisterAck::new(true), Some(0x0007))),
+        hex(&envelope_bytes(
+            &RegisterAck::new(true),
+            REGISTER_ACK,
+            Some(0x0007)
+        )),
         "db0100070000000101"
     );
 }
@@ -152,7 +151,11 @@ fn golden_opcode_219_register_ack_success() {
 #[test]
 fn golden_opcode_219_register_ack_rejection() {
     assert_eq!(
-        hex(&envelope_bytes(&RegisterAck::new(false), Some(0x0007))),
+        hex(&envelope_bytes(
+            &RegisterAck::new(false),
+            REGISTER_ACK,
+            Some(0x0007)
+        )),
         "db0100070000000100"
     );
 }
