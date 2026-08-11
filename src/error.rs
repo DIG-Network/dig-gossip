@@ -101,6 +101,17 @@ pub enum GossipError {
     #[error("client error: {0}")]
     ClientError(Arc<dig_peer_protocol::ClientError>),
 
+    /// A [`DigLink`](dig_peer_protocol::DigLink) transport operation failed.
+    ///
+    /// Wrapped in [`Arc`] for the same reason as [`ClientError`](Self::ClientError):
+    /// [`dig_peer_protocol::LinkError`] is not [`Clone`], but `GossipError` is.
+    ///
+    /// **When:** Any peer-link call fails — dialling a peer, adopting an accepted
+    /// websocket, sending a frame, or awaiting a correlated reply.
+    /// **Caller action:** Log the inner error; retry or disconnect the peer.
+    #[error("link error: {0}")]
+    LinkError(Arc<dig_peer_protocol::LinkError>),
+
     /// File-system or network I/O failure not covered by [`ClientError`](Self::ClientError).
     ///
     /// Stored as [`String`] (not `std::io::Error`) because `std::io::Error` does not
@@ -374,5 +385,11 @@ pub enum GossipError {
 impl From<dig_peer_protocol::ClientError> for GossipError {
     fn from(value: dig_peer_protocol::ClientError) -> Self {
         Self::ClientError(Arc::new(value))
+    }
+}
+
+impl From<dig_peer_protocol::LinkError> for GossipError {
+    fn from(value: dig_peer_protocol::LinkError) -> Self {
+        Self::LinkError(Arc::new(value))
     }
 }

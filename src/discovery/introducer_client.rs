@@ -15,17 +15,19 @@
 //! - **Mirror `dig_peer_protocol::connect_peer` handshake:** Upstream
 //!   [`connect_peer`](dig_peer_protocol::connect_peer) only accepts a [`std::net::SocketAddr`].
 //!   Introducers advertise a full `wss://…/ws` URL ([`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig)),
-//!   so we call [`Peer::connect_full_uri`](dig_peer_protocol::Peer::connect_full_uri) then replay the same
+//!   so we call [`DigLink::connect_full_uri`](dig_peer_protocol::DigLink::connect_full_uri) then replay the same
 //!   outbound [`Handshake`] + FullNode validation as `vendor/chia-sdk-client/src/connect.rs` —
 //!   any drift vs upstream should be fixed in lockstep when bumping `chia-sdk-client`.
 //! - **Whole-operation timeout:** DSC-004 requires one timeout covering connect + handshake + RPC.
 //!   We wrap the async block in [`tokio::time::timeout`]; on expiry we return
 //!   [`GossipError::IntroducerError`](crate::error::GossipError::IntroducerError) with a stable substring
 //!   so tests can distinguish timeout from transport failures.
-//! - **TLS feature gate:** Without `native-tls` / `rustls`, [`Peer::connect_full_uri`] does not exist;
+//! - **TLS feature gate:** Without `native-tls` / `rustls`, [`DigLink::connect_full_uri`] does not exist;
 //!   [`IntroducerClient::query_peers`] returns [`GossipError::ClientError`](crate::error::GossipError::ClientError)
 //!   (`UnsupportedTls`) so `--no-default-features` builds remain coherent.
 
+use crate::connection::chia_opcodes;
+use dig_peer_protocol::LinkError;
 use std::time::Duration;
 
 use chia_protocol::{Bytes32, Handshake, TimestampedPeerInfo};
@@ -35,7 +37,7 @@ use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{load_ssl_cert, ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{load_ssl_cert, ClientError, DigLink, LinkOptions};
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
@@ -71,7 +73,7 @@ impl IntroducerClient {
     /// * `wss_uri` — full WebSocket URI (`wss://host:port/ws`, …) from [`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig).
     /// * `local_certificate` — this node’s TLS identity (mutual TLS with the introducer).
     /// * `network_id` — DIG genesis id; encoded for the Chia handshake string via [`network_id_handshake_string`].
-    /// * `peer_options` — forwarded to [`Peer::connect_full_uri`](dig_peer_protocol::Peer::connect_full_uri) (rate limits, etc.).
+    /// * `peer_options` — forwarded to [`DigLink::connect_full_uri`](dig_peer_protocol::DigLink::connect_full_uri) (rate limits, etc.).
     /// * `operation_timeout` — hard cap for **connect + handshake + introducer request** (DSC-004 acceptance).
     /// * `software_version` — [`GossipConfig::software_version`](crate::types::config::GossipConfig::software_version),
     ///   advertised to the introducer exactly as it is to any other peer (dig_ecosystem#2215). An
@@ -87,16 +89,17 @@ impl IntroducerClient {
         wss_uri: &str,
         local_certificate: &ChiaCertificate,
         network_id: Bytes32,
-        peer_options: PeerOptions,
+        peer_options: LinkOptions,
         operation_timeout: Duration,
         software_version: &str,
     ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
         let network_string = network_id_handshake_string(network_id);
 
         let work = async {
-            let connector = tls_connector_for_cert(local_certificate)?;
+            let connector = tls_connector_for_cert(local_certificate)
+                .map_err(crate::connection::outbound::link_error_from_client)?;
             let (peer, mut receiver) =
-                Peer::connect_full_uri(wss_uri, connector, peer_options).await?;
+                DigLink::connect_full_uri(wss_uri, connector, peer_options).await?;
 
             peer.send(Handshake {
                 network_id: network_string.clone(),
@@ -113,12 +116,12 @@ impl IntroducerClient {
             .await?;
 
             let Some(message) = receiver.recv().await else {
-                return Err(ClientError::MissingHandshake);
+                return Err(LinkError::Io(std::io::Error::other("missing handshake")));
             };
 
-            if message.msg_type != ProtocolMessageTypes::Handshake {
-                return Err(ClientError::InvalidResponse(
-                    vec![ProtocolMessageTypes::Handshake],
+            if message.msg_type != chia_opcodes::HANDSHAKE {
+                return Err(LinkError::InvalidResponse(
+                    vec![chia_opcodes::HANDSHAKE],
                     message.msg_type,
                 ));
             }
@@ -126,16 +129,17 @@ impl IntroducerClient {
             let handshake = Handshake::from_bytes(&message.data)?;
 
             if handshake.node_type != chia_protocol::NodeType::FullNode {
-                return Err(ClientError::WrongNodeType(
-                    chia_protocol::NodeType::FullNode,
-                    handshake.node_type,
+                return Err(crate::connection::outbound::link_error_from_client(
+                    ClientError::WrongNodeType(
+                        chia_protocol::NodeType::FullNode,
+                        handshake.node_type,
+                    ),
                 ));
             }
 
             if handshake.network_id != network_string {
-                return Err(ClientError::WrongNetwork(
-                    network_string,
-                    handshake.network_id,
+                return Err(crate::connection::outbound::link_error_from_client(
+                    ClientError::WrongNetwork(network_string, handshake.network_id),
                 ));
             }
 
@@ -157,7 +161,7 @@ impl IntroducerClient {
     /// Register this node’s P2P address with a DIG introducer (**DSC-005**).
     ///
     /// Mirrors [`Self::query_peers`] for TLS + [`Handshake`] validation, then performs
-    /// `RegisterPeer → RegisterAck` via [`Peer::request_infallible`](dig_peer_protocol::Peer::request_infallible).
+    /// `RegisterPeer → RegisterAck` via [`DigLink::request_infallible`](dig_peer_protocol::DigLink::request_infallible).
     ///
     /// # Returns
     ///
@@ -169,7 +173,7 @@ impl IntroducerClient {
         wss_uri: &str,
         local_certificate: &ChiaCertificate,
         network_id: Bytes32,
-        peer_options: PeerOptions,
+        peer_options: LinkOptions,
         operation_timeout: Duration,
         registration: &PeerRegistration,
         software_version: &str,
@@ -177,9 +181,10 @@ impl IntroducerClient {
         let network_string = network_id_handshake_string(network_id);
 
         let work = async {
-            let connector = tls_connector_for_cert(local_certificate)?;
+            let connector = tls_connector_for_cert(local_certificate)
+                .map_err(crate::connection::outbound::link_error_from_client)?;
             let (peer, mut receiver) =
-                Peer::connect_full_uri(wss_uri, connector, peer_options).await?;
+                DigLink::connect_full_uri(wss_uri, connector, peer_options).await?;
 
             peer.send(Handshake {
                 network_id: network_string.clone(),
@@ -196,12 +201,12 @@ impl IntroducerClient {
             .await?;
 
             let Some(message) = receiver.recv().await else {
-                return Err(ClientError::MissingHandshake);
+                return Err(LinkError::Io(std::io::Error::other("missing handshake")));
             };
 
-            if message.msg_type != ProtocolMessageTypes::Handshake {
-                return Err(ClientError::InvalidResponse(
-                    vec![ProtocolMessageTypes::Handshake],
+            if message.msg_type != chia_opcodes::HANDSHAKE {
+                return Err(LinkError::InvalidResponse(
+                    vec![chia_opcodes::HANDSHAKE],
                     message.msg_type,
                 ));
             }
@@ -209,16 +214,17 @@ impl IntroducerClient {
             let handshake = Handshake::from_bytes(&message.data)?;
 
             if handshake.node_type != chia_protocol::NodeType::FullNode {
-                return Err(ClientError::WrongNodeType(
-                    chia_protocol::NodeType::FullNode,
-                    handshake.node_type,
+                return Err(crate::connection::outbound::link_error_from_client(
+                    ClientError::WrongNodeType(
+                        chia_protocol::NodeType::FullNode,
+                        handshake.node_type,
+                    ),
                 ));
             }
 
             if handshake.network_id != network_string {
-                return Err(ClientError::WrongNetwork(
-                    network_string,
-                    handshake.network_id,
+                return Err(crate::connection::outbound::link_error_from_client(
+                    ClientError::WrongNetwork(network_string, handshake.network_id),
                 ));
             }
 
@@ -245,7 +251,7 @@ impl IntroducerClient {
         _wss_uri: &str,
         _local_certificate: &ChiaCertificate,
         _network_id: Bytes32,
-        _peer_options: PeerOptions,
+        _peer_options: LinkOptions,
         _operation_timeout: Duration,
         _registration: &PeerRegistration,
         _software_version: &str,
@@ -260,7 +266,7 @@ impl IntroducerClient {
         _wss_uri: &str,
         _local_certificate: &ChiaCertificate,
         _network_id: Bytes32,
-        _peer_options: PeerOptions,
+        _peer_options: LinkOptions,
         _operation_timeout: Duration,
         _software_version: &str,
     ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {

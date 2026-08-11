@@ -1,4 +1,4 @@
-//! Peer identity, metadata, and the gossip-layer connection wrapper.
+//! DigLink identity, metadata, and the gossip-layer connection wrapper.
 //!
 //! **Layout:** STR-002; **re-exports:** STR-003 /
 //! [`specs/STR-003.md`](../../../docs/requirements/domains/crate_structure/specs/STR-003.md).
@@ -17,7 +17,7 @@
 //!
 //! `PeerConnection` intentionally **does not** implement [`Clone`]: it owns an
 //! [`tokio::sync::mpsc::Receiver`] for inbound wire messages (SPEC 2.4), which is not clonable.
-//! Upstream [`dig_peer_protocol::Peer`] is cloneable (`Arc` inside), but duplicating a connection’s
+//! Upstream [`dig_peer_protocol::DigLink`] is cloneable (`Arc` inside), but duplicating a connection’s
 //! receiver would violate single-consumer semantics.
 
 use std::fmt;
@@ -28,7 +28,7 @@ use crate::constants::{
     NEW_BUCKETS_PER_SOURCE_GROUP, NEW_BUCKET_COUNT, TRIED_BUCKETS_PER_GROUP, TRIED_BUCKET_COUNT,
 };
 use chia_protocol::Bytes32;
-use dig_peer_protocol::Peer;
+use dig_peer_protocol::DigLink;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{DigMessage, NodeType};
 use sha2::{Digest, Sha256};
@@ -156,7 +156,7 @@ pub struct ExtendedPeerInfo {
     pub peer_info: PeerInfo,
     /// Last time this row was updated (Unix seconds); staleness / horizon logic (DSC-001).
     pub timestamp: u64,
-    /// Peer that gossiped this address — drives **source-group** buckets in the new table.
+    /// DigLink that gossiped this address — drives **source-group** buckets in the new table.
     pub src: PeerInfo,
     /// Index in the random-order vector for O(1) uniform selection; [`None`] until inserted.
     pub random_pos: Option<usize>,
@@ -352,12 +352,12 @@ pub fn aggregate_peer_connection_io(peers: &[PeerConnection]) -> (u64, u64, u64,
 
 /// Active connection with gossip bookkeeping.
 ///
-/// Wraps [`Peer`] (TLS WebSocket I/O) with DIG-only metadata. Field layout matches
+/// Wraps [`DigLink`] (TLS WebSocket I/O) with DIG-only metadata. Field layout matches
 /// [`SPEC.md`](../../../docs/resources/SPEC.md) §2.4; behavior (handshake, metrics, …) is filled by
 /// connection-domain requirements (CON-*, API-005).
 pub struct PeerConnection {
     /// Underlying Chia light-wallet-protocol peer handle.
-    pub peer: Peer,
+    pub peer: DigLink,
     /// Unique peer identifier (TLS cert hash / Chia rules).
     pub peer_id: PeerId,
     /// Remote socket address.
@@ -366,11 +366,11 @@ pub struct PeerConnection {
     pub is_outbound: bool,
     /// Declared node role from the [`Handshake`](chia_protocol::Handshake).
     pub node_type: NodeType,
-    /// Peer protocol version string.
+    /// DigLink protocol version string.
     pub protocol_version: String,
-    /// Peer software version string (Cc/Cf stripped per CON-003 / CON-008 — Chia `ws_connection.py`).
+    /// DigLink software version string (Cc/Cf stripped per CON-003 / CON-008 — Chia `ws_connection.py`).
     pub software_version: String,
-    /// Peer-advertised server port from handshake.
+    /// DigLink-advertised server port from handshake.
     pub peer_server_port: u16,
     /// Capability tuples `(code, name)` from handshake.
     pub capabilities: Vec<(u16, String)>,
@@ -388,7 +388,7 @@ pub struct PeerConnection {
     pub last_message_time: u64,
     /// Reputation snapshot (API-006).
     pub reputation: PeerReputation,
-    /// Inbound wire messages for this connection (`connect_peer` / `Peer::from_websocket`).
+    /// Inbound wire messages for this connection (`connect_peer` / `DigLink::from_websocket`).
     pub inbound_rx: mpsc::Receiver<DigMessage>,
 }
 

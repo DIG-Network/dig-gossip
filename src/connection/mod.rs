@@ -10,6 +10,7 @@ pub mod handshake;
 pub mod keepalive;
 
 /// CON-005 — the DIG per-opcode inbound rate limiter, keyed by the raw wire byte.
+pub(crate) mod chia_opcodes;
 pub mod dig_rate_limiter;
 
 /// CON-005 inbound admission gate: Chia's `V2_RATE_LIMITS` bound composed with the DIG bound.

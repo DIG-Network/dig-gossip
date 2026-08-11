@@ -174,7 +174,7 @@ pub use chia_protocol::{
 pub use dig_peer_protocol::ChiaCertificate;
 pub use dig_peer_protocol::Streamable;
 pub use dig_peer_protocol::{
-    load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
+    load_ssl_cert, Client, ClientError, ClientState, Network, Peer, LinkOptions, RateLimit,
     RateLimiter, RateLimits, V2_RATE_LIMITS,
 };
 use dig_peer_protocol::{Bytes, ChiaProtocolMessage, DigMessage, NodeType, ProtocolMessageTypes};

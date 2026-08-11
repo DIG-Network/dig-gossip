@@ -42,7 +42,7 @@
 //!
 //! # Stub peers (pre-CON-001)
 //!
-//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_peer_protocol::Peer`].
+//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_peer_protocol::DigLink`].
 //! Until CON-001 (outbound WSS connect) was implemented, we tracked synthetic peers in
 //! [`ServiceState::peers`] via [`PeerSlot::Stub`] so `peer_count`, `broadcast`, and
 //! `connect_to` semantics could be tested without TLS sockets. Stubs remain for
@@ -64,7 +64,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dig_peer_protocol::ChiaCertificate;
-use dig_peer_protocol::{ClientState, Peer};
+use dig_peer_protocol::{ClientState, DigLink};
 use dig_peer_protocol::{DigMessage, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
@@ -94,7 +94,7 @@ pub(crate) const LC_STOPPED: u8 = 2;
 /// Minimal metadata shared by both stub rows and live TLS peers.
 ///
 /// Kept separate from [`LiveSlot`] so that unit tests can create lightweight entries
-/// without a real [`Peer`] handle. Every peer -- stub or live -- has a direction, a
+/// without a real [`DigLink`] handle. Every peer -- stub or live -- has a direction, a
 /// declared [`NodeType`] (from the Chia `Handshake`), and a remote socket address.
 ///
 /// # Fields
@@ -115,7 +115,7 @@ pub(crate) struct StubPeer {
     pub is_outbound: bool,
 }
 
-/// A *live* TLS peer with a real [`Peer`] handle (CON-001 outbound `wss://` or CON-002 inbound).
+/// A *live* TLS peer with a real [`DigLink`] handle (CON-001 outbound `wss://` or CON-002 inbound).
 ///
 /// Created after a successful Chia handshake and policy validation (CON-003). The slot
 /// retains handshake metadata so that snapshot types like
@@ -123,9 +123,9 @@ pub(crate) struct StubPeer {
 ///
 /// # Ownership
 ///
-/// The [`Peer`] inside is an `Arc`-backed handle from `chia-sdk-client`; dropping this
+/// The [`DigLink`] inside is an `Arc`-backed handle from `chia-sdk-client`; dropping this
 /// slot does *not* close the underlying WebSocket -- the caller must call
-/// [`Peer::close()`](Peer::close) explicitly (done in
+/// [`DigLink::close()`](DigLink::close) explicitly (done in
 /// [`GossipService::stop`](super::gossip_service::GossipService::stop)).
 ///
 /// # Requirement traceability
@@ -142,7 +142,7 @@ pub(crate) struct LiveSlot {
     /// Common metadata (direction, node type, remote address) shared with [`StubPeer`].
     pub meta: StubPeer,
     /// The `chia-sdk-client` WebSocket handle for sending/receiving wire messages.
-    pub peer: Peer,
+    pub peer: DigLink,
     /// Remote’s declared protocol version string from the Chia `Handshake`, retained
     /// after [`crate::connection::handshake::validate_remote_handshake`] succeeds (CON-003).
     pub remote_protocol_version: String,
@@ -210,7 +210,7 @@ pub(crate) struct DigBanEntry {
 /// This is a peer the connected-peer pool dialed via `dig-nat`'s `connect()` (mTLS, verified
 /// `peer_id`, NAT-traversal ladder). It owns the multiplexed [`crate::nat::NatPeerConnection`] — the
 /// stream transport dig-node opens gossip channels + range streams on. Unlike a [`LiveSlot`] it has no
-/// `chia-sdk-client` [`Peer`] (the WebSocket peer path); the gossip message loop over this mux
+/// `chia-sdk-client` [`DigLink`] (the WebSocket peer path); the gossip message loop over this mux
 /// transport is wired by the dig-node integration phase. The slot exists so a `dig-nat`-dialed peer
 /// COUNTS as a connected pool member for `peer_count` / stats / dedup / churn from the moment it
 /// connects.
@@ -294,8 +294,8 @@ pub(crate) fn peer_id_from_hex(id: &str) -> Option<PeerId> {
 ///
 /// # Invariant
 ///
-/// A `Live` slot always has a valid [`Peer`] handle; a `Stub` never has one; a `Nat` slot owns a
-/// verified [`crate::nat::NatPeerConnection`] but no `chia-sdk-client` `Peer`. Pattern-matching on the
+/// A `Live` slot always has a valid [`DigLink`] handle; a `Stub` never has one; a `Nat` slot owns a
+/// verified [`crate::nat::NatPeerConnection`] but no `chia-sdk-client` `DigLink`. Pattern-matching on the
 /// variant is the only way to reach the handle, preventing accidental sends to the wrong transport.
 #[derive(Debug)]
 pub(crate) enum PeerSlot {
@@ -303,7 +303,7 @@ pub(crate) enum PeerSlot {
     /// `connect_stub_inner` test hook (#1718); never instantiated in the production library.
     #[cfg_attr(not(any(test, feature = "test-util")), allow(dead_code))]
     Stub(StubPeer),
-    /// Real TLS peer with a `chia-sdk-client` [`Peer`] handle.
+    /// Real TLS peer with a `chia-sdk-client` [`DigLink`] handle.
     Live(LiveSlot),
     /// A connected-pool member reached over the `dig-nat` transport (POOL-*).
     Nat(NatSlot),
@@ -1279,7 +1279,7 @@ pub fn apply_inbound_rate_limit_violation(
     }
 }
 
-/// CON-006 — increment outbound wire counters for a live peer (after a successful `Peer::send_*`).
+/// CON-006 — increment outbound wire counters for a live peer (after a successful `DigLink::send_*`).
 pub(crate) fn record_live_peer_outbound_bytes(
     state: &ServiceState,
     peer_id: PeerId,

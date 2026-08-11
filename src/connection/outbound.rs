@@ -33,7 +33,7 @@
 //! 2. `PeerId = SHA256(remote SPKI DER)` via [`crate::types::peer::peer_id_from_tls_spki_der`].
 //!
 //! We therefore mirror the small `connect.rs` flow from `chia-sdk-client` **after** capturing
-//! `remote_spki_der` from the pre-`Peer::from_websocket` [`WebSocketStream`] (see upstream
+//! `remote_spki_der` from the pre-`DigLink::from_websocket` [`WebSocketStream`] (see upstream
 //! [`chia-sdk-client/src/connect.rs`](https://github.com/Chia-Network/chia-wallet-sdk) — keep in sync
 //! when bumping `chia-sdk-client`).
 //!
@@ -45,6 +45,8 @@
 #![allow(clippy::result_large_err)]
 // Upstream [`ClientError`] is wide; we propagate it verbatim per API-004 `GossipError::ClientError`.
 
+use crate::connection::chia_opcodes;
+use dig_peer_protocol::LinkError;
 use std::net::SocketAddr;
 
 use chia_protocol::Handshake;
@@ -55,14 +57,14 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use dig_peer_protocol::{ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{ClientError, DigLink, LinkOptions};
 
 use crate::connection::handshake::{validate_remote_handshake, ADVERTISED_PROTOCOL_VERSION};
 
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 use dig_peer_protocol::Connector;
 
-/// Successful outbound dial: live [`Peer`], inbound wire channel, parsed remote handshake, SPKI DER.
+/// Successful outbound dial: live [`DigLink`], inbound wire channel, parsed remote handshake, SPKI DER.
 ///
 /// SPEC §5.1 step 4 — "Wrap in PeerConnection with gossip metadata." This struct carries
 /// the raw materials needed to build a [`crate::types::peer::PeerConnection`].
@@ -71,7 +73,7 @@ use dig_peer_protocol::Connector;
 /// `remote_spki_der` is the **SubjectPublicKeyInfo** raw bytes inside the peer’s leaf certificate
 /// (same slice API-005 tests take from `x509-parser`).
 pub struct OutboundConnectResult {
-    pub peer: Peer,
+    pub peer: DigLink,
     pub inbound_rx: mpsc::Receiver<DigMessage>,
     pub their_handshake: Handshake,
     /// Raw SPKI DER bytes for [`crate::types::peer::peer_id_from_tls_spki_der`].
@@ -110,14 +112,14 @@ pub(crate) fn network_id_handshake_string(network_id: chia_protocol::Bytes32) ->
     network_id.to_string()
 }
 
-/// Extract remote **SubjectPublicKeyInfo DER** before [`Peer::from_websocket`] consumes the stream.
+/// Extract remote **SubjectPublicKeyInfo DER** before [`DigLink::from_websocket`] consumes the stream.
 ///
-/// SPEC §5.3 — "Peer identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
+/// SPEC §5.3 — "DigLink identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
 /// Because mTLS guarantees both sides present certificates, each side can derive the other's
 /// `PeerId` from the certificate exchanged during the TLS handshake. Matches Chia's
 /// `peer_node_id` derivation from certificate hash (`ws_connection.py:95`).
 ///
-/// **Rationale:** `Peer::from_websocket` splits the socket and spawns the reader; certificate
+/// **Rationale:** `DigLink::from_websocket` splits the socket and spawns the reader; certificate
 /// inspection must happen on the intact [`WebSocketStream`] returned from
 /// `connect_async_tls_with_config`.
 fn remote_spki_der_from_ws(
@@ -160,6 +162,18 @@ pub(crate) fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientE
     Ok(x509.tbs_certificate.subject_pki.raw.to_vec())
 }
 
+/// Re-render a TLS/certificate-layer [`ClientError`] as the link transport's error.
+///
+/// The cert helpers above predate [`DigLink`] and keep their own error type, because
+/// loading a certificate is not a link operation. Where one of those errors flows into
+/// a link-returning function it has to cross into [`LinkError`], which has no variant
+/// for most of `ClientError`'s cases — so the rendered message is carried in the one
+/// variant that can hold arbitrary detail. Nothing downstream matches on these
+/// variants; they are logged and surfaced to the operator.
+pub(crate) fn link_error_from_client(error: ClientError) -> LinkError {
+    LinkError::Io(std::io::Error::other(error.to_string()))
+}
+
 /// Full outbound flow: WSS dial, capture SPKI, Chia handshake, return handles.
 ///
 /// SPEC §5.1 — outbound connection via `connect_peer()`:
@@ -195,9 +209,9 @@ pub(crate) async fn connect_outbound_peer(
     network_id: String,
     connector: Connector,
     socket_addr: SocketAddr,
-    options: PeerOptions,
+    options: LinkOptions,
     software_version: String,
-) -> Result<OutboundConnectResult, ClientError> {
+) -> Result<OutboundConnectResult, LinkError> {
     let uri = format!("wss://{socket_addr}/ws");
     // Bound the transport buffer on the dial side too (CON-001 / §5.2) so a hostile server
     // cannot make tungstenite buffer up to its 64 MiB default before an app cap applies —
@@ -210,8 +224,8 @@ pub(crate) async fn connect_outbound_peer(
     )
     .await?;
 
-    let remote_spki_der = remote_spki_der_from_ws(&ws)?;
-    let (peer, mut receiver) = Peer::from_websocket(ws, options)?;
+    let remote_spki_der = remote_spki_der_from_ws(&ws).map_err(link_error_from_client)?;
+    let (peer, mut receiver) = DigLink::from_websocket(ws, options)?;
 
     // SPEC §5.1 step 3 — "Sends chia-protocol::Handshake with DIG network_id."
     // SPEC §1.5 #1 — "connect_peer() sends chia-protocol::Handshake with capabilities list."
@@ -233,12 +247,12 @@ pub(crate) async fn connect_outbound_peer(
     .await?;
 
     let Some(message) = receiver.recv().await else {
-        return Err(ClientError::MissingHandshake);
+        return Err(LinkError::Io(std::io::Error::other("missing handshake")));
     };
 
-    if message.msg_type != ProtocolMessageTypes::Handshake {
-        return Err(ClientError::InvalidResponse(
-            vec![ProtocolMessageTypes::Handshake],
+    if message.msg_type != chia_opcodes::HANDSHAKE {
+        return Err(LinkError::InvalidResponse(
+            vec![chia_opcodes::HANDSHAKE],
             message.msg_type,
         ));
     }
@@ -246,14 +260,14 @@ pub(crate) async fn connect_outbound_peer(
     let handshake = Handshake::from_bytes(&message.data)?;
 
     if handshake.node_type != chia_protocol::NodeType::FullNode {
-        return Err(ClientError::WrongNodeType(
+        return Err(link_error_from_client(ClientError::WrongNodeType(
             chia_protocol::NodeType::FullNode,
             handshake.node_type,
-        ));
+        )));
     }
 
     let remote_software_version_sanitized =
-        validate_remote_handshake(&handshake, &network_id).map_err(ClientError::from)?;
+        validate_remote_handshake(&handshake, &network_id).map_err(LinkError::from)?;
 
     Ok(OutboundConnectResult {
         peer,

@@ -1,4 +1,4 @@
-//! CON-005 — per-connection **inbound** rate limits on top of [`V2_RATE_LIMITS`](dig_peer_protocol::V2_RATE_LIMITS).
+//! CON-005 — per-connection **inbound** rate limits on top of Chia's `V2_RATE_LIMITS`.
 //!
 //! ## Normative trace
 //!
@@ -9,9 +9,9 @@
 //! ## Outbound vs inbound
 //!
 //! Outbound sends go through [`dig_peer_protocol::Peer::send_raw`] which already applies
-//! [`RateLimiter`] with `incoming = false` (CON-005 acceptance: *no custom outbound implementation*).
+//! [`OpcodeRateLimiter`] with no inbound flag (CON-005 acceptance: *no custom outbound implementation*).
 //! Inbound frames are delivered on the per-connection `mpsc` from [`Peer::from_websocket`]; **DIG**
-//! enforces [`RateLimiter::handle_message`] here **before** forwarding to the broadcast hub.
+//! enforces [`OpcodeRateLimiter::allow`] here **before** forwarding to the broadcast hub.
 //!
 //! ## DIG wire types (the `dig_extension_rate_limits_map` table)
 //!
@@ -21,7 +21,7 @@
 //! `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720) — ARE `ProtocolMessageTypes`
 //! variants and DO arrive on the live wire as Chia [`DigMessage`] values. Either way their bound is a
 //! DIG bound, keyed by the raw opcode byte in [`dig_extension_rate_limits_map`] and enforced by
-//! [`DigRateLimiter`] — which [`RateLimiter::handle_message`] knows nothing about.
+//! [`DigRateLimiter`] — which [`OpcodeRateLimiter::allow`] knows nothing about.
 //!
 //! [`InboundRateLimiter`] closes that gap: the live forwarders admit frames through it (not through
 //! `handle_message` directly), and for 220-band frames it additionally requires the
@@ -35,7 +35,7 @@
 
 use std::collections::HashMap;
 
-use dig_peer_protocol::{DigMessage, ProtocolMessageTypes, RateLimit, RateLimiter, V2_RATE_LIMITS};
+use dig_peer_protocol::{DigMessage, OpcodeRateLimiter, OpcodeRateLimits, RateLimit};
 
 use super::dig_rate_limiter::DigRateLimiter;
 use crate::types::dig_messages::DigMessageType;
@@ -51,7 +51,7 @@ const RESET_SECONDS: u64 = 60;
 ///
 /// Opcodes in this band (e.g. `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720)) ARE
 /// `chia_protocol::ProtocolMessageTypes` variants — so they arrive as real Chia [`DigMessage`] values —
-/// but their bound is a DIG bound that [`RateLimiter::handle_message`] never reads. The live
+/// but their bound is a DIG bound that [`OpcodeRateLimiter::allow`] never reads. The live
 /// ingress gate therefore has to consult [`DigRateLimiter`] for them explicitly; see
 /// [`InboundRateLimiter::allows`].
 const DIG_WIRE_BAND_START: u8 = 220;
@@ -64,8 +64,12 @@ const DIG_WIRE_BAND_START: u8 = 220;
 /// checks, and no way for a call site to consult one and forget the other.
 #[derive(Debug, Clone)]
 pub struct InboundRateLimiter {
-    /// Chia's bound, keyed by [`ProtocolMessageTypes`]: `default_settings` / `tx` / `other`.
-    chia: RateLimiter,
+    /// Chia's bound, keyed by the raw wire byte: `default_settings` / `tx` / `other`.
+    ///
+    /// [`OpcodeRateLimiter`] carries no table of its own — it re-keys Chia's `V2_RATE_LIMITS`
+    /// from `ProtocolMessageTypes` onto the wire byte, so every Chia opcode keeps exactly the
+    /// bound Chia gives it while a DIG opcode (which has no enum variant) remains expressible.
+    chia: OpcodeRateLimiter,
     /// DIG's bound, keyed by the raw opcode byte: [`dig_extension_rate_limits_map`].
     dig: DigRateLimiter,
 }
@@ -76,11 +80,10 @@ impl InboundRateLimiter {
     /// [`rate_limit_factor`](crate::types::config::GossipConfig::peer_options).
     pub fn new(rate_limit_factor: f64) -> Self {
         Self {
-            chia: RateLimiter::new(
-                true,
+            chia: OpcodeRateLimiter::new(
                 RESET_SECONDS,
                 rate_limit_factor,
-                (*V2_RATE_LIMITS).clone(),
+                OpcodeRateLimits::default(),
             ),
             dig: DigRateLimiter::new(
                 true,
@@ -93,26 +96,25 @@ impl InboundRateLimiter {
 
     /// Whether `msg` is admitted. A frame passes only if EVERY applicable check passes.
     ///
-    /// 1. [`RateLimiter::handle_message`] — the Chia bound — always, and first, so its counters
+    /// 1. [`OpcodeRateLimiter::allow`] — the Chia bound — always, and first, so its counters
     ///    advance for every frame regardless of opcode.
     /// 2. For frames in the DIG wire band (opcode `>= DIG_WIRE_BAND_START`), ALSO
     ///    [`DigRateLimiter::check`] on the raw opcode.
     ///
-    /// **Why both for the 220 band:** 221/222 ARE Chia `DigMessage` variants, but `handle_message` has
-    /// no `tx`/`other` row for them, so it falls through to the loose `default_settings` (100
-    /// frames/min, 1 MiB) and their deliberate [`dig_extension_rate_limits_map`] rows (#1316,
-    /// #1720) would never bind on the live wire. Requiring the DIG pass in addition is what makes
+    /// **Why both for the 220 band:** the Chia table has no `tx`/`other` row for 220-222, so they
+    /// fall through to the loose `default_settings` (100 frames/min, 1 MiB) and their deliberate
+    /// [`dig_extension_rate_limits_map`] rows (#1316, #1720) would never bind on the live wire. Requiring the DIG pass in addition is what makes
     /// those rows actually enforced. Frames below the band are decided by `handle_message` alone.
     ///
     /// The DIG half can only ever ADD a restriction: it is consulted after the Chia bound has
     /// already been applied, and an opcode with no row fails open.
     pub fn allows(&mut self, msg: &DigMessage) -> bool {
         // Always apply the Chia base bound first (and unconditionally, so its counters advance).
-        if !self.chia.handle_message(msg) {
+        if !self.chia.allow(msg) {
             return false;
         }
 
-        let opcode = msg.msg_type as u8;
+        let opcode = msg.msg_type;
         if opcode >= DIG_WIRE_BAND_START {
             // DIG 220-band frame: its real bound is the DIG row, so require that pass too.
             self.dig.check(opcode, msg.data.len() as u32)

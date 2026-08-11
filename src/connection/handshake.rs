@@ -172,6 +172,23 @@ impl From<HandshakeValidationError> for ClientError {
     }
 }
 
+impl From<HandshakeValidationError> for dig_peer_protocol::LinkError {
+    /// Mirror the [`ClientError`] mapping onto the link transport's error type.
+    ///
+    /// `LinkError` has no dedicated wrong-network variant, so a network mismatch is
+    /// rendered as an I/O error carrying both ids — the same information, in the one
+    /// variant that can hold it.
+    fn from(e: HandshakeValidationError) -> Self {
+        let message = match e {
+            HandshakeValidationError::NetworkIdMismatch { expected, actual } => {
+                format!("dig_gossip: wrong network: expected {expected}, got {actual}")
+            }
+            other => ClientError::from(other).to_string(),
+        };
+        dig_peer_protocol::LinkError::Io(std::io::Error::other(message))
+    }
+}
+
 /// Validate `their_handshake` against our expected network id string (hex genesis id from
 /// [`crate::connection::outbound::network_id_handshake_string`]).
 ///

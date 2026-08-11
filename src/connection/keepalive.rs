@@ -38,7 +38,7 @@
 //! The published [`chia_protocol`](https://docs.rs/chia-protocol/0.26.0/chia_protocol/) **0.26** wire
 //! enum [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes) does **not** define separate
 //! application-level Ping/Pong message types — Chia’s networking docs describe **WebSocket** library
-//! heartbeats for transport liveness. Upstream [`dig_peer_protocol::Peer`](dig_peer_protocol::Peer)’s
+//! heartbeats for transport liveness. Upstream [`dig_peer_protocol::DigLink`](dig_peer_protocol::DigLink)’s
 //! inbound loop discards raw WS control frames (`Ping`/`Pong`) before they become [`DigMessage`](chia_protocol::DigMessage)s.
 //!
 //! **DIG policy:** we treat a successful **`RequestPeers` → `RespondPeers`** round-trip as the
@@ -60,7 +60,7 @@
 //!
 //! ## Per-probe deadline
 //!
-//! A dead TCP peer may leave [`Peer::request_infallible`] awaiting forever. Each probe is wrapped in
+//! A dead TCP peer may leave [`DigLink::request_infallible`] awaiting forever. Each probe is wrapped in
 //! [`tokio::time::timeout`] for `keepalive_peer_timeout_secs` (or [`PEER_TIMEOUT_SECS`]) so we surface
 //! failure and disconnect (same path as transport errors) without blocking the keepalive task
 //! indefinitely.
@@ -82,7 +82,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chia_protocol::{RequestPeers, RespondPeers};
-use dig_peer_protocol::Peer;
+use dig_peer_protocol::DigLink;
 use dig_peer_protocol::Streamable;
 
 // SPEC §2.13 — PING_INTERVAL_SECS (default 30) and PEER_TIMEOUT_SECS (default 90)
@@ -143,7 +143,7 @@ pub(crate) fn spawn_keepalive_task(
     state: Arc<ServiceState>,
     peer_id: PeerId,
     generation: u64,
-    peer: Peer,
+    peer: DigLink,
 ) -> tokio::task::AbortHandle {
     tokio::spawn(async move { keepalive_loop(state, peer_id, generation, peer).await })
         .abort_handle()
@@ -172,7 +172,7 @@ pub(crate) fn spawn_keepalive_task(
 /// The loop checks [`ServiceState::is_running`](crate::service::state::ServiceState::is_running)
 /// both before sleeping *and* after waking. This ensures prompt exit when the
 /// service is shutting down even if the sleep was already in flight.
-async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u64, peer: Peer) {
+async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u64, peer: DigLink) {
     // Resolve config overrides once — they are immutable for the connection lifetime.
     let ping_secs = state
         .config
@@ -228,7 +228,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u
                 if RespondPeers::from_bytes(&wire_msg.data).is_err() {
                     continue;
                 }
-                let wl = wire_msg.to_bytes().map(|b| b.len() as u64).unwrap_or(0);
+                let wl = wire_msg.to_bytes().len() as u64;
                 record_live_peer_inbound_bytes(&state, peer_id, wl);
                 last_success = std::time::Instant::now();
                 let rtt_ms = start.elapsed().as_millis() as u64;
