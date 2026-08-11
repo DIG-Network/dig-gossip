@@ -10,7 +10,7 @@
 //!
 //! Outbound limiting stays inside [`chia_sdk_client::Peer`] (not duplicated here). These tests
 //! prove the **DIG-specific** pieces: the DIG per-opcode table, independent limiters per
-//! connection, [`RateLimiter::handle_message`] / [`DigRateLimiter::check`] behavior,
+//! connection, [`OpcodeRateLimiter::allow`] / [`DigRateLimiter::check`] behavior,
 //! and the **penalty** path exercised through [`dig_gossip::apply_inbound_rate_limit_violation`]
 //! (integration-style with a synthetic [`ServiceState`] row).
 
@@ -19,7 +19,7 @@ mod common;
 use std::sync::Arc;
 
 use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
-use dig_gossip::{RateLimit, OpcodeRateLimiter, V2_RATE_LIMITS};
+use dig_gossip::{Admission, OpcodeRateLimiter, OpcodeRateLimits, RateLimit, V2_RATE_LIMITS};
 
 use dig_gossip::{
     apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, load_ssl_cert,
@@ -34,8 +34,8 @@ fn dig_limiter(limit_factor: f64) -> DigRateLimiter {
     DigRateLimiter::new(true, 60, limit_factor, dig_extension_rate_limits_map())
 }
 
-/// **Row:** `test_inbound_rate_limiter_creation` — [`RateLimiter::new`] with `incoming = true`,
-/// `reset_seconds = 60`, and merged limits builds successfully (CON-005 §Inbound Rate Limiting).
+/// **Row:** `test_inbound_rate_limiter_creation` — the inbound limiter over the merged DIG
+/// limits, with a 60 s window, builds successfully (CON-005 §Inbound Rate Limiting).
 #[test]
 fn test_inbound_rate_limiter_creation() {
     let lim = new_inbound_rate_limiter(1.0);
@@ -51,18 +51,18 @@ fn test_separate_limiter_per_connection() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(1.0, 1_000_000.0, None),
     );
-    let mut a = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(limits.clone()));
-    let mut b = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(limits));
+    let mut a = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut b = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
     let m = |t: ProtocolMessageTypes| DigMessage {
         msg_type: t as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };
     let handshake = || m(ProtocolMessageTypes::Handshake);
-    assert!(a.handle_message(&handshake()));
-    assert!(!a.handle_message(&handshake()));
+    assert!(a.allow(&handshake()));
+    assert!(!a.allow(&handshake()));
     assert!(
-        b.handle_message(&handshake()),
+        b.allow(&handshake()),
         "B must still accept first handshake"
     );
 }
@@ -96,14 +96,14 @@ fn test_rate_limit_allows_normal_traffic() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(10.0, 1_000_000.0, None),
     );
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    let mut lim = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 100]),
     };
     for _ in 0..5 {
-        assert!(lim.handle_message(&msg), "handshake within cap should pass");
+        assert!(lim.allow(&msg), "handshake within cap should pass");
     }
 }
 
@@ -115,35 +115,54 @@ fn test_rate_limit_blocks_excess_traffic() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(2.0, 1_000_000.0, None),
     );
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
+    let mut lim = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };
-    assert!(lim.handle_message(&msg));
-    assert!(lim.handle_message(&msg));
+    assert!(lim.allow(&msg));
+    assert!(lim.allow(&msg));
     assert!(
-        !lim.handle_message(&msg),
+        !lim.allow(&msg),
         "third handshake should exceed frequency=2"
     );
 }
 
 /// **Row:** `test_rate_limit_blocks_oversized_message` — single-frame `max_size` exceeded.
+///
+/// The bound is pinned from BOTH sides: a frame exactly at `max_size` is admitted, one byte over is
+/// refused. The refusal is asserted as [`Admission::Unsendable`], not merely "not admitted", because
+/// a size refusal survives every window roll — a `Deferred` here would tell a retrying caller to
+/// wait for a budget that can never clear.
 #[test]
 fn test_rate_limit_blocks_oversized_message() {
+    const MAX_SIZE: usize = 50;
     let mut limits = (*V2_RATE_LIMITS).clone();
     limits.other.insert(
         ProtocolMessageTypes::Handshake,
-        RateLimit::new(100.0, 50.0, None),
+        #[allow(clippy::cast_precision_loss)]
+        RateLimit::new(100.0, MAX_SIZE as f64, None),
     );
-    let mut lim = RateLimiter::new(true, 60, 1.0, limits);
-    let msg = DigMessage {
+    let handshake = |len: usize| DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
-        data: Bytes::new(vec![0u8; 100]),
+        data: Bytes::new(vec![0u8; len]),
     };
-    assert!(!lim.handle_message(&msg));
+
+    let mut at_bound = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    assert_eq!(
+        at_bound.admit(&handshake(MAX_SIZE)),
+        Admission::Admitted,
+        "a frame exactly at max_size must pass — otherwise the over-bound case proves nothing"
+    );
+
+    let mut over_bound = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    assert_eq!(
+        over_bound.admit(&handshake(MAX_SIZE + 1)),
+        Admission::Unsendable,
+        "one byte over max_size is refused in every window, not merely deferred"
+    );
 }
 
 /// **Row:** `test_rate_limit_penalty_applied` — [`PenaltyReason::RateLimitExceeded`] weight matches
@@ -183,8 +202,8 @@ fn test_rate_limit_factor_scaling() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(10.0, 1_000_000.0, None),
     );
-    let mut strict = RateLimiter::new(true, 60, 0.5, limits.clone());
-    let mut loose = RateLimiter::new(true, 60, 1.0, limits);
+    let mut strict = OpcodeRateLimiter::new(60, 0.5, OpcodeRateLimits::from(&limits));
+    let mut loose = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
@@ -192,16 +211,16 @@ fn test_rate_limit_factor_scaling() {
     };
     // effective cap: strict 5, loose 10 first-window accepts
     for _ in 0..5 {
-        assert!(strict.handle_message(&msg));
+        assert!(strict.allow(&msg));
     }
     assert!(
-        !strict.handle_message(&msg),
+        !strict.allow(&msg),
         "6th message should exceed 10*0.5=5"
     );
     for _ in 0..10 {
-        assert!(loose.handle_message(&msg));
+        assert!(loose.allow(&msg));
     }
-    assert!(!loose.handle_message(&msg));
+    assert!(!loose.allow(&msg));
 }
 
 /// **Row:** `test_rate_limit_window_reset` — new period clears counters (`reset_seconds` shortened for speed).
@@ -212,17 +231,17 @@ async fn test_rate_limit_window_reset() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(1.0, 1_000_000.0, None),
     );
-    let mut lim = RateLimiter::new(true, 2, 1.0, limits);
+    let mut lim = OpcodeRateLimiter::new(2, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };
-    assert!(lim.handle_message(&msg));
-    assert!(!lim.handle_message(&msg));
+    assert!(lim.allow(&msg));
+    assert!(!lim.allow(&msg));
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     assert!(
-        lim.handle_message(&msg),
+        lim.allow(&msg),
         "after 2s window rolls, first handshake in new period should pass"
     );
 }

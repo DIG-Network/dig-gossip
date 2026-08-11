@@ -24,7 +24,7 @@ use std::time::Duration;
 use dig_gossip::Streamable;
 use dig_gossip::{
     create_native_tls_connector, load_ssl_cert, Bytes32, GossipHandle, GossipService, Handshake,
-    DigMessage, NodeType, PeerId, ProtocolMessageTypes, RespondPeers,
+    DigMessage, PeerId, ProtocolMessageTypes, RespondPeers,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMsg;

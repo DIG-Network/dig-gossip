@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use dig_gossip::Streamable;
 use dig_gossip::{
-    load_ssl_cert, ChiaCertificate, ChiaProtocolMessage, GossipError, IntroducerClient, NodeType,
-    LinkOptions, PeerRegistration, ProtocolMessageTypes, RegisterAck, RegisterPeer,
+    load_ssl_cert, ChiaCertificate, GossipError, IntroducerClient, NodeType, LinkOptions,
+    PeerRegistration, RegisterAck, RegisterPeer,
 };
 
 /// **Row:** `test_register_introducer_wire_message_types` — wire structs bind to **218** / **219**.

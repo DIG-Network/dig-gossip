@@ -29,7 +29,6 @@ mod common;
 
 use dig_gossip::connection::handshake::{sanitize_software_version, validate_remote_handshake};
 use dig_gossip::Handshake;
-use dig_gossip::NodeType;
 use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// Baseline remote [`Handshake`] for CON-008 policy tests: only `software_version` is malicious.

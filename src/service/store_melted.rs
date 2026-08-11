@@ -332,7 +332,7 @@ mod tests {
     fn frame_and_lift_round_trip() {
         let announce = sample();
         let msg = frame_store_melted(&announce);
-        assert_eq!(msg.msg_type as u8, STORE_MELTED);
+        assert_eq!(msg.msg_type, STORE_MELTED);
         assert_eq!(msg.id, None);
         assert_eq!(store_melted_payload(&msg), Some(announce));
     }

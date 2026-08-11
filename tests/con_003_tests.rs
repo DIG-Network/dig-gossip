@@ -24,7 +24,7 @@ use dig_gossip::connection::handshake::{
     HandshakeValidationError, MAX_SOFTWARE_VERSION_BYTES, MIN_COMPATIBLE_PROTOCOL_VERSION,
 };
 use dig_gossip::Handshake;
-use dig_gossip::{NodeType, PeerId};
+use dig_gossip::PeerId;
 
 /// Build a valid baseline [`Handshake`] for mutation in individual tests.
 ///

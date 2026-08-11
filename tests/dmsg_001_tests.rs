@@ -56,7 +56,7 @@ fn stub_addr(port: u16) -> SocketAddr {
 #[test]
 fn dig_message_opcode_is_220() {
     assert_eq!(DIG_MESSAGE, 220);
-    assert_eq!(DIG_MESSAGE, dig_peer_protocol::DIG_MESSAGE as u8);
+    assert_eq!(DIG_MESSAGE, dig_peer_protocol::DIG_MESSAGE);
 }
 
 /// **Row:** `is_dig_message` recognises 220 and only 220.

@@ -63,12 +63,17 @@ fn frame(opcode: u8, body_len: usize) -> DigMessage {
 
 #[test]
 fn handshake_keeps_its_tight_frequency_and_does_not_fall_to_the_default() {
-    // The fixture is only meaningful while the specific row is far below the default;
-    // if that ever stops holding, this test can no longer see a collapse.
-    assert!(
-        HANDSHAKE_FREQUENCY < DEFAULT_FREQUENCY,
-        "fixture is blind unless the Handshake row is tighter than default_settings"
-    );
+    // The fixture is only meaningful while the specific row is far below the default; if that ever
+    // stops holding, this test can no longer see a collapse. Both operands are consts, so clippy
+    // sees a constant assertion — that is the point: the guard must fail the build the moment the
+    // fixture goes blind.
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(
+            HANDSHAKE_FREQUENCY < DEFAULT_FREQUENCY,
+            "fixture is blind unless the Handshake row is tighter than default_settings"
+        );
+    }
 
     let mut limiter = limiter();
 

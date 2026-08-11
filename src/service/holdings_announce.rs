@@ -1191,7 +1191,7 @@ mod tests {
     fn frame_and_lift_round_trip() {
         let a = sample();
         let msg = frame_holdings_announce(&a);
-        assert_eq!(msg.msg_type as u8, HOLDINGS_ANNOUNCE);
+        assert_eq!(msg.msg_type, HOLDINGS_ANNOUNCE);
         assert_eq!(msg.id, None);
         assert_eq!(holdings_announce_payload(&msg), Some(a));
     }

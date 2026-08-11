@@ -18,7 +18,7 @@ mod common;
 use std::net::SocketAddr;
 
 use dig_gossip::{
-    Bytes32, ChiaProtocolMessage, GossipHandle, GossipService, GossipStats, DigMessage, NewPeak,
+    Bytes32, GossipHandle, GossipService, GossipStats, DigMessage, NewPeak,
     NodeType, RelayConfig, RelayStats, RequestPeers, Streamable,
 };
 
