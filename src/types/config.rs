@@ -44,7 +44,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use dig_peer_protocol::Bytes32;
+use chia_protocol::Bytes32;
 use dig_peer_protocol::{Network, PeerOptions};
 use serde::{Deserialize, Serialize};
 

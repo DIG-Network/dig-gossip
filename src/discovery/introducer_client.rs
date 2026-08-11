@@ -28,7 +28,8 @@
 
 use std::time::Duration;
 
-use dig_peer_protocol::{Bytes32, Handshake, NodeType, ProtocolMessageTypes, TimestampedPeerInfo};
+use chia_protocol::{Bytes32, Handshake, TimestampedPeerInfo};
+use dig_peer_protocol::{NodeType, ProtocolMessageTypes};
 
 use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
@@ -102,7 +103,7 @@ impl IntroducerClient {
                 protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
                 software_version: software_version.to_string(),
                 server_port: 0,
-                node_type: NodeType::Wallet,
+                node_type: chia_protocol::NodeType::Wallet,
                 capabilities: vec![
                     (1, "1".to_string()),
                     (2, "1".to_string()),
@@ -124,9 +125,9 @@ impl IntroducerClient {
 
             let handshake = Handshake::from_bytes(&message.data)?;
 
-            if handshake.node_type != NodeType::FullNode {
+            if handshake.node_type != chia_protocol::NodeType::FullNode {
                 return Err(ClientError::WrongNodeType(
-                    NodeType::FullNode,
+                    chia_protocol::NodeType::FullNode,
                     handshake.node_type,
                 ));
             }
@@ -185,7 +186,7 @@ impl IntroducerClient {
                 protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
                 software_version: software_version.to_string(),
                 server_port: 0,
-                node_type: NodeType::Wallet,
+                node_type: chia_protocol::NodeType::Wallet,
                 capabilities: vec![
                     (1, "1".to_string()),
                     (2, "1".to_string()),
@@ -207,9 +208,9 @@ impl IntroducerClient {
 
             let handshake = Handshake::from_bytes(&message.data)?;
 
-            if handshake.node_type != NodeType::FullNode {
+            if handshake.node_type != chia_protocol::NodeType::FullNode {
                 return Err(ClientError::WrongNodeType(
-                    NodeType::FullNode,
+                    chia_protocol::NodeType::FullNode,
                     handshake.node_type,
                 ));
             }

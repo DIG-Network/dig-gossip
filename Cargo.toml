@@ -39,7 +39,7 @@ categories = ["network-programming", "cryptography::cryptocurrencies"]
 # code is `dig_peer_protocol`. TLS backends are forwarded through it to chia-sdk-client, so we keep
 # `default-features = false` and select the backend exclusively via our own `native-tls` / `rustls`
 # feature flags (see the `chia-sdk-client` shape rationale at the top of this manifest).
-dig-peer-protocol = { version = "0.2", default-features = false }
+dig-peer-protocol = { version = "0.4", default-features = false }
 # Unified DIG Node peer transport (L7 peer-network spec): mTLS `connect(peer)` over the NAT-traversal
 # ladder (direct → UPnP → NAT-PMP → PCP → hole-punch → relay-last) yielding a yamux-multiplexed
 # `PeerConnection`, plus `peer_id = SHA256(TLS SPKI DER)` verification, the relay client, and the

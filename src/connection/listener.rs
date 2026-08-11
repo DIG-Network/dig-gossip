@@ -63,13 +63,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chia_protocol::{Handshake, RespondPeers, TimestampedPeerInfo};
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{ClientError, Peer, PeerOptions};
-use dig_peer_protocol::{
-    Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
-};
+use dig_peer_protocol::{Message, NodeType, ProtocolMessageTypes};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -79,7 +78,7 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::{accept_async_with_config, WebSocketStream};
 
-use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
+use crate::connection::handshake::{dig_node_type_of, ADVERTISED_PROTOCOL_VERSION};
 use crate::connection::outbound::network_id_handshake_string;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use crate::connection::outbound::spki_der_from_leaf_cert_der;
@@ -677,7 +676,7 @@ where
         // #2215: the ONE configured value, identical to what the dial path sends.
         software_version: state.config.software_version.clone(),
         server_port: listen_port_for_handshake(&state),
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![
             (1, "1".to_string()), // BASE protocol
             (2, "1".to_string()), // BLOCK_HEADERS
@@ -767,7 +766,7 @@ where
     ));
     let meta = StubPeer {
         remote: remote_addr,
-        node_type: their_handshake.node_type,
+        node_type: dig_node_type_of(their_handshake.node_type),
         is_outbound: false, // This is the *inbound* path; outbound has its own insertion logic.
     };
     let peer_for_keepalive = peer.clone();

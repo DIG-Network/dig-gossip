@@ -27,9 +27,10 @@ use crate::constants::{
     BUCKET_SIZE, HORIZON_DAYS, MAX_FAILURES, MAX_RETRIES, MIN_FAIL_DAYS,
     NEW_BUCKETS_PER_SOURCE_GROUP, NEW_BUCKET_COUNT, TRIED_BUCKETS_PER_GROUP, TRIED_BUCKET_COUNT,
 };
+use chia_protocol::Bytes32;
 use dig_peer_protocol::Peer;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Bytes32, Message, NodeType};
+use dig_peer_protocol::{Message, NodeType};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 

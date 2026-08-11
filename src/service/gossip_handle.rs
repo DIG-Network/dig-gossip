@@ -43,12 +43,10 @@
 //! (`full_node.py`, `server.py`). The key difference is that Chia's `Server` object is not
 //! `Clone` — callers must borrow it. Our `Arc` wrapper avoids lifetime gymnastics in async code.
 
+use chia_protocol::{RequestPeers, RespondPeers, TimestampedPeerInfo};
 use dig_nat::SafeText;
 use dig_peer_protocol::Peer;
-use dig_peer_protocol::{
-    ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes, RequestPeers, RespondPeers,
-    TimestampedPeerInfo,
-};
+use dig_peer_protocol::{ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes};
 
 use crate::discovery::introducer_client::{
     load_local_certificate_for_introducer, IntroducerClient, PeerRegistration,
@@ -862,7 +860,9 @@ impl GossipHandle {
 
         let meta = StubPeer {
             remote: addr,
-            node_type: out.their_handshake.node_type,
+            node_type: crate::connection::handshake::dig_node_type_of(
+                out.their_handshake.node_type,
+            ),
             is_outbound: true,
         };
         let peer = out.peer;

@@ -42,7 +42,8 @@
 //! consensus-critical. See [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast)
 //! and [`MessagePriority`](crate::gossip::priority::MessagePriority).
 
-use dig_peer_protocol::{Bytes, Bytes32, Message, ProtocolMessageTypes};
+use chia_protocol::Bytes32;
+use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes};
 use dig_tls::bls::{sign_message, verify_signature, SecretKey};
 use sha2::{Digest, Sha256};
 

@@ -39,17 +39,18 @@
 //!
 //! ## `network_id` typing
 //!
-//! [`crate::types::config::GossipConfig`] stores `network_id` as [`dig_peer_protocol::Bytes32`]. Chia’s
+//! [`crate::types::config::GossipConfig`] stores `network_id` as [`chia_protocol::Bytes32`]. Chia’s
 //! wire [`Handshake::network_id`](chia_protocol::Handshake) is a [`String`]; the conventional
-//! encoding is the **lowercase hex** of the 32 bytes (matches [`Bytes32`’s `Display`](dig_peer_protocol::Bytes32)).
+//! encoding is the **lowercase hex** of the 32 bytes (matches [`Bytes32`’s `Display`](chia_protocol::Bytes32)).
 #![allow(clippy::result_large_err)]
 // Upstream [`ClientError`] is wide; we propagate it verbatim per API-004 `GossipError::ClientError`.
 
 use std::net::SocketAddr;
 
+use chia_protocol::Handshake;
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Handshake, Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{Message, NodeType, ProtocolMessageTypes};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -105,7 +106,7 @@ pub(crate) fn tls_connector_for_cert(cert: &ChiaCertificate) -> Result<Connector
 }
 
 /// Map configured genesis id to the Chia handshake string (`Display` = hex).
-pub(crate) fn network_id_handshake_string(network_id: dig_peer_protocol::Bytes32) -> String {
+pub(crate) fn network_id_handshake_string(network_id: chia_protocol::Bytes32) -> String {
     network_id.to_string()
 }
 
@@ -222,7 +223,7 @@ pub(crate) async fn connect_outbound_peer(
         // the listener replies with, so a peer learns the same build from us either way.
         software_version,
         server_port: 0,
-        node_type: NodeType::Wallet,
+        node_type: chia_protocol::NodeType::Wallet,
         capabilities: vec![
             (1, "1".to_string()), // SPEC §1.5 #1 — BASE protocol capability
             (2, "1".to_string()), // BLOCK_HEADERS capability
@@ -244,9 +245,9 @@ pub(crate) async fn connect_outbound_peer(
 
     let handshake = Handshake::from_bytes(&message.data)?;
 
-    if handshake.node_type != NodeType::FullNode {
+    if handshake.node_type != chia_protocol::NodeType::FullNode {
         return Err(ClientError::WrongNodeType(
-            NodeType::FullNode,
+            chia_protocol::NodeType::FullNode,
             handshake.node_type,
         ));
     }

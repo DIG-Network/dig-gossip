@@ -165,19 +165,19 @@ pub use service::peer_pool::{
 pub use types::config::PeerPoolConfig;
 
 // -- Chia protocol types (re-exported, not reimplemented) --
+pub use chia_protocol::{
+    Bytes32, FullBlock, Handshake, NewPeak, NewTransaction, NewUnfinishedBlock, RejectBlock,
+    RejectBlocks, RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers,
+    RequestTransaction, RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers,
+    RespondTransaction, RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
+};
 pub use dig_peer_protocol::ChiaCertificate;
 pub use dig_peer_protocol::Streamable;
 pub use dig_peer_protocol::{
     load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
     RateLimiter, RateLimits, V2_RATE_LIMITS,
 };
-pub use dig_peer_protocol::{
-    Bytes, Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
-    NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
-    RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
-    RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
-    RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
-};
+use dig_peer_protocol::{Bytes, ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes};
 
 // -- Feature-gated public types --
 #[cfg(feature = "native-tls")]

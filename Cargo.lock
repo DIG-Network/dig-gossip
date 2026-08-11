@@ -1538,9 +1538,9 @@ dependencies = [
 
 [[package]]
 name = "dig-peer-protocol"
-version = "0.2.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "114832cad5ae6b8adfd319e8480d1eed0ffb8bc77e41b9d3f7fb4ce9ef6219ee"
+checksum = "c7e464779607ec9edecc4c82bcc2a4be6a428b5d3bae716d1f79c9c02548d9f4"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",
@@ -1548,7 +1548,13 @@ dependencies = [
  "chia-ssl",
  "chia-traits 0.26.0",
  "chia_streamable_macro 0.26.0",
+ "futures-util",
  "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tungstenite",
 ]
 
 [[package]]

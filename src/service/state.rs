@@ -72,7 +72,7 @@ use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use dig_peer_protocol::Bytes32;
+use chia_protocol::Bytes32;
 
 use crate::connection::inbound_limits::InboundRateLimiter;
 use crate::discovery::address_manager::AddressManager;
@@ -259,7 +259,7 @@ impl fmt::Debug for NatSlot {
 }
 
 /// Canonical form of a `peer_id` hex for identity comparison: a stripped optional `0x` prefix,
-/// lowercased. Different producers (this node's [`Bytes32`](dig_peer_protocol::Bytes32) `Display`, a
+/// lowercased. Different producers (this node's [`Bytes32`](chia_protocol::Bytes32) `Display`, a
 /// relay's echo) may spell the same id with/without `0x` and in either case — normalizing both sides
 /// before comparing makes self-exclusion robust to the spelling (#924 self-filter).
 pub(crate) fn normalize_peer_id_hex(id: &str) -> String {
