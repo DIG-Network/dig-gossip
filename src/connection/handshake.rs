@@ -9,11 +9,13 @@
 //!
 //! ## SPEC traceability
 //!
-//! - **SPEC §5.1 step 3** — outbound: `connect_peer()` “receives and validates Handshake response”.
+//! - **SPEC §5.1 step 3** — outbound: the dial
+//!   ([`connect_outbound_peer`](crate::connection::outbound::connect_outbound_peer)) “receives and
+//!   validates Handshake response”.
 //! - **SPEC §5.2 step 5** — inbound: “Receive Handshake, validate `network_id`.”
-//! - **SPEC §1.5 #1** — capabilities negotiated via `chia-protocol::Handshake` (`connect_peer()`
-//!   sends capabilities list). Validation here ensures the remote meets DIG compatibility.
-//! - **SPEC §1.5 #7** — `connect_peer()` rejects peers with mismatched `network_id`.
+//! - **SPEC §1.5 #1** — capabilities negotiated via `chia-protocol::Handshake` (the outbound dial
+//!   sends the capabilities list). Validation here ensures the remote meets DIG compatibility.
+//! - **SPEC §1.5 #7** — the outbound dial rejects peers with mismatched `network_id`.
 //! - **SPEC §1.4** — `Handshake` type used directly from `chia-protocol` (not redefined).
 //!
 //! ## Normative trace
