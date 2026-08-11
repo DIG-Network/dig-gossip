@@ -3,12 +3,16 @@ name: Publish to crates.io
 # Tag-driven release. Pushing a version tag `vX.Y.Z` (cut by release.yml on merge) runs this
 # workflow, which cuts a GitHub Release for the tag.
 #
-# crates.io publish is GUARDED OFF for now (#2228). dig-gossip has three vendored fork dependencies
-# in [patch.crates-io] (chia-protocol, chia-sdk-client, native-tls) that `cargo publish` strips
-# from the published metadata. This causes `cargo package --locked` to fail with 19 compile errors
-# against the bare crates.io versions, making it impossible to publish the crate.
+# crates.io publish is GUARDED OFF (dig_ecosystem#2647). dig-gossip carries ONE vendored fork in
+# [patch.crates-io] — `native-tls`, patched so the OpenSSL server acceptor sets CERT_REQUIRED plus
+# Chia CA trust for inbound mTLS (CON-009); upstream `TlsAcceptorBuilder` offers no way to require a
+# client certificate. `cargo publish` STRIPS [patch.crates-io] from the published metadata, so a
+# published dig-gossip would build against upstream `native-tls`, compile cleanly, and silently
+# accept inbound peers presenting no client certificate at all. That is a silent security
+# regression, not a build break — which is exactly why the guard is a workflow step and not a
+# reliance on the compiler.
 # So the crates.io steps run ONLY on a manual `workflow_dispatch`; a tag push just cuts the GitHub
-# Release. Flip this to per-tag once #2228 has resolved the vendored-dependency blocker.
+# Release. Flip this to per-tag once dig_ecosystem#2647 removes the need for the `native-tls` patch.
 
 on:
   push:
@@ -28,27 +32,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # crates.io publish. GUARDED to `workflow_dispatch` only (#2228): a tag push does NOT publish (the
-  # crate has three vendored fork dependencies in [patch.crates-io] that cargo publish strips,
-  # causing cargo package --locked to fail with 19 compile errors — see the header note). The job
+  # crates.io publish. GUARDED to `workflow_dispatch` only (dig_ecosystem#2647): a tag push does NOT
+  # publish, because `cargo publish` strips the [patch.crates-io] `native-tls` fork and the published
+  # crate would then accept inbound peers with no client certificate — see the header note. The job
   # stays present and explicitly FAILs on tag push (exit 1) so the `create-release` job below can
   # `needs: publish` with `if: always()` and still cut a GitHub Release on every tag.
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     steps:
-      - name: Fail crates.io publish on tag push (#2228)
+      - name: Fail crates.io publish on tag push (dig_ecosystem#2647)
         if: github.event_name != 'workflow_dispatch'
         run: |
-          echo "Cannot publish to crates.io: dig-gossip carries [patch.crates-io] vendored fork"
-          echo "dependencies (chia-protocol, chia-sdk-client, native-tls) that cargo publish"
-          echo "strips from the published metadata. A published dig-gossip would silently resolve"
-          echo "to the bare upstream crates, which lack the necessary opcodes 218/219 (peer"
-          echo "registration), full-duplex RPC application channel, and inbound mTLS acceptor."
-          echo "External consumers would obtain a broken crate."
+          echo "Cannot publish to crates.io: dig-gossip carries one [patch.crates-io] vendored fork,"
+          echo "native-tls, whose OpenSSL server acceptor sets CERT_REQUIRED plus Chia CA trust for"
+          echo "inbound mTLS (CON-009). Upstream TlsAcceptorBuilder cannot require a client"
+          echo "certificate at all."
+          echo ""
+          echo "cargo publish STRIPS [patch.crates-io] from the published metadata, so a published"
+          echo "dig-gossip would build against upstream native-tls, compile cleanly, and silently"
+          echo "accept inbound peers presenting no client certificate. The failure mode is a silent"
+          echo "security regression, not a build error."
           echo ""
           echo "Flipping this job to manual dispatch does NOT make it safe; the publish blocker"
-          echo "is structural. The forks must be resolved first (dig_ecosystem#2228)."
+          echo "is structural. The native-tls patch must be removable first (dig_ecosystem#2647)."
           echo ""
           echo "The git + Cargo.lock consumer path (dig-node) is unaffected."
           exit 1

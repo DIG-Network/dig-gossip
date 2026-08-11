@@ -19,8 +19,8 @@ name: CI
 #   features are opt-in and pull heavy / alternate-TLS dependencies, so they are
 #   not part of the coverage gate (their cfg-gated code is excluded from the
 #   default-feature report rather than counted as "uncovered").
-# - `vendor/` (the patched chia-protocol / chia-sdk-client / native-tls crates)
-#   is excluded via `--ignore-filename-regex` — we only gate on our own `src/`.
+# - `vendor/` (the patched `native-tls` crate — the only remaining fork) is
+#   excluded via `--ignore-filename-regex` — we only gate on our own `src/`.
 # - Integration tests bind loopback TLS listeners; they run single-threaded
 #   (`--test-threads=1`) to match `publish.yml` and avoid port/handshake races.
 
