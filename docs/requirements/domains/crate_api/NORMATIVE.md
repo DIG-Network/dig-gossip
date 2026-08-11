@@ -26,19 +26,19 @@ GossipConfig MUST contain fields: `listen_addr`, `peer_id`, `network_id`, `netwo
 
 ### API-004: GossipError Enum Variants
 
-GossipError MUST be a `#[derive(Debug, Clone, thiserror::Error)]` enum wrapping `chia-sdk-client::ClientError` via `#[from]` and providing variants: `ClientError`, `PeerNotConnected`, `PeerBanned`, `MaxConnectionsReached`, `DuplicateConnection`, `SelfConnection`, `RequestTimeout`, `IntroducerNotConfigured`, `IntroducerError`, `RelayNotConfigured`, `RelayError`, `ServiceNotStarted`, `ChannelClosed`, `IoError`, `SketchError(String)`, `SketchDecodeFailed`. The `SketchError` variant covers minisketch encoding/decoding errors during ERLAY reconciliation. `SketchDecodeFailed` is a unit variant for when sketch decoding produces no result (symmetric difference too large for sketch capacity).
+GossipError MUST be a `#[derive(Debug, Clone, thiserror::Error)]` enum wrapping the re-exported `ClientError` via `#[from]` and providing variants: `ClientError`, `PeerNotConnected`, `PeerBanned`, `MaxConnectionsReached`, `DuplicateConnection`, `SelfConnection`, `RequestTimeout`, `IntroducerNotConfigured`, `IntroducerError`, `RelayNotConfigured`, `RelayError`, `ServiceNotStarted`, `ChannelClosed`, `IoError`, `SketchError(String)`, `SketchDecodeFailed`. The `SketchError` variant covers minisketch encoding/decoding errors during ERLAY reconciliation. `SketchDecodeFailed` is a unit variant for when sketch decoding produces no result (symmetric difference too large for sketch capacity).
 
 **Spec reference:** SPEC Section 4 (Error Types), Section 8.3 (ERLAY reconciliation error paths)
 
 ### API-005: PeerConnection Struct
 
-PeerConnection MUST wrap `chia-sdk-client::Peer` with gossip-specific metadata fields: `peer`, `peer_id`, `address`, `is_outbound`, `node_type`, `protocol_version`, `software_version`, `peer_server_port`, `capabilities`, `creation_time`, `bytes_read`, `bytes_written`, `last_message_time`, `reputation`, `inbound_rx`.
+PeerConnection MUST wrap `dig_peer_protocol::DigLink` with gossip-specific metadata fields: `peer`, `peer_id`, `address`, `is_outbound`, `node_type`, `protocol_version`, `software_version`, `peer_server_port`, `capabilities`, `creation_time`, `bytes_read`, `bytes_written`, `last_message_time`, `reputation`, `inbound_rx`.
 
 **Spec reference:** SPEC Section 2.4 (PeerConnection)
 
 ### API-006: PeerReputation and PenaltyReason
 
-PeerReputation MUST track `penalty_points`, `is_banned`, `ban_until`, `last_penalty_reason`, `avg_rtt_ms`, `rtt_history`, `score`, `as_number`. PenaltyReason MUST enumerate: `InvalidBlock`, `InvalidAttestation`, `MalformedMessage`, `Spam`, `ConnectionIssue`, `ProtocolViolation`, `RateLimitExceeded`, `ConsensusError`. PeerReputation extends `chia-sdk-client::ClientState`'s binary ban/trust with numeric penalties.
+PeerReputation MUST track `penalty_points`, `is_banned`, `ban_until`, `last_penalty_reason`, `avg_rtt_ms`, `rtt_history`, `score`, `as_number`. PenaltyReason MUST enumerate: `InvalidBlock`, `InvalidAttestation`, `MalformedMessage`, `Spam`, `ConnectionIssue`, `ProtocolViolation`, `RateLimitExceeded`, `ConsensusError`. PeerReputation extends the re-exported `ClientState`'s binary ban/trust with numeric penalties.
 
 **Spec reference:** SPEC Section 2.5 (PeerReputation)
 

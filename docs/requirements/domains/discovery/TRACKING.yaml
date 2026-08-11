@@ -27,7 +27,7 @@ items:
     section: "6.2"
     summary: "DNS seeding via Network::lookup_all()"
     status: verified
-    spec_ref: "SPEC.md#62-dns-seeding-reuses-chia-sdk-clientnetwork"
+    spec_ref: "SPEC.md#62-dns-seeding-reuses-the-re-exported-network"
     tests:
       - tests/dsc_003_tests.rs
     notes: >
@@ -52,7 +52,7 @@ items:
     tests:
       - tests/dsc_005_tests.rs
     notes: >
-      vendor/chia-protocol: ProtocolMessageTypes RegisterPeer=218 / RegisterAck=219 so Message decode works;
+      opcodes 218/219 travel as raw DigMessage msg_type bytes, so no Chia enum variant is needed;
       introducer_register_wire.rs: streamable bodies; IntroducerClient::register_with_introducer;
       GossipHandle::register_with_introducer -> RegisterAck; empty introducer.endpoint -> InvalidConfig;
       STR-005 wss_full_node::spawn_one_shot_introducer_register; DigMessageType 218/219 + inbound dig_wire limits.

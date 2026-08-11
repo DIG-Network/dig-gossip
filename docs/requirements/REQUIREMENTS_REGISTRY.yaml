@@ -27,7 +27,7 @@ domains:
 
   - id: connection
     title: "Connection"
-    summary: "Connection lifecycle: outbound via chia-sdk-client connect_peer(), inbound via TcpListener + Peer::from_websocket(), handshake validation, keepalive, rate limiting, peer banning, version sanitization."
+    summary: "Connection lifecycle: outbound handshake then DigLink::from_websocket(), inbound via TcpListener + DigLink::from_server_websocket(), handshake validation, keepalive, rate limiting, peer banning, version sanitization."
     status: planned
     paths:
       normative: domains/connection/NORMATIVE.md
@@ -37,7 +37,7 @@ domains:
 
   - id: discovery
     title: "Discovery"
-    summary: "Peer discovery: AddressManager (tried/new tables, Rust port), persistent serialization, DNS seeding via chia-sdk-client Network, introducer query/registration, discovery loop with exponential backoff, peer exchange, feeler connections, parallel connect, AS-level diversity."
+    summary: "Peer discovery: AddressManager (tried/new tables, Rust port), persistent serialization, DNS seeding via the re-exported Network, introducer query/registration, discovery loop with exponential backoff, peer exchange, feeler connections, parallel connect, AS-level diversity."
     status: planned
     paths:
       normative: domains/discovery/NORMATIVE.md

@@ -8,7 +8,7 @@
 
 ### STR-001: Cargo.toml Dependencies and Feature Gates
 
-Cargo.toml MUST include chia-protocol 0.26, chia-sdk-client 0.28, chia-ssl 0.26, chia-traits 0.26, tokio, serde, bincode, serde_json, tracing, thiserror, rand, lru, siphasher, minisketch-rs. Feature gates: native-tls, rustls, relay, erlay, compact-blocks.
+Cargo.toml MUST include dig-peer-protocol 0.4 (default-features = false), chia-protocol 0.26, chia-traits 0.26, chia-sha2 0.26, chia_streamable_macro 0.26, tokio, serde, bincode, serde_json, tracing, thiserror, rand, lru, siphasher, minisketch-rs. Feature gates: native-tls, rustls, relay, erlay, compact-blocks.
 
 **Spec reference:** SPEC Section 1.2 (Crate Dependencies), Section 10.3 (Feature Flags), Section 10.4 (Cargo.toml Dependencies)
 

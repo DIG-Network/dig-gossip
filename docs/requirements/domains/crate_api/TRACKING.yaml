@@ -54,7 +54,7 @@ items:
       ERLAY variants SketchError / SketchDecodeFailed added. API-001 variants InvalidConfig / AlreadyStarted retained.
   - id: API-005
     section: "2.4"
-    summary: "PeerConnection wraps chia-sdk-client::Peer with metadata"
+    summary: "PeerConnection wraps dig_peer_protocol::DigLink with metadata"
     status: verified
     spec_ref: "SPEC.md#24-peerconnection"
     tests:
