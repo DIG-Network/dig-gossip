@@ -34,7 +34,10 @@ categories = ["network-programming", "cryptography::cryptocurrencies"]
 
 [dependencies]
 # DIG peer protocol — superset of chia-protocol, re-exports all chia-* crate types plus
-# DIG extension opcodes (200-219), DigMessage, DigMessageType, introducer wire types.
+# DIG extension opcodes (200-222), DigMessage, DigMessageType, introducer wire types.
+# The band runs to 222, not 219: 220 is DIG_MESSAGE, 221 STORE_MELTED, 222 HOLDINGS_ANNOUNCE, and
+# all three are live. dig-relay vendors this wire byte-identically, so an understated band here is
+# the kind of number that gets copied into a second implementation.
 # Single import replaces: chia-protocol, chia-sdk-client, chia-ssl, chia-traits, chia_streamable_macro.
 # `dig-peer-protocol` is the rename of the former `dig-protocol` crate (#1383); the crate name in
 # code is `dig_peer_protocol`. TLS backends are forwarded through it to chia-sdk-client, so we keep
