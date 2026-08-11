@@ -45,6 +45,7 @@
 // Upstream [`ClientError`] is wide; we propagate it verbatim per API-004 `GossipError::ClientError`.
 
 use crate::connection::chia_opcodes;
+use crate::connection::dial_error::DialError;
 use dig_peer_protocol::LinkError;
 use std::net::SocketAddr;
 
@@ -161,18 +162,6 @@ pub(crate) fn spki_der_from_leaf_cert_der(der: &[u8]) -> Result<Vec<u8>, ClientE
     Ok(x509.tbs_certificate.subject_pki.raw.to_vec())
 }
 
-/// Re-render a TLS/certificate-layer [`ClientError`] as the link transport's error.
-///
-/// The cert helpers above predate [`DigLink`] and keep their own error type, because
-/// loading a certificate is not a link operation. Where one of those errors flows into
-/// a link-returning function it has to cross into [`LinkError`], which has no variant
-/// for most of `ClientError`'s cases — so the rendered message is carried in the one
-/// variant that can hold arbitrary detail. Nothing downstream matches on these
-/// variants; they are logged and surfaced to the operator.
-pub(crate) fn link_error_from_client(error: ClientError) -> LinkError {
-    LinkError::Io(std::io::Error::other(error.to_string()))
-}
-
 /// Full outbound flow: WSS dial, capture SPKI, Chia handshake, return handles.
 ///
 /// SPEC §5.1 — outbound connection via `connect_peer()`:
@@ -210,7 +199,7 @@ pub(crate) async fn connect_outbound_peer(
     socket_addr: SocketAddr,
     options: LinkOptions,
     software_version: String,
-) -> Result<OutboundConnectResult, LinkError> {
+) -> Result<OutboundConnectResult, DialError> {
     let uri = format!("wss://{socket_addr}/ws");
     // Bound the transport buffer on the dial side too (CON-001 / §5.2) so a hostile server
     // cannot make tungstenite buffer up to its 64 MiB default before an app cap applies —
@@ -221,10 +210,11 @@ pub(crate) async fn connect_outbound_peer(
         false,
         Some(connector),
     )
-    .await?;
+    .await
+    .map_err(|e| DialError::Link(LinkError::from(e)))?;
 
-    let remote_spki_der = remote_spki_der_from_ws(&ws).map_err(link_error_from_client)?;
-    let (peer, mut receiver) = DigLink::from_websocket(ws, options)?;
+    let remote_spki_der = remote_spki_der_from_ws(&ws)?;
+    let (peer, mut receiver) = DigLink::from_websocket(ws, options).map_err(DialError::Link)?;
 
     // SPEC §5.1 step 3 — "Sends chia-protocol::Handshake with DIG network_id."
     // SPEC §1.5 #1 — "connect_peer() sends chia-protocol::Handshake with capabilities list."
@@ -243,30 +233,35 @@ pub(crate) async fn connect_outbound_peer(
             (3, "1".to_string()), // RATE_LIMITS_V2 capability
         ],
     })
-    .await?;
+    .await
+    .map_err(DialError::Link)?;
 
+    // Policy, not transport: the link opened and the peer closed it without ever completing
+    // the handshake, so re-dialling the same address will meet the same peer behaviour.
     let Some(message) = receiver.recv().await else {
-        return Err(LinkError::Io(std::io::Error::other("missing handshake")));
+        return Err(DialError::Client(ClientError::Io(std::io::Error::other(
+            "dig_gossip: missing handshake",
+        ))));
     };
 
     if message.msg_type != chia_opcodes::HANDSHAKE {
-        return Err(LinkError::InvalidResponse(
+        return Err(DialError::Link(LinkError::InvalidResponse(
             vec![chia_opcodes::HANDSHAKE],
             message.msg_type,
-        ));
+        )));
     }
 
-    let handshake = Handshake::from_bytes(&message.data)?;
+    let handshake =
+        Handshake::from_bytes(&message.data).map_err(|e| DialError::Link(LinkError::from(e)))?;
 
     if handshake.node_type != chia_protocol::NodeType::FullNode {
-        return Err(link_error_from_client(ClientError::WrongNodeType(
+        return Err(DialError::Client(ClientError::WrongNodeType(
             chia_protocol::NodeType::FullNode,
             handshake.node_type,
         )));
     }
 
-    let remote_software_version_sanitized =
-        validate_remote_handshake(&handshake, &network_id).map_err(LinkError::from)?;
+    let remote_software_version_sanitized = validate_remote_handshake(&handshake, &network_id)?;
 
     Ok(OutboundConnectResult {
         peer,

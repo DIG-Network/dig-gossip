@@ -4,6 +4,9 @@
 //! **Outbound** connect uses `chia-sdk-client` TLS + WSS (CON-001) — see [`outbound`].
 //! **Related requirements:** `docs/requirements/domains/connection/`.
 
+/// The transport-vs-policy split a dial reports failures through ([`DialError`](dial_error::DialError)).
+pub mod dial_error;
+
 pub mod handshake;
 
 /// CON-004 keepalive + RTT sampling (application-level `RequestPeers` probe).

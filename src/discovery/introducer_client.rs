@@ -28,6 +28,7 @@
 //!   (`UnsupportedTls`) so `--no-default-features` builds remain coherent.
 
 use crate::connection::chia_opcodes;
+use crate::connection::dial_error::DialError;
 use crate::types::dig_messages::DigMessageType;
 use dig_peer_protocol::LinkError;
 use std::time::Duration;
@@ -98,10 +99,10 @@ impl IntroducerClient {
         let network_string = network_id_handshake_string(network_id);
 
         let work = async {
-            let connector = tls_connector_for_cert(local_certificate)
-                .map_err(crate::connection::outbound::link_error_from_client)?;
-            let (peer, mut receiver) =
-                DigLink::connect_full_uri(wss_uri, connector, peer_options).await?;
+            let connector = tls_connector_for_cert(local_certificate)?;
+            let (peer, mut receiver) = DigLink::connect_full_uri(wss_uri, connector, peer_options)
+                .await
+                .map_err(DialError::Link)?;
 
             peer.send(Handshake {
                 network_id: network_string.clone(),
@@ -115,39 +116,45 @@ impl IntroducerClient {
                     (3, "1".to_string()),
                 ],
             })
-            .await?;
+            .await
+            .map_err(DialError::Link)?;
 
+            // Policy, not transport: the link opened and the introducer closed it without ever
+            // completing the handshake, so re-dialling the same endpoint meets the same behaviour.
             let Some(message) = receiver.recv().await else {
-                return Err(LinkError::Io(std::io::Error::other("missing handshake")));
+                return Err(DialError::Client(ClientError::Io(std::io::Error::other(
+                    "dig_gossip: missing handshake",
+                ))));
             };
 
             if message.msg_type != chia_opcodes::HANDSHAKE {
-                return Err(LinkError::InvalidResponse(
+                return Err(DialError::Link(LinkError::InvalidResponse(
                     vec![chia_opcodes::HANDSHAKE],
                     message.msg_type,
-                ));
+                )));
             }
 
-            let handshake = Handshake::from_bytes(&message.data)?;
+            let handshake = Handshake::from_bytes(&message.data)
+                .map_err(|e| DialError::Link(LinkError::from(e)))?;
 
             if handshake.node_type != chia_protocol::NodeType::FullNode {
-                return Err(crate::connection::outbound::link_error_from_client(
-                    ClientError::WrongNodeType(
-                        chia_protocol::NodeType::FullNode,
-                        handshake.node_type,
-                    ),
-                ));
+                return Err(DialError::Client(ClientError::WrongNodeType(
+                    chia_protocol::NodeType::FullNode,
+                    handshake.node_type,
+                )));
             }
 
             if handshake.network_id != network_string {
-                return Err(crate::connection::outbound::link_error_from_client(
-                    ClientError::WrongNetwork(network_string, handshake.network_id),
-                ));
+                return Err(DialError::Client(ClientError::WrongNetwork(
+                    network_string,
+                    handshake.network_id,
+                )));
             }
 
             let response: RespondPeersIntroducer = peer
                 .request_infallible(RequestPeersIntroducer::new())
-                .await?;
+                .await
+                .map_err(DialError::Link)?;
 
             Ok(response.peer_list)
         };
@@ -183,10 +190,10 @@ impl IntroducerClient {
         let network_string = network_id_handshake_string(network_id);
 
         let work = async {
-            let connector = tls_connector_for_cert(local_certificate)
-                .map_err(crate::connection::outbound::link_error_from_client)?;
-            let (peer, mut receiver) =
-                DigLink::connect_full_uri(wss_uri, connector, peer_options).await?;
+            let connector = tls_connector_for_cert(local_certificate)?;
+            let (peer, mut receiver) = DigLink::connect_full_uri(wss_uri, connector, peer_options)
+                .await
+                .map_err(DialError::Link)?;
 
             peer.send(Handshake {
                 network_id: network_string.clone(),
@@ -200,34 +207,39 @@ impl IntroducerClient {
                     (3, "1".to_string()),
                 ],
             })
-            .await?;
+            .await
+            .map_err(DialError::Link)?;
 
+            // Policy, not transport: the link opened and the introducer closed it without ever
+            // completing the handshake, so re-dialling the same endpoint meets the same behaviour.
             let Some(message) = receiver.recv().await else {
-                return Err(LinkError::Io(std::io::Error::other("missing handshake")));
+                return Err(DialError::Client(ClientError::Io(std::io::Error::other(
+                    "dig_gossip: missing handshake",
+                ))));
             };
 
             if message.msg_type != chia_opcodes::HANDSHAKE {
-                return Err(LinkError::InvalidResponse(
+                return Err(DialError::Link(LinkError::InvalidResponse(
                     vec![chia_opcodes::HANDSHAKE],
                     message.msg_type,
-                ));
+                )));
             }
 
-            let handshake = Handshake::from_bytes(&message.data)?;
+            let handshake = Handshake::from_bytes(&message.data)
+                .map_err(|e| DialError::Link(LinkError::from(e)))?;
 
             if handshake.node_type != chia_protocol::NodeType::FullNode {
-                return Err(crate::connection::outbound::link_error_from_client(
-                    ClientError::WrongNodeType(
-                        chia_protocol::NodeType::FullNode,
-                        handshake.node_type,
-                    ),
-                ));
+                return Err(DialError::Client(ClientError::WrongNodeType(
+                    chia_protocol::NodeType::FullNode,
+                    handshake.node_type,
+                )));
             }
 
             if handshake.network_id != network_string {
-                return Err(crate::connection::outbound::link_error_from_client(
-                    ClientError::WrongNetwork(network_string, handshake.network_id),
-                ));
+                return Err(DialError::Client(ClientError::WrongNetwork(
+                    network_string,
+                    handshake.network_id,
+                )));
             }
 
             let body = RegisterPeer::new(
@@ -238,16 +250,22 @@ impl IntroducerClient {
             // Opcode 218/219 have no `ProtocolMessageTypes` variant, so they travel as raw
             // DIG opcodes rather than through the Chia-typed `request_infallible` path.
             let reply = peer
-                .request_dig(DigMessageType::RegisterPeer as u8, body.to_bytes()?.into())
-                .await?;
+                .request_dig(
+                    DigMessageType::RegisterPeer as u8,
+                    body.to_bytes()
+                        .map_err(|e| DialError::Link(LinkError::from(e)))?
+                        .into(),
+                )
+                .await
+                .map_err(DialError::Link)?;
             RegisterAck::from_dig_message(&reply)
                 .ok_or_else(|| {
-                    LinkError::InvalidResponse(
+                    DialError::Link(LinkError::InvalidResponse(
                         vec![DigMessageType::RegisterAck as u8],
                         reply.msg_type,
-                    )
+                    ))
                 })?
-                .map_err(LinkError::from)
+                .map_err(|e| DialError::Link(LinkError::from(e)))
         };
 
         match tokio::time::timeout(operation_timeout, work).await {
