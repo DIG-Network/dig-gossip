@@ -204,7 +204,7 @@ pub fn is_store_melted(msg_type: u8) -> bool {
 /// ([`StoreMeltedAnnounce::decode`]), else `None`.
 #[must_use]
 pub fn store_melted_payload(msg: &DigMessage) -> Option<StoreMeltedAnnounce> {
-    if is_store_melted(msg.msg_type as u8) {
+    if is_store_melted(msg.msg_type) {
         StoreMeltedAnnounce::decode(msg.data.as_ref())
     } else {
         None

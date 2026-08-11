@@ -722,7 +722,7 @@ pub fn is_holdings_announce(msg_type: u8) -> bool {
 /// `None`. The caller MUST still [`verify_holdings_announce`] before ingesting the deltas.
 #[must_use]
 pub fn holdings_announce_payload(msg: &DigMessage) -> Option<HoldingsAnnounce> {
-    if is_holdings_announce(msg.msg_type as u8) {
+    if is_holdings_announce(msg.msg_type) {
         HoldingsAnnounce::decode(msg.data.as_ref())
     } else {
         None

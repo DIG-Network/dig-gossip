@@ -258,7 +258,7 @@ impl GossipHandle {
         // -- INT-001: Plumtree dedup via seen set --
         // SPEC §8.1 step 2: "if seen_set.contains(hash) → return 0"
         let msg_hash =
-            crate::gossip::seen_set::SeenSet::compute_hash(message.msg_type as u8, &message.data);
+            crate::gossip::seen_set::SeenSet::compute_hash(message.msg_type, &message.data);
         {
             let mut seen = self
                 .inner
@@ -278,7 +278,7 @@ impl GossipHandle {
                 .message_cache
                 .lock()
                 .map_err(|_| GossipError::ChannelClosed)?;
-            cache.insert(msg_hash, message.msg_type as u8, message.data.to_vec());
+            cache.insert(msg_hash, message.msg_type, message.data.to_vec());
         }
 
         // -- INT-001: Route through Plumtree eager/lazy sets (SPEC §8.1) --

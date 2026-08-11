@@ -180,7 +180,7 @@ pub(crate) fn rejected_frame_incurs_penalty(msg: &DigMessage) -> bool {
 /// `false` (unreachable for 221/222 — the completeness guard pins their rows).
 fn exceeds_dig_wire_max_size(msg: &DigMessage) -> bool {
     dig_extension_rate_limits_map()
-        .get(&(msg.msg_type as u8))
+        .get(&msg.msg_type)
         .map(|row| (msg.data.len() as f64) > row.max_size)
         .unwrap_or(false)
 }
