@@ -29,7 +29,6 @@ use crate::constants::{
 };
 use chia_protocol::Bytes32;
 use dig_peer_protocol::DigLink;
-use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{DigMessage, NodeType};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
