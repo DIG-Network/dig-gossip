@@ -18,7 +18,7 @@ mod common;
 
 use std::time::Duration;
 
-use dig_gossip::{GossipHandle, GossipService, PeerOptions, PenaltyReason};
+use dig_gossip::{GossipHandle, GossipService, LinkOptions, PenaltyReason};
 use dig_gossip::{PeerId, PeerReputation};
 
 /// Short keepalive period for tests (seconds between probes).
@@ -52,9 +52,9 @@ async fn service_with_keepalive(
     cfg.keepalive_peer_timeout_secs = Some(timeout);
     // [`RequestPeers`] is capped by `V2_RATE_LIMITS` (~6/min with default `rate_limit_factor` 0.6);
     // sub-second probes in this file need a higher factor so keepalive is not stuck throttling.
-    cfg.peer_options = PeerOptions {
-        rate_limit_factor: 20.0,
-    };
+    let mut link_options = LinkOptions::default();
+    link_options.rate_limit_factor = 20.0;
+    cfg.peer_options = link_options;
     let svc = GossipService::new(cfg).expect("new");
     let h = svc.start().await.expect("start");
     (svc, h)

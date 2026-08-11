@@ -528,7 +528,7 @@ mod low_5_broadcast_lock_scope {
     use std::time::Duration;
 
     use dig_gossip::{
-        Bytes32, GossipHandle, GossipService, Message, NewPeak, ProtocolMessageTypes, Streamable,
+        Bytes32, GossipHandle, GossipService, DigMessage, NewPeak, ProtocolMessageTypes, Streamable,
     };
 
     async fn running_server() -> (tempfile::TempDir, GossipService, GossipHandle, SocketAddr) {
@@ -586,8 +586,8 @@ mod low_5_broadcast_lock_scope {
         let msg = {
             let z = Bytes32::default();
             let body = NewPeak::new(z, 1, 1, 0, z);
-            Message {
-                msg_type: ProtocolMessageTypes::NewPeak,
+            DigMessage {
+                msg_type: ProtocolMessageTypes::NewPeak as u8,
                 id: None,
                 data: body.to_bytes().unwrap().into(),
             }

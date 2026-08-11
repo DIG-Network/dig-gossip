@@ -65,7 +65,7 @@ fn test_connector_creation() {
 /// SPEC §2.4 — PeerConnection fields: node_type, protocol_version, software_version,
 ///   peer_server_port, capabilities (all sourced from chia-protocol::Handshake).
 ///
-/// **Note:** Uses STR-005 [`common::mock_peer_connection`] for a real [`dig_gossip::Peer`] handle without CON-002 listener.
+/// **Note:** Uses STR-005 [`common::mock_peer_connection`] for a real [`dig_gossip::DigLink`] handle without CON-002 listener.
 #[tokio::test]
 async fn test_peer_connection_wrapping() {
     let hs = Handshake {
@@ -73,18 +73,18 @@ async fn test_peer_connection_wrapping() {
         protocol_version: "0.0.37".to_string(),
         software_version: "unit-test/1".to_string(),
         server_port: 8444,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![(1, "x".to_string())],
     };
     let mut base = common::mock_peer_connection(true).await;
-    base.node_type = hs.node_type;
+    base.node_type = dig_gossip::connection::handshake::dig_node_type_of(hs.node_type);
     base.protocol_version = hs.protocol_version.clone();
     base.software_version = hs.software_version.clone();
     base.peer_server_port = hs.server_port;
     base.capabilities = hs.capabilities.clone();
     assert!(base.is_outbound);
-    let _: dig_gossip::Peer = base.peer;
-    let _: tokio::sync::mpsc::Receiver<dig_gossip::Message> = base.inbound_rx;
+    let _: dig_gossip::DigLink = base.peer;
+    let _: tokio::sync::mpsc::Receiver<dig_gossip::DigMessage> = base.inbound_rx;
 }
 
 /// **Row:** `test_creation_time_set` — [`PeerConnection::creation_time`] is Unix seconds near “now”.

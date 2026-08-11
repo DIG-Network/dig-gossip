@@ -6,11 +6,11 @@
 //! - **Master SPEC:** `docs/resources/SPEC.md` SS8.4
 
 use dig_gossip::gossip::priority::{MessagePriority, PriorityOutbound};
-use dig_gossip::{Message, ProtocolMessageTypes};
+use dig_gossip::{DigMessage, ProtocolMessageTypes};
 
-fn make_msg(msg_type: ProtocolMessageTypes) -> Message {
-    Message {
-        msg_type,
+fn make_msg(msg_type: ProtocolMessageTypes) -> DigMessage {
+    DigMessage {
+        msg_type: msg_type as u8,
         id: None,
         data: vec![].into(),
     }
@@ -36,15 +36,15 @@ fn test_drain_order() {
 
     // Critical first
     let m1 = q.drain_next().unwrap();
-    assert_eq!(m1.msg_type, ProtocolMessageTypes::NewPeak);
+    assert_eq!(m1.msg_type, ProtocolMessageTypes::NewPeak as u8);
 
     // Normal second
     let m2 = q.drain_next().unwrap();
-    assert_eq!(m2.msg_type, ProtocolMessageTypes::NewTransaction);
+    assert_eq!(m2.msg_type, ProtocolMessageTypes::NewTransaction as u8);
 
     // Bulk last
     let m3 = q.drain_next().unwrap();
-    assert_eq!(m3.msg_type, ProtocolMessageTypes::RequestBlocks);
+    assert_eq!(m3.msg_type, ProtocolMessageTypes::RequestBlocks as u8);
 
     assert!(q.is_empty());
 }

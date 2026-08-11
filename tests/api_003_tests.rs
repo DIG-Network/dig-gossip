@@ -28,7 +28,7 @@ use dig_gossip::ErlayConfig;
 use dig_gossip::TorConfig;
 use dig_gossip::{
     BackpressureConfig, Bytes32, GossipConfig, IntroducerConfig, Network, PeerId,
-    PeerIdRotationConfig, PeerOptions, RelayConfig, DEFAULT_DNS_SEED_BATCH_SIZE,
+    PeerIdRotationConfig, LinkOptions, RelayConfig, DEFAULT_DNS_SEED_BATCH_SIZE,
     DEFAULT_DNS_SEED_TIMEOUT_SECS, DEFAULT_MAX_SEEN_MESSAGES, DEFAULT_P2P_PORT,
     DEFAULT_TARGET_OUTBOUND_COUNT,
 };
@@ -70,7 +70,7 @@ fn test_config_all_fields_exist() {
         gossip_fanout: 4,
         max_seen_messages: 99,
         peers_file_path: dir.path().join("addrman.dat"),
-        peer_options: PeerOptions::default(),
+        peer_options: LinkOptions::default(),
         #[cfg(feature = "dandelion")]
         dandelion: Some(DandelionConfig::default()),
         peer_id_rotation: Some(PeerIdRotationConfig::default()),
@@ -246,14 +246,14 @@ fn test_config_default_optional_subsystems_none() {
     assert!(c.peer_pool.is_none());
 }
 
-/// **Row:** `test_config_peer_options_type` — field is `chia_sdk_client::PeerOptions`.
+/// **Row:** `test_config_peer_options_type` — field is `chia_sdk_client::LinkOptions`.
 ///
 /// Assignment to a locally typed binding is a compile-time + link-time proof on stable Rust (no
 /// `TypeId::of_val`, which is not available on MSRV here).
 #[test]
 fn test_config_peer_options_type() {
     let c = GossipConfig::default();
-    let _: PeerOptions = c.peer_options;
+    let _: LinkOptions = c.peer_options;
 }
 
 /// **Row:** `test_config_network_id_type` — `network_id` is `chia_protocol::Bytes32`.

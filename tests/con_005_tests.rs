@@ -18,8 +18,8 @@ mod common;
 
 use std::sync::Arc;
 
-use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
-use dig_gossip::{RateLimit, RateLimiter, V2_RATE_LIMITS};
+use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
+use dig_gossip::{RateLimit, OpcodeRateLimiter, V2_RATE_LIMITS};
 
 use dig_gossip::{
     apply_inbound_rate_limit_violation, dig_extension_rate_limits_map, load_ssl_cert,
@@ -51,10 +51,10 @@ fn test_separate_limiter_per_connection() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(1.0, 1_000_000.0, None),
     );
-    let mut a = RateLimiter::new(true, 60, 1.0, limits.clone());
-    let mut b = RateLimiter::new(true, 60, 1.0, limits);
-    let m = |t: ProtocolMessageTypes| Message {
-        msg_type: t,
+    let mut a = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(limits.clone()));
+    let mut b = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(limits));
+    let m = |t: ProtocolMessageTypes| DigMessage {
+        msg_type: t as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };
@@ -97,8 +97,8 @@ fn test_rate_limit_allows_normal_traffic() {
         RateLimit::new(10.0, 1_000_000.0, None),
     );
     let mut lim = RateLimiter::new(true, 60, 1.0, limits);
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 100]),
     };
@@ -116,8 +116,8 @@ fn test_rate_limit_blocks_excess_traffic() {
         RateLimit::new(2.0, 1_000_000.0, None),
     );
     let mut lim = RateLimiter::new(true, 60, 1.0, limits);
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };
@@ -138,8 +138,8 @@ fn test_rate_limit_blocks_oversized_message() {
         RateLimit::new(100.0, 50.0, None),
     );
     let mut lim = RateLimiter::new(true, 60, 1.0, limits);
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 100]),
     };
@@ -174,7 +174,7 @@ fn test_apply_inbound_rate_limit_violation_no_panic() {
     apply_inbound_rate_limit_violation(&state, ghost, 0);
 }
 
-/// **Row:** `test_rate_limit_factor_scaling` — lower [`dig_gossip::PeerOptions::rate_limit_factor`]
+/// **Row:** `test_rate_limit_factor_scaling` — lower [`dig_gossip::LinkOptions::rate_limit_factor`]
 /// equivalent scales effective caps (`frequency * factor`).
 #[test]
 fn test_rate_limit_factor_scaling() {
@@ -185,8 +185,8 @@ fn test_rate_limit_factor_scaling() {
     );
     let mut strict = RateLimiter::new(true, 60, 0.5, limits.clone());
     let mut loose = RateLimiter::new(true, 60, 1.0, limits);
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };
@@ -213,8 +213,8 @@ async fn test_rate_limit_window_reset() {
         RateLimit::new(1.0, 1_000_000.0, None),
     );
     let mut lim = RateLimiter::new(true, 2, 1.0, limits);
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(vec![0u8; 10]),
     };

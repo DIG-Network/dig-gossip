@@ -56,23 +56,23 @@ fn test_message_priority_classification_dig() {
 /// **INT-002: PriorityOutbound drain order follows PRI-003 (critical > normal > bulk).**
 #[test]
 fn test_priority_outbound_drain_order() {
-    use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
+    use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
 
     let mut q = PriorityOutbound::new();
 
     // Enqueue one of each priority in reverse order
-    let bulk_msg = Message {
-        msg_type: ProtocolMessageTypes::RequestBlocks,
+    let bulk_msg = DigMessage {
+        msg_type: ProtocolMessageTypes::RequestBlocks as u8,
         id: None,
         data: Bytes::from(vec![3u8]),
     };
-    let normal_msg = Message {
-        msg_type: ProtocolMessageTypes::NewTransaction,
+    let normal_msg = DigMessage {
+        msg_type: ProtocolMessageTypes::NewTransaction as u8,
         id: None,
         data: Bytes::from(vec![2u8]),
     };
-    let critical_msg = Message {
-        msg_type: ProtocolMessageTypes::NewPeak,
+    let critical_msg = DigMessage {
+        msg_type: ProtocolMessageTypes::NewPeak as u8,
         id: None,
         data: Bytes::from(vec![1u8]),
     };
@@ -102,11 +102,11 @@ fn test_priority_outbound_drain_order() {
 /// **INT-002: lane_lengths returns correct per-lane counts.**
 #[test]
 fn test_priority_outbound_lane_lengths() {
-    use dig_gossip::{Bytes, Message, ProtocolMessageTypes};
+    use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
 
     let mut q = PriorityOutbound::new();
-    let msg = || Message {
-        msg_type: ProtocolMessageTypes::NewPeak,
+    let msg = || DigMessage {
+        msg_type: ProtocolMessageTypes::NewPeak as u8,
         id: None,
         data: Bytes::from(vec![0u8]),
     };

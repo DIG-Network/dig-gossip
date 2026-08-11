@@ -33,13 +33,13 @@ use std::time::Duration;
 
 use dig_gossip::{
     load_ssl_cert, ChiaCertificate, ChiaProtocolMessage, GossipError, IntroducerClient,
-    PeerOptions, ProtocolMessageTypes, RequestPeersIntroducer, RespondPeersIntroducer,
+    LinkOptions, ProtocolMessageTypes, RequestPeersIntroducer, RespondPeersIntroducer,
     TimestampedPeerInfo,
 };
 
 /// **Row:** `test_introducer_wire_message_types` — wire structs map to protocol IDs **63** / **64**.
 ///
-/// **Proof:** [`ChiaProtocolMessage::msg_type`] is what [`Peer::request_infallible`](dig_gossip::Peer::request_infallible)
+/// **Proof:** [`ChiaProtocolMessage::msg_type`] is what [`Peer::request_infallible`](dig_gossip::DigLink::request_infallible)
 /// uses to build outbound frames; a typo here would send the wrong opcode while still “compiling”.
 #[test]
 fn test_introducer_wire_message_types() {
@@ -82,7 +82,7 @@ async fn test_query_introducer_success() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(10),
         common::TEST_SOFTWARE_VERSION,
     )
@@ -116,7 +116,7 @@ async fn test_query_introducer_empty_list() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(10),
         common::TEST_SOFTWARE_VERSION,
     )
@@ -148,7 +148,7 @@ async fn test_query_introducer_timeout() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_millis(400),
         common::TEST_SOFTWARE_VERSION,
     )
@@ -180,7 +180,7 @@ async fn test_query_introducer_connect_fail() {
         uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(2),
         common::TEST_SOFTWARE_VERSION,
     )
@@ -216,7 +216,7 @@ async fn test_query_introducer_handshake_wrong_network() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(5),
         common::TEST_SOFTWARE_VERSION,
     )

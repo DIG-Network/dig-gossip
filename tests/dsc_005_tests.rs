@@ -13,12 +13,12 @@
 //! the client sends [`RegisterPeer`](dig_gossip::RegisterPeer) and must receive [`RegisterAck`](dig_gossip::RegisterAck)
 //! on the same mutually-authenticated WSS session. Unlike DSC-004 (opcodes **63/64** already present in upstream
 //! [`ProtocolMessageTypes`](dig_gossip::ProtocolMessageTypes)), **218/219** require the vendored `chia-protocol` fork
-//! so [`Message::from_bytes`](dig_gossip::Message::from_bytes) can decode replies — see `vendor/chia-protocol/README.dig-gossip.md`.
+//! so [`Message::from_bytes`](dig_gossip::DigMessage::from_bytes) can decode replies — see `vendor/chia-protocol/README.dig-gossip.md`.
 //!
 //! ## Causal chain (examples)
 //!
 //! - `test_register_introducer_wire_message_types` — if [`ChiaProtocolMessage::msg_type`] drifted from the enum
-//!   discriminants patched into `vendor/chia-protocol`, [`Peer::request_infallible`](dig_gossip::Peer::request_infallible)
+//!   discriminants patched into `vendor/chia-protocol`, [`Peer::request_infallible`](dig_gossip::DigLink::request_infallible)
 //!   would serialize the wrong opcode and the mock introducer would reject the frame.
 //! - `test_register_introducer_success` — end-to-end TLS + handshake + RPC proves [`IntroducerClient::register_with_introducer`]
 //!   matches the acceptance table row *test_register_success*.
@@ -32,25 +32,39 @@ use std::time::Duration;
 use dig_gossip::Streamable;
 use dig_gossip::{
     load_ssl_cert, ChiaCertificate, ChiaProtocolMessage, GossipError, IntroducerClient, NodeType,
-    PeerOptions, PeerRegistration, ProtocolMessageTypes, RegisterAck, RegisterPeer,
+    LinkOptions, PeerRegistration, ProtocolMessageTypes, RegisterAck, RegisterPeer,
 };
 
 /// **Row:** `test_register_introducer_wire_message_types` — wire structs bind to **218** / **219**.
 ///
-/// **Proof:** [`Peer::request_infallible`] compares inbound [`Message::msg_type`](dig_gossip::Message) to
-/// [`RegisterAck::msg_type`]; a mismatch surfaces [`ClientError::InvalidResponse`](dig_gossip::ClientError) and would
-/// fail integration tests even if payloads accidentally round-tripped.
+/// **Proof:** `RegisterAck::from_dig_message` returns `None` unless the inbound opcode is 219,
+/// so a mismatch surfaces as `LinkError::InvalidResponse` and would fail integration tests even
+/// if payloads accidentally round-tripped.
 #[test]
 fn test_register_introducer_wire_message_types() {
-    assert_eq!(RegisterPeer::msg_type(), ProtocolMessageTypes::RegisterPeer);
-    assert_eq!(RegisterAck::msg_type(), ProtocolMessageTypes::RegisterAck);
+    // 218/219 are carried as raw DigMessage opcodes; there is no ProtocolMessageTypes
+    // variant to name them, which is why the chia-protocol fork could be deleted.
+    assert_eq!(
+        RegisterPeer::new("192.0.2.88".into(), 9555, NodeType::FullNode)
+            .to_dig_message(None)
+            .expect("encodes")
+            .msg_type,
+        dig_gossip::DigMessageType::RegisterPeer as u8
+    );
+    assert_eq!(
+        RegisterAck::new(true)
+            .to_dig_message(None)
+            .expect("encodes")
+            .msg_type,
+        dig_gossip::DigMessageType::RegisterAck as u8
+    );
 }
 
 /// **Row:** `test_register_message_type_in_dig_band` — opcodes stay in the documented DIG extension range (≥200).
 #[test]
 fn test_register_message_type_in_dig_band() {
-    assert!(u32::from(RegisterPeer::msg_type() as u8) >= 200);
-    assert!(u32::from(RegisterAck::msg_type() as u8) >= 200);
+    assert!(u32::from(dig_gossip::DigMessageType::RegisterPeer as u8) >= 200);
+    assert!(u32::from(dig_gossip::DigMessageType::RegisterAck as u8) >= 200);
 }
 
 /// **Row:** `test_register_peer_payload_roundtrip` — [`Streamable`] body encoding matches the mock server’s [`RegisterPeer::from_bytes`].
@@ -79,7 +93,7 @@ async fn test_register_introducer_success() {
     let reg = PeerRegistration {
         ip: "192.0.2.5".into(),
         port: 9555,
-        node_type: NodeType::FullNode,
+        node_type: dig_gossip::NodeType::FullNode,
     };
     let (addr, jh) = common::wss_full_node::spawn_one_shot_introducer_register(
         server_cert,
@@ -95,7 +109,7 @@ async fn test_register_introducer_success() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(10),
         &reg,
         common::TEST_SOFTWARE_VERSION,
@@ -118,7 +132,7 @@ async fn test_register_introducer_rejected() {
     let reg = PeerRegistration {
         ip: "192.0.2.6".into(),
         port: 9556,
-        node_type: NodeType::FullNode,
+        node_type: dig_gossip::NodeType::FullNode,
     };
     let (addr, jh) = common::wss_full_node::spawn_one_shot_introducer_register(
         server_cert,
@@ -134,7 +148,7 @@ async fn test_register_introducer_rejected() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(10),
         &reg,
         common::TEST_SOFTWARE_VERSION,
@@ -157,7 +171,7 @@ async fn test_register_introducer_timeout() {
     let reg = PeerRegistration {
         ip: "192.0.2.7".into(),
         port: 9557,
-        node_type: NodeType::FullNode,
+        node_type: dig_gossip::NodeType::FullNode,
     };
     let (addr, jh) = common::wss_full_node::spawn_one_shot_introducer_register(
         server_cert,
@@ -173,7 +187,7 @@ async fn test_register_introducer_timeout() {
         &uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_millis(500),
         &reg,
         common::TEST_SOFTWARE_VERSION,
@@ -199,13 +213,13 @@ async fn test_register_introducer_connect_fail() {
     let reg = PeerRegistration {
         ip: "192.0.2.1".into(),
         port: 9444,
-        node_type: NodeType::FullNode,
+        node_type: dig_gossip::NodeType::FullNode,
     };
     let err = IntroducerClient::register_with_introducer(
         uri,
         &cert,
         common::test_network_id(),
-        PeerOptions::default(),
+        LinkOptions::default(),
         Duration::from_secs(2),
         &reg,
         common::TEST_SOFTWARE_VERSION,

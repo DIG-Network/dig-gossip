@@ -27,7 +27,7 @@ fn test_lifecycle_types_exist() {
 #[test]
 fn test_io_contract_types() {
     let _ = std::any::type_name::<dig_gossip::GossipConfig>();
-    let _ = std::any::type_name::<dig_gossip::Message>();
+    let _ = std::any::type_name::<dig_gossip::DigMessage>();
     let _ = std::any::type_name::<dig_gossip::PeerId>();
     let _ = std::any::type_name::<dig_gossip::GossipStats>();
 }

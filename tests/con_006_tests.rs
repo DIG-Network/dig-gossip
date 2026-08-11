@@ -22,7 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use dig_gossip::Streamable;
-use dig_gossip::{Bytes, Message, ProtocolMessageTypes, RequestPeers};
+use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes, RequestPeers};
 
 use dig_gossip::{aggregate_peer_connection_io, message_wire_len, metric_unix_timestamp_secs};
 
@@ -47,18 +47,18 @@ async fn test_metrics_initialization() {
 }
 
 /// **Row:** `test_bytes_written_increment` — three synthetic sends with known wire sizes
-/// (CON-006 §Update on Message Send).
+/// (CON-006 §Update on DigMessage Send).
 #[tokio::test]
 async fn test_bytes_written_increment() {
     let mut pc = common::mock_peer_connection(true).await;
-    let m = |payload: &[u8]| Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let m = |payload: &[u8]| DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: Bytes::new(payload.to_vec()),
     };
-    let w1 = message_wire_len(&m(&[1, 2, 3])).expect("wire len");
-    let w2 = message_wire_len(&m(&[4; 50])).expect("wire len");
-    let w3 = message_wire_len(&m(&[])).expect("wire len");
+    let w1 = message_wire_len(&m(&[1, 2, 3]));
+    let w2 = message_wire_len(&m(&[4; 50]));
+    let w3 = message_wire_len(&m(&[]));
     pc.record_message_sent(w1);
     pc.record_message_sent(w2);
     pc.record_message_sent(w3);
@@ -71,12 +71,12 @@ async fn test_bytes_written_increment() {
 async fn test_messages_sent_increment() {
     let mut pc = common::mock_peer_connection(true).await;
     for i in 0u8..5 {
-        let msg = Message {
-            msg_type: ProtocolMessageTypes::Handshake,
+        let msg = DigMessage {
+            msg_type: ProtocolMessageTypes::Handshake as u8,
             id: None,
             data: Bytes::new(vec![i]),
         };
-        let w = message_wire_len(&msg).expect("wire len");
+        let w = message_wire_len(&msg);
         pc.record_message_sent(w);
     }
     assert_eq!(pc.messages_sent, 5);
@@ -87,12 +87,12 @@ async fn test_messages_sent_increment() {
 async fn test_bytes_read_increment() {
     let mut pc = common::mock_peer_connection(false).await;
     let now = metric_unix_timestamp_secs();
-    let m = Message {
-        msg_type: ProtocolMessageTypes::RequestPeers,
+    let m = DigMessage {
+        msg_type: ProtocolMessageTypes::RequestPeers as u8,
         id: None,
         data: RequestPeers::new().to_bytes().unwrap().into(),
     };
-    let w = message_wire_len(&m).expect("wire len");
+    let w = message_wire_len(&m);
     pc.record_message_received(w, now);
     pc.record_message_received(w, now);
     pc.record_message_received(w, now);

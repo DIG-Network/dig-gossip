@@ -3,7 +3,7 @@
 //! **Why not `Peer::from_websocket` on the server?** Upstream [`chia_sdk_client::Peer`]’s inbound
 //! dispatcher routes messages with `id` as **responses to this peer’s outbound requests**, not as
 //! requests *from* the remote client. A minimal full node that answers `RequestPeers` is therefore
-//! implemented with raw [`tokio_tungstenite`] binary frames + [`chia_protocol::Message`] parsing.
+//! implemented with raw [`tokio_tungstenite`] binary frames + [`chia_protocol::DigMessage`] parsing.
 //!
 //! **Traceability:** [`CON-001.md`](../../docs/requirements/domains/connection/specs/CON-001.md) —
 //! `test_outbound_connect_handshake` / `test_request_peers_after_connect`.
@@ -22,7 +22,7 @@ use std::net::SocketAddr;
 use dig_gossip::ChiaCertificate;
 use dig_gossip::Streamable;
 use dig_gossip::{
-    Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
+    Handshake, DigMessage, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
 };
 use dig_gossip::{RegisterAck, RegisterPeer, RequestPeersIntroducer, RespondPeersIntroducer};
 use futures_util::{SinkExt, StreamExt};
@@ -35,13 +35,13 @@ use tokio_tungstenite::{accept_async, WebSocketStream};
 /// Type alias for a TLS-wrapped WebSocket stream used by the test full-node acceptor.
 type Ws = WebSocketStream<tokio_native_tls::TlsStream<tokio::net::TcpStream>>;
 
-/// Read the next Chia [`Message`] from a WebSocket stream, handling Ping/Pong transparently.
+/// Read the next Chia [`DigMessage`] from a WebSocket stream, handling Ping/Pong transparently.
 ///
-/// Binary frames are decoded as `Message::from_bytes`; Ping frames receive automatic Pong
+/// Binary frames are decoded as `DigMessage::from_bytes`; Ping frames receive automatic Pong
 /// replies (WebSocket keepalive). Close frames and unexpected frame types are treated as errors.
 ///
 /// Used internally by [`serve_one_client`] to drive the handshake + RequestPeers sequence.
-async fn next_chia_message(ws: &mut Ws) -> Result<Message, String> {
+async fn next_chia_message(ws: &mut Ws) -> Result<DigMessage, String> {
     loop {
         let raw = ws
             .next()
@@ -50,7 +50,7 @@ async fn next_chia_message(ws: &mut Ws) -> Result<Message, String> {
             .map_err(|e| e.to_string())?;
         match raw {
             WsMsg::Binary(bin) => {
-                return Message::from_bytes(&bin).map_err(|e| e.to_string());
+                return DigMessage::from_bytes(&bin).ok_or_else(|| "malformed frame".to_string());
             }
             WsMsg::Ping(p) => {
                 ws.send(WsMsg::Pong(p)).await.map_err(|e| e.to_string())?;
@@ -83,7 +83,7 @@ async fn serve_one_client(
     // Step 1: Receive and validate the client's Handshake.
     // SPEC §5.2 step 5 — receive Handshake, validate network_id.
     let first = next_chia_message(&mut ws).await?;
-    if first.msg_type != ProtocolMessageTypes::Handshake {
+    if first.msg_type != (ProtocolMessageTypes::Handshake as u8) {
         return Err(format!("expected Handshake, got {:?}", first.msg_type));
     }
     let hs = Handshake::from_bytes(&first.data).map_err(|e| e.to_string())?;
@@ -102,34 +102,34 @@ async fn serve_one_client(
         protocol_version: "0.0.37".to_string(),
         software_version: "dig-gossip-test-fullnode/0".to_string(),
         server_port: 0,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     };
-    let out = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::Handshake as u8),
         id: None,
         data: reply_hs.to_bytes().map_err(|e| e.to_string())?.into(),
     };
-    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+    ws.send(WsMsg::Binary(out.to_bytes()))
         .await
         .map_err(|e| e.to_string())?;
 
     // Step 3: Receive RequestPeers from client (CON-001 sends this immediately after handshake).
     // SPEC §1.6#1 — peer exchange on outbound connect: send RequestPeers to discover more peers.
     let second = next_chia_message(&mut ws).await?;
-    if second.msg_type != ProtocolMessageTypes::RequestPeers {
+    if second.msg_type != (ProtocolMessageTypes::RequestPeers as u8) {
         return Err(format!("expected RequestPeers, got {:?}", second.msg_type));
     }
     // Step 4: Reply with RespondPeers containing the test's peer_list.
     // SPEC §6.6 — peer exchange via chia-protocol::RequestPeers / RespondPeers.
     // SPEC §1.5#5 — request/response correlation: id field MUST match for SDK's RequestMap.
     let resp = RespondPeers::new(peer_list);
-    let out = Message {
-        msg_type: ProtocolMessageTypes::RespondPeers,
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::RespondPeers as u8),
         id: second.id,
         data: resp.to_bytes().map_err(|e| e.to_string())?.into(),
     };
-    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+    ws.send(WsMsg::Binary(out.to_bytes()))
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -185,7 +185,7 @@ async fn serve_introducer_one_client(
     stall_after_request_peers_introducer: bool,
 ) -> Result<(), String> {
     let first = next_chia_message(&mut ws).await?;
-    if first.msg_type != ProtocolMessageTypes::Handshake {
+    if first.msg_type != (ProtocolMessageTypes::Handshake as u8) {
         return Err(format!("expected Handshake, got {:?}", first.msg_type));
     }
     let hs = Handshake::from_bytes(&first.data).map_err(|e| e.to_string())?;
@@ -211,20 +211,20 @@ async fn serve_introducer_one_client(
         protocol_version: "0.0.37".to_string(),
         software_version: "dig-gossip-test-introducer/0".to_string(),
         server_port: 0,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     };
-    let out = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::Handshake as u8),
         id: None,
         data: reply_hs.to_bytes().map_err(|e| e.to_string())?.into(),
     };
-    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+    ws.send(WsMsg::Binary(out.to_bytes()))
         .await
         .map_err(|e| e.to_string())?;
 
     let third = next_chia_message(&mut ws).await?;
-    if third.msg_type != ProtocolMessageTypes::RequestPeersIntroducer {
+    if third.msg_type != (ProtocolMessageTypes::RequestPeersIntroducer as u8) {
         return Err(format!(
             "expected RequestPeersIntroducer, got {:?}",
             third.msg_type
@@ -238,12 +238,12 @@ async fn serve_introducer_one_client(
     }
 
     let resp = RespondPeersIntroducer::new(peer_list);
-    let out = Message {
-        msg_type: ProtocolMessageTypes::RespondPeersIntroducer,
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::RespondPeersIntroducer as u8),
         id: third.id,
         data: resp.to_bytes().map_err(|e| e.to_string())?.into(),
     };
-    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+    ws.send(WsMsg::Binary(out.to_bytes()))
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -300,7 +300,7 @@ async fn serve_introducer_register_one_client(
     stall_after_register_peer: bool,
 ) -> Result<(), String> {
     let first = next_chia_message(&mut ws).await?;
-    if first.msg_type != ProtocolMessageTypes::Handshake {
+    if first.msg_type != (ProtocolMessageTypes::Handshake as u8) {
         return Err(format!("expected Handshake, got {:?}", first.msg_type));
     }
     let hs = Handshake::from_bytes(&first.data).map_err(|e| e.to_string())?;
@@ -326,20 +326,20 @@ async fn serve_introducer_register_one_client(
         protocol_version: "0.0.37".to_string(),
         software_version: "dig-gossip-test-introducer-register/0".to_string(),
         server_port: 0,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     };
-    let out = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::Handshake as u8),
         id: None,
         data: reply_hs.to_bytes().map_err(|e| e.to_string())?.into(),
     };
-    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+    ws.send(WsMsg::Binary(out.to_bytes()))
         .await
         .map_err(|e| e.to_string())?;
 
     let third = next_chia_message(&mut ws).await?;
-    if third.msg_type != ProtocolMessageTypes::RegisterPeer {
+    if third.msg_type != (dig_gossip::DigMessageType::RegisterPeer as u8) {
         return Err(format!("expected RegisterPeer, got {:?}", third.msg_type));
     }
     let req = RegisterPeer::from_bytes(&third.data).map_err(|e| e.to_string())?;
@@ -358,12 +358,12 @@ async fn serve_introducer_register_one_client(
     }
 
     let resp = RegisterAck::new(ack_success);
-    let out = Message {
-        msg_type: ProtocolMessageTypes::RegisterAck,
+    let out = DigMessage {
+        msg_type: (dig_gossip::DigMessageType::RegisterAck as u8),
         id: third.id,
         data: resp.to_bytes().map_err(|e| e.to_string())?.into(),
     };
-    ws.send(WsMsg::Binary(out.to_bytes().map_err(|e| e.to_string())?))
+    ws.send(WsMsg::Binary(out.to_bytes()))
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

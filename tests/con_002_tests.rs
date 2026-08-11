@@ -24,7 +24,7 @@ use std::time::Duration;
 use dig_gossip::Streamable;
 use dig_gossip::{
     create_native_tls_connector, load_ssl_cert, Bytes32, GossipHandle, GossipService, Handshake,
-    Message, NodeType, PeerId, ProtocolMessageTypes, RespondPeers,
+    DigMessage, NodeType, PeerId, ProtocolMessageTypes, RespondPeers,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMsg;
@@ -209,15 +209,15 @@ async fn test_inbound_network_id_reject() {
         protocol_version: "0.0.37".to_string(),
         software_version: "test/1".to_string(),
         server_port: 0,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     };
-    let wire = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
+    let wire = DigMessage {
+        msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
         data: hs.to_bytes().expect("hs").into(),
     };
-    ws.send(WsMsg::Binary(wire.to_bytes().expect("msg")))
+    ws.send(WsMsg::Binary(wire.to_bytes()))
         .await
         .ok();
 
@@ -336,7 +336,7 @@ async fn test_inbound_peer_info_relay() {
         let Ok((_sender, msg)) = sub.recv().await else {
             break;
         };
-        if msg.msg_type == ProtocolMessageTypes::RespondPeers {
+        if msg.msg_type == ProtocolMessageTypes::RespondPeers as u8 {
             let body = RespondPeers::from_bytes(&msg.data).expect("RespondPeers");
             // The relay should contain exactly the second peer's address.
             if body.peer_list.len() == 1 && body.peer_list[0].host == "127.0.0.1" {

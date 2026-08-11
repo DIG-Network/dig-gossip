@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use dig_gossip::ChiaCertificate;
 use dig_gossip::{
-    peer_id_from_tls_spki_der, Message, NodeType, Peer, PeerId, PeerOptions, PeerReputation,
+    peer_id_from_tls_spki_der, DigMessage, NodeType, DigLink, PeerId, LinkOptions, PeerReputation,
     ProtocolMessageTypes, RequestPeers,
 };
 use tokio::net::TcpListener;
@@ -36,8 +36,8 @@ use x509_parser::pem::parse_x509_pem;
 ///
 /// Used by: `test_inbound_rx_receives_messages` to verify wire send/recv across paired handles.
 async fn loopback_ws_peers() -> (
-    (Peer, tokio::sync::mpsc::Receiver<Message>),
-    (Peer, tokio::sync::mpsc::Receiver<Message>),
+    (DigLink, tokio::sync::mpsc::Receiver<DigMessage>),
+    (DigLink, tokio::sync::mpsc::Receiver<DigMessage>),
 ) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -49,13 +49,13 @@ async fn loopback_ws_peers() -> (
         let ws = accept_async(MaybeTlsStream::Plain(tcp))
             .await
             .expect("ws accept");
-        Peer::from_websocket(ws, PeerOptions::default()).expect("server Peer::from_websocket")
+        DigLink::from_websocket(ws, LinkOptions::default()).expect("server DigLink::from_websocket")
     };
 
     let client = async {
         let url = format!("ws://127.0.0.1:{}/", addr.port());
         let (ws, _) = connect_async(url.as_str()).await.expect("ws connect");
-        Peer::from_websocket(ws, PeerOptions::default()).expect("client Peer::from_websocket")
+        DigLink::from_websocket(ws, LinkOptions::default()).expect("client DigLink::from_websocket")
     };
 
     let (server_res, client_res) = tokio::join!(server, client);
@@ -69,7 +69,7 @@ async fn loopback_ws_peers() -> (
 #[tokio::test]
 async fn test_peer_connection_all_fields() {
     let pc = common::mock_peer_connection(true).await;
-    let _: Peer = pc.peer;
+    let _: DigLink = pc.peer;
     let _: PeerId = pc.peer_id;
     let _ = pc.address;
     assert!(pc.is_outbound);
@@ -85,7 +85,7 @@ async fn test_peer_connection_all_fields() {
     let _: u64 = pc.messages_received;
     let _: u64 = pc.last_message_time;
     let _: PeerReputation = pc.reputation.clone();
-    let _: tokio::sync::mpsc::Receiver<Message> = pc.inbound_rx;
+    let _: tokio::sync::mpsc::Receiver<DigMessage> = pc.inbound_rx;
 }
 
 /// **Row:** `test_peer_connection_initial_bytes`
@@ -178,7 +178,7 @@ async fn test_inbound_rx_receives_messages() {
         .expect("recv timed out")
         .expect("inbound channel must stay open");
 
-    assert_eq!(msg.msg_type, ProtocolMessageTypes::RequestPeers);
+    assert_eq!(msg.msg_type, ProtocolMessageTypes::RequestPeers as u8);
 
     drop(sp);
     drop(cp);

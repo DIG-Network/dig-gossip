@@ -39,7 +39,7 @@ fn handshake_with_version(network_id: &str, software_version: String) -> Handsha
         protocol_version: "0.0.37".to_string(),
         software_version,
         server_port: 8444,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     }
 }
