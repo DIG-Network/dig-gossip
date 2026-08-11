@@ -11,7 +11,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 - [x] STR-001 — Cargo.toml with chia crate dependencies, feature gates, and metadata
 - [x] STR-002 — Module hierarchy (`src/lib.rs` root, submodule layout matching SPEC Section 10.1)
-- [x] STR-003 — Re-export strategy (chia-protocol, chia-sdk-client, chia-ssl types)
+- [x] STR-003 — Re-export strategy (dig-peer-protocol, and the chia-* types it re-exports)
 - [x] STR-004 — Feature flags (native-tls, rustls, relay, erlay, compact-blocks)
 - [x] STR-005 — Test infrastructure (`tests/` layout, helpers, mock peer harness)
 
@@ -21,7 +21,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 - [x] API-002 — GossipHandle type (broadcast, send_to, request, inbound_receiver, stats)
 - [x] API-003 — GossipConfig struct (listen_addr, peer_id, network_id, network, targets, bootstrap)
 - [x] API-004 — GossipError enum (wraps ClientError, peer errors, discovery errors, relay errors)
-- [x] API-005 — PeerConnection struct (wraps chia-sdk-client::Peer with gossip metadata)
+- [x] API-005 — PeerConnection struct (wraps dig_peer_protocol::DigLink with gossip metadata)
 - [x] API-006 — PeerReputation and PenaltyReason (penalty accumulation, ban threshold, auto-unban)
 - [x] API-007 — PeerId type alias and PeerInfo with get_group()/get_key()
 - [x] API-008 — GossipStats and RelayStats structs
@@ -31,7 +31,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 ## Phase 2: Connection Lifecycle
 
-- [x] CON-001 — Outbound connection via chia-sdk-client connect_peer()
+- [x] CON-001 — Outbound connection: handshake over the raw WebSocket, then DigLink
 - [x] CON-002 — Inbound connection listener (TcpListener + TLS accept + Peer::from_websocket)
 - [x] CON-003 — Handshake validation (network_id match, protocol_version compat)
 - [x] CON-004 — Keepalive (Ping/Pong, timeout detection at PEER_TIMEOUT_SECS)
@@ -45,7 +45,7 @@ After completing a requirement: write tests, verify they pass, update TRACKING.y
 
 - [x] DSC-001 — AddressManager with tried/new tables (Rust port of address_manager.py)
 - [x] DSC-002 — Address manager persistent serialization (save/load to peers file)
-- [x] DSC-003 — DNS seeding via chia-sdk-client Network::lookup_all()
+- [x] DSC-003 — DNS seeding via the re-exported Network::lookup_all()
 - [x] DSC-004 — Introducer query (RequestPeersIntroducer flow)
 - [x] DSC-005 — Introducer registration (DIG extension: register_peer)
 - [x] DSC-006 — Discovery loop with DNS-first then introducer with exponential backoff
