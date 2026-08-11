@@ -588,9 +588,7 @@ impl GossipHandle {
             }
         };
         if let Some(p) = maybe_live {
-            p.send_message(msg)
-                .await
-                .map_err(GossipError::from)?;
+            p.send_message(msg).await.map_err(GossipError::from)?;
             record_live_peer_outbound_bytes(&self.inner, peer_id, wire_len);
         } else {
             self.inner
@@ -1016,12 +1014,16 @@ impl GossipHandle {
                             continue;
                         }
                         {
-                        let wl_in = message_wire_len(&msg);
+                            let wl_in = message_wire_len(&msg);
                             record_live_peer_inbound_bytes(&state_fwd, pid_task, wl_in);
                         }
                         if msg.msg_type == chia_opcodes::REQUEST_PEERS {
                             if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
-                                let reply = DigMessage::new(chia_opcodes::RESPOND_PEERS, msg.id, body.into());
+                                let reply = DigMessage::new(
+                                    chia_opcodes::RESPOND_PEERS,
+                                    msg.id,
+                                    body.into(),
+                                );
                                 let wl_out = Some(message_wire_len(&reply));
                                 let _ = peer_rpc.send_message(reply).await;
                                 if let Some(w) = wl_out {

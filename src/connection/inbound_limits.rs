@@ -136,9 +136,9 @@ impl InboundRateLimiter {
 /// enum to prove it). It is the single source of truth for the SET of flood opcodes the #1626/#1796
 /// penalty exemption applies to (the exemption itself is further narrowed to RATE violations — see
 /// [`rejected_frame_incurs_penalty`]).
-pub(crate) fn is_public_flood_opcode(msg_type: ProtocolMessageTypes) -> bool {
+pub(crate) fn is_public_flood_opcode(msg_type: u8) -> bool {
     matches!(
-        msg_type as u8,
+        msg_type,
         crate::service::store_melted::STORE_MELTED
             | crate::service::holdings_announce::HOLDINGS_ANNOUNCE
     )

@@ -47,7 +47,10 @@ mod tests {
         ] {
             let encoded = variant.to_bytes().expect("opcode encodes");
             assert_eq!(encoded.len(), 1, "{name} encodes to exactly one byte");
-            assert_eq!(encoded[0], constant, "{name} constant matches the wire byte");
+            assert_eq!(
+                encoded[0], constant,
+                "{name} constant matches the wire byte"
+            );
         }
     }
 }

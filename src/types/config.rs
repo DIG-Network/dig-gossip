@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chia_protocol::Bytes32;
-use dig_peer_protocol::{Network, LinkOptions};
+use dig_peer_protocol::{LinkOptions, Network};
 use serde::{Deserialize, Serialize};
 
 use super::peer::PeerId;

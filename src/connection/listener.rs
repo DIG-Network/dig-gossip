@@ -708,8 +708,8 @@ where
             .into(),
     );
     ws.send(WsMsg::Binary(reply.to_bytes()))
-    .await
-    .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
+        .await
+        .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
 
     // CON-003: remote_software_version_sanitized was computed *before* our reply was sent.
     // This means we validate-then-respond, never the reverse — a malformed remote version
@@ -737,8 +737,8 @@ where
             resp.to_bytes().map_err(ClientError::Streamable)?.into(),
         );
         ws.send(WsMsg::Binary(out.to_bytes()))
-        .await
-        .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
+            .await
+            .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
     }
 
     // --- Phase 5: Register in the address manager (DSC-001 new-table bucketing) ---
@@ -868,7 +868,8 @@ where
                     }
                     if msg.msg_type == chia_opcodes::REQUEST_PEERS {
                         if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
-                            let reply = DigMessage::new(chia_opcodes::RESPOND_PEERS, msg.id, body.into());
+                            let reply =
+                                DigMessage::new(chia_opcodes::RESPOND_PEERS, msg.id, body.into());
                             let wl_out = Some(message_wire_len(&reply));
                             let _ = peer_rpc.send_message(reply).await;
                             if let Some(w) = wl_out {
