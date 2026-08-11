@@ -665,6 +665,8 @@ dependencies = [
 [[package]]
 name = "chia-protocol"
 version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9256179e4c912313532d7a47a50f67f6128313ee86a3798e54050afb73d6042"
 dependencies = [
  "chia-bls 0.26.0",
  "chia-sha2 0.26.0",
@@ -706,6 +708,8 @@ dependencies = [
 [[package]]
 name = "chia-sdk-client"
 version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bc22c29cc7562e9b65bf4d02bd0881657f1628dca84ad5b40d87a912e8a0f5d"
 dependencies = [
  "aws-lc-rs",
  "chia-protocol",

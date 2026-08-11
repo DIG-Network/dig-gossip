@@ -62,9 +62,9 @@ use x509_parser::prelude::{FromDer, SubjectPublicKeyInfo};
 /// Canonical value **222** — the third opcode of the 220-255 "free" band, after
 /// [`DIG_MESSAGE`](crate::service::dig_message::DIG_MESSAGE)`= 220` and
 /// [`STORE_MELTED`](crate::service::store_melted::STORE_MELTED)`= 221`. Mirrors
-/// [`ProtocolMessageTypes::HoldingsAnnounce`]. This value is a cross-repo canonical
-/// constant (dig-node pins it to decode the broadcast) — it MUST NOT drift.
-pub const HOLDINGS_ANNOUNCE: u8 = ProtocolMessageTypes::HoldingsAnnounce as u8;
+/// [`dig_peer_protocol::HOLDINGS_ANNOUNCE`], which is the single definition. This value is a
+/// cross-repo canonical constant (dig-node pins it to decode the broadcast) — it MUST NOT drift.
+pub const HOLDINGS_ANNOUNCE: u8 = dig_peer_protocol::HOLDINGS_ANNOUNCE;
 
 /// Domain-separation tag for the `holdings-announce` signing message.
 ///

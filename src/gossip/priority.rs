@@ -58,13 +58,7 @@ impl MessagePriority {
             | RespondPeers
             | RequestMempoolTransactions
             | RequestPeersIntroducer
-            | RespondPeersIntroducer
-            // StoreMelted (opcode 221): a small, infrequent public broadcast — never
-            // consensus-critical, so it rides the bulk lane (#1316).
-            | StoreMelted
-            // HoldingsAnnounce (opcode 222): a small, periodic public discovery broadcast —
-            // never consensus-critical, so it rides the bulk lane (#1428).
-            | HoldingsAnnounce => Self::Bulk,
+            | RespondPeersIntroducer => Self::Bulk,
 
             // Default for any unclassified type
             _ => Self::Normal,

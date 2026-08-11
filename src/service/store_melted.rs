@@ -51,9 +51,9 @@ use sha2::{Digest, Sha256};
 ///
 /// Canonical value **221** — the second opcode of the 220-255 "free" band, after
 /// [`DIG_MESSAGE`](crate::service::dig_message::DIG_MESSAGE)`= 220`. Mirrors
-/// [`ProtocolMessageTypes::StoreMelted`]. This value is a cross-repo canonical
-/// constant (dig-node pins it to decode the broadcast) — it MUST NOT drift.
-pub const STORE_MELTED: u8 = ProtocolMessageTypes::StoreMelted as u8;
+/// [`dig_peer_protocol::STORE_MELTED`], which is the single definition. This value is a
+/// cross-repo canonical constant (dig-node pins it to decode the broadcast) — it MUST NOT drift.
+pub const STORE_MELTED: u8 = dig_peer_protocol::STORE_MELTED;
 
 /// Domain-separation tag for the `store-melted` signature preimage.
 ///
