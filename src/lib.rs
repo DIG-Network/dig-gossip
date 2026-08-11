@@ -6,7 +6,7 @@
 //!
 //! `dig-gossip` handles peer discovery, connection management, and message routing
 //! between DIG full nodes. It accepts application-level payloads (blocks, transactions,
-//! attestations) as opaque `Message` bytes and delivers them to connected peers via
+//! attestations) as opaque `DigMessage` bytes and delivers them to connected peers via
 //! a Chia-compatible gossip protocol enhanced with Plumtree, ERLAY, priority lanes,
 //! compact blocks, Dandelion++ privacy, and relay fallback.
 //!
@@ -46,8 +46,8 @@
 //! | Direction | Type | Description |
 //! |-----------|------|-------------|
 //! | **In** | [`GossipConfig`] | All configuration (ports, TLS, discovery, relay) |
-//! | **In** | [`Message`] via [`GossipHandle::broadcast()`] | Payload to send to peers |
-//! | **Out** | `(PeerId, Message)` via [`GossipHandle::inbound_receiver()`] | Received payloads |
+//! | **In** | [`DigMessage`] via [`GossipHandle::broadcast()`] | Payload to send to peers |
+//! | **Out** | `(PeerId, DigMessage)` via [`GossipHandle::inbound_receiver()`] | Received payloads |
 //! | **Out** | [`GossipStats`] via [`GossipHandle::stats()`] | Network metrics |
 //!
 //! ## Feature Flags
@@ -177,7 +177,7 @@ pub use dig_peer_protocol::{
     load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
     RateLimiter, RateLimits, V2_RATE_LIMITS,
 };
-use dig_peer_protocol::{Bytes, ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, ChiaProtocolMessage, DigMessage, NodeType, ProtocolMessageTypes};
 
 // -- Feature-gated public types --
 #[cfg(feature = "native-tls")]

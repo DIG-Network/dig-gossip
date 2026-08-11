@@ -39,7 +39,7 @@
 //! enum [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes) does **not** define separate
 //! application-level Ping/Pong message types — Chia’s networking docs describe **WebSocket** library
 //! heartbeats for transport liveness. Upstream [`dig_peer_protocol::Peer`](dig_peer_protocol::Peer)’s
-//! inbound loop discards raw WS control frames (`Ping`/`Pong`) before they become [`Message`](chia_protocol::Message)s.
+//! inbound loop discards raw WS control frames (`Ping`/`Pong`) before they become [`DigMessage`](chia_protocol::DigMessage)s.
 //!
 //! **DIG policy:** we treat a successful **`RequestPeers` → `RespondPeers`** round-trip as the
 //! observable keepalive probe (same Chia types already used right after outbound connect in
@@ -218,7 +218,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u
         // between `start` and success includes serialization, network, and
         // deserialization — giving a realistic end-to-end RTT sample.
         let start = std::time::Instant::now();
-        // `request_raw` returns the full wire [`Message`] so CON-006 can meter exact serialized
+        // `request_raw` returns the full wire [`DigMessage`] so CON-006 can meter exact serialized
         // inbound bytes (same framing as the forwarder path). `request_infallible` only yields the
         // decoded body and would hide the length we need for `bytes_read`.
         let probe = peer.request_raw(RequestPeers::new());

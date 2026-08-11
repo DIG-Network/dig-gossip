@@ -68,7 +68,7 @@ use chia_protocol::{Handshake, RespondPeers, TimestampedPeerInfo};
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
 use dig_peer_protocol::{ClientError, Peer, PeerOptions};
-use dig_peer_protocol::{Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{DigMessage, NodeType, ProtocolMessageTypes};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -572,7 +572,7 @@ async fn relay_new_peer_to_live_peers(
     Ok(())
 }
 
-/// Read the next Chia [`Message`] from a raw [`WebSocketStream`] (ping/pong passthrough).
+/// Read the next Chia [`DigMessage`] from a raw [`WebSocketStream`] (ping/pong passthrough).
 ///
 /// **Why defer `Peer::from_websocket` until after one `RequestPeers` on the raw socket?** The first
 /// outbound packet from [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle::connect_to)
@@ -580,7 +580,7 @@ async fn relay_new_peer_to_live_peers(
 /// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives use the vendored
 /// [`chia_sdk_client`] patch (`vendor/chia-sdk-client`): inbound `RequestPeers` is forwarded to the
 /// application and answered with [`Peer::send_protocol_message`](dig_peer_protocol::Peer::send_protocol_message).
-async fn read_next_wire_message<S>(ws: &mut WebSocketStream<S>) -> Result<Message, ClientError>
+async fn read_next_wire_message<S>(ws: &mut WebSocketStream<S>) -> Result<DigMessage, ClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -588,7 +588,7 @@ where
         let raw = ws.next().await.ok_or(ClientError::MissingHandshake)??;
         match raw {
             WsMsg::Binary(bin) => {
-                return Message::from_bytes(&bin).map_err(ClientError::Streamable);
+                return DigMessage::from_bytes(&bin).map_err(ClientError::Streamable);
             }
             WsMsg::Ping(p) => {
                 ws.send(WsMsg::Pong(p))
@@ -683,7 +683,7 @@ where
             (3, "1".to_string()), // RATE_LIMITS_V2
         ],
     };
-    let reply = Message {
+    let reply = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake,
         id: None, // Handshakes have no correlation id in the Chia wire protocol.
         data: our_handshake
@@ -717,7 +717,7 @@ where
         // Reply with an empty peer list for now. Future DSC-* requirements will populate this
         // from the address manager's tried/new tables.
         let resp = RespondPeers::new(vec![]);
-        let out = Message {
+        let out = DigMessage {
             msg_type: ProtocolMessageTypes::RespondPeers,
             id: second.id, // Preserve correlation id so the outbound Peer reader can match it.
             data: resp.to_bytes().map_err(ClientError::Streamable)?.into(),
@@ -827,10 +827,10 @@ where
 
     // --- Phase 9: Bridge inbound wire messages into the service broadcast channel ---
     // CON-005: [`InboundRateLimiter::allows`] must approve each frame before CON-004 keepalive
-    // auto-replies and before the `(PeerId, Message)` publish.
+    // auto-replies and before the `(PeerId, DigMessage)` publish.
     if let Ok(guard) = state.inbound_tx.lock() {
         if let Some(tx_b) = guard.as_ref() {
-            let tx: broadcast::Sender<(PeerId, Message)> = tx_b.clone();
+            let tx: broadcast::Sender<(PeerId, DigMessage)> = tx_b.clone();
             let pid_task = peer_id;
             // This session's generation — so a rate-limit trip cannot penalize a later reconnect (#1691).
             let gen_task = generation;
@@ -855,7 +855,7 @@ where
                     }
                     if msg.msg_type == ProtocolMessageTypes::RequestPeers {
                         if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
-                            let reply = Message {
+                            let reply = DigMessage {
                                 msg_type: ProtocolMessageTypes::RespondPeers,
                                 id: msg.id,
                                 data: body.into(),

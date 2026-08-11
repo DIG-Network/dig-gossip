@@ -46,7 +46,7 @@
 use chia_protocol::{RequestPeers, RespondPeers, TimestampedPeerInfo};
 use dig_nat::SafeText;
 use dig_peer_protocol::Peer;
-use dig_peer_protocol::{ChiaProtocolMessage, Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{ChiaProtocolMessage, DigMessage, NodeType, ProtocolMessageTypes};
 
 use crate::discovery::introducer_client::{
     load_local_certificate_for_introducer, IntroducerClient, PeerRegistration,
@@ -202,7 +202,9 @@ impl GossipHandle {
     /// - [`GossipError::ChannelClosed`] — internal mutex poisoned (should not happen in practice).
     ///
     /// See: `docs/requirements/domains/crate_api/specs/API-002.md` — `inbound_receiver`
-    pub fn inbound_receiver(&self) -> Result<broadcast::Receiver<(PeerId, Message)>, GossipError> {
+    pub fn inbound_receiver(
+        &self,
+    ) -> Result<broadcast::Receiver<(PeerId, DigMessage)>, GossipError> {
         self.require_running()?;
         // Short lock: grab the broadcast Sender, then immediately subscribe (subscribe() is O(1)).
         let g = self
@@ -218,7 +220,7 @@ impl GossipHandle {
     // Messaging — broadcast / send / request
     // ------------------------------------------------------------------
 
-    /// Broadcast a wire [`Message`] to every connected peer (optionally excluding one).
+    /// Broadcast a wire [`DigMessage`] to every connected peer (optionally excluding one).
     ///
     /// Returns the number of peers that **would** receive the message. With zero connected
     /// peers the return value is `Ok(0)` — this is explicitly **not** an error (API-002
@@ -227,7 +229,7 @@ impl GossipHandle {
     /// # Wire behaviour (CON-001+ / CON-006)
     ///
     /// **Live** peers receive [`Peer::send_protocol_message`](dig_peer_protocol::Peer::send_protocol_message)
-    /// with a cloned [`Message`]; each successful send increments that slot’s CON-006 counters by the
+    /// with a cloned [`DigMessage`]; each successful send increments that slot’s CON-006 counters by the
     /// shared serialized length. **Stub** peers do not have a transport — the legacy
     /// [`ServiceState::messages_sent`] / [`ServiceState::bytes_sent`] atomics record the same
     /// fan-out counts so API-008 stub tests remain stable.
@@ -246,7 +248,7 @@ impl GossipHandle {
     /// See: `docs/requirements/domains/crate_api/specs/API-002.md` — `broadcast`
     pub async fn broadcast(
         &self,
-        message: Message,
+        message: DigMessage,
         exclude: Option<PeerId>,
     ) -> Result<usize, GossipError> {
         self.require_running()?;
@@ -357,7 +359,7 @@ impl GossipHandle {
     ///
     /// This is the recommended entry point for application-level broadcasts — callers work with
     /// concrete Chia protocol types (e.g. `NewPeak`, `NewTransaction`) rather than raw
-    /// [`Message`] bytes.
+    /// [`DigMessage`] bytes.
     ///
     /// # Errors
     ///
@@ -452,8 +454,8 @@ impl GossipHandle {
     /// Send a directed dig-message **envelope** to a single peer over opcode 220.
     ///
     /// dig-gossip is the transport only: `envelope` is carried as **opaque bytes**
-    /// in the `Message.data` field — dig-gossip never seals, opens, or parses it.
-    /// `correlation_id` maps to `Message.id` (pairs a streaming exchange or a
+    /// in the `DigMessage.data` field — dig-gossip never seals, opens, or parses it.
+    /// `correlation_id` maps to `DigMessage.id` (pairs a streaming exchange or a
     /// request/response); pass `None` for fire-and-forget. See
     /// [`crate::service::dig_message`] for the seam overview.
     ///
@@ -478,7 +480,7 @@ impl GossipHandle {
     /// The streaming *state machine* (windowing, backpressure, timeouts) is
     /// dig-message's (WU4); this helper only frames + delivers the OPEN marker.
     /// All frames of one stream share `stream_id` (mapped to the low 16 bits of
-    /// `Message.id` for cheap correlation).
+    /// `DigMessage.id` for cheap correlation).
     ///
     /// # Errors
     ///
@@ -550,7 +552,7 @@ impl GossipHandle {
             .await
     }
 
-    /// Deliver a pre-built directed [`Message`] to a single live peer.
+    /// Deliver a pre-built directed [`DigMessage`] to a single live peer.
     ///
     /// Shared by the dig-message seam helpers: runs the ban check, resolves the
     /// live [`Peer`], and sends over its WebSocket. Stub / NAT-only pool members
@@ -559,7 +561,7 @@ impl GossipHandle {
     async fn send_directed_message(
         &self,
         peer_id: PeerId,
-        msg: Message,
+        msg: DigMessage,
     ) -> Result<(), GossipError> {
         self.require_running()?;
         let wire_len = message_wire_len(&msg).map_err(GossipError::from)?;
@@ -1017,7 +1019,7 @@ impl GossipHandle {
                         }
                         if msg.msg_type == ProtocolMessageTypes::RequestPeers {
                             if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
-                                let reply = Message {
+                                let reply = DigMessage {
                                     msg_type: ProtocolMessageTypes::RespondPeers,
                                     id: msg.id,
                                     data: body.into(),
@@ -2446,7 +2448,7 @@ impl GossipHandle {
     ///
     /// **CON-006:** `messages_*` / `bytes_*` are **`sum(live per-slot [`PeerConnectionWireMetrics`]) +
     /// stub/synthetic atomics`** on [`ServiceState`] — live TLS paths meter exact serialized
-    /// [`Message`] sizes; stub [`PeerSlot::Stub`] rows and [`__inject_inbound_for_tests`] still
+    /// [`DigMessage`] sizes; stub [`PeerSlot::Stub`] rows and [`__inject_inbound_for_tests`] still
     /// use the lock-free counters (API-008 pre-CON-006 behaviour preserved for tests).
     pub async fn stats(&self) -> GossipStats {
         let (live_ms, live_mr, live_bw, live_br) = sum_live_peer_wire_metrics(&self.inner);
@@ -2678,7 +2680,7 @@ impl GossipHandle {
     pub fn __inject_inbound_for_tests(
         &self,
         sender: PeerId,
-        message: Message,
+        message: DigMessage,
     ) -> Result<(), GossipError> {
         self.require_running()?;
         let g = self
@@ -2751,15 +2753,25 @@ pub fn pool_auto_dial_traversal_methods() -> Vec<dig_nat::TraversalKind> {
     vec![Direct, Upnp, NatPmp, Pcp, HolePunch, Relayed]
 }
 
-fn encode_message<T: Streamable + ChiaProtocolMessage>(body: &T) -> Result<Message, GossipError> {
-    Ok(Message {
-        msg_type: T::msg_type(),
-        id: None,
-        data: body
-            .to_bytes()
-            .map_err(|e| GossipError::from(dig_peer_protocol::ClientError::Streamable(e)))?
-            .into(),
-    })
+fn encode_message<T: Streamable + ChiaProtocolMessage>(
+    body: &T,
+) -> Result<DigMessage, GossipError> {
+    let to_gossip_error = |e| GossipError::from(dig_peer_protocol::ClientError::Streamable(e));
+    // A Chia opcode's wire byte is the single-byte `Streamable` encoding of its
+    // `ProtocolMessageTypes` discriminant -- the same derivation `DigLink::send` uses, so a
+    // frame built here is indistinguishable from one the link builds itself.
+    let opcode = *T::msg_type()
+        .to_bytes()
+        .map_err(to_gossip_error)?
+        .first()
+        .ok_or_else(|| {
+            GossipError::Internal("protocol message type encoded to zero bytes".into())
+        })?;
+    Ok(DigMessage::new(
+        opcode,
+        None,
+        body.to_bytes().map_err(to_gossip_error)?.into(),
+    ))
 }
 
 fn empty_respond_peers() -> Result<RespondPeers, GossipError> {

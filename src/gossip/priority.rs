@@ -1,4 +1,4 @@
-//! Message priority lanes and per-connection queues (**PRI-001** through **PRI-004**).
+//! DigMessage priority lanes and per-connection queues (**PRI-001** through **PRI-004**).
 //!
 //! # Requirements
 //!
@@ -6,7 +6,7 @@
 //! - **PRI-002** — PriorityOutbound: three VecDeque per connection
 //! - **PRI-003** — Drain order: critical → normal → one bulk
 //! - **PRI-004** — Starvation prevention: 1 bulk per PRIORITY_STARVATION_RATIO
-//! - **Master SPEC:** §8.4 (Message Priority Lanes)
+//! - **Master SPEC:** §8.4 (DigMessage Priority Lanes)
 //!
 //! # Design
 //!
@@ -16,11 +16,11 @@
 
 use std::collections::VecDeque;
 
-use dig_peer_protocol::{Message, ProtocolMessageTypes};
+use dig_peer_protocol::{DigMessage, ProtocolMessageTypes};
 
 use crate::constants::PRIORITY_STARVATION_RATIO;
 
-/// Message priority level (**PRI-001**).
+/// DigMessage priority level (**PRI-001**).
 ///
 /// SPEC §8.4: "Critical = always first. Normal = after critical. Bulk = last."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -101,9 +101,9 @@ impl MessagePriority {
 /// SPEC §8.4: "PriorityOutbound: three VecDeque (critical, normal, bulk)."
 #[derive(Debug, Default)]
 pub struct PriorityOutbound {
-    critical: VecDeque<Message>,
-    normal: VecDeque<Message>,
-    bulk: VecDeque<Message>,
+    critical: VecDeque<DigMessage>,
+    normal: VecDeque<DigMessage>,
+    bulk: VecDeque<DigMessage>,
     /// Counter for starvation prevention (PRI-004).
     high_priority_since_last_bulk: usize,
 }
@@ -114,7 +114,7 @@ impl PriorityOutbound {
     }
 
     /// Enqueue message into appropriate lane.
-    pub fn enqueue(&mut self, msg: Message, priority: MessagePriority) {
+    pub fn enqueue(&mut self, msg: DigMessage, priority: MessagePriority) {
         match priority {
             MessagePriority::Critical => self.critical.push_back(msg),
             MessagePriority::Normal => self.normal.push_back(msg),
@@ -126,7 +126,7 @@ impl PriorityOutbound {
     ///
     /// SPEC §8.4: "exhaust critical → exhaust normal → one bulk → check critical again."
     /// PRI-004: "1 bulk per PRIORITY_STARVATION_RATIO critical/normal messages."
-    pub fn drain_next(&mut self) -> Option<Message> {
+    pub fn drain_next(&mut self) -> Option<DigMessage> {
         // PRI-004: starvation prevention — force one bulk message periodically.
         if self.high_priority_since_last_bulk >= PRIORITY_STARVATION_RATIO {
             if let Some(msg) = self.bulk.pop_front() {

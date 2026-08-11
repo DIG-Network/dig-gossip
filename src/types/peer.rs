@@ -30,7 +30,7 @@ use crate::constants::{
 use chia_protocol::Bytes32;
 use dig_peer_protocol::Peer;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Message, NodeType};
+use dig_peer_protocol::{DigMessage, NodeType};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
@@ -276,16 +276,16 @@ pub fn metric_unix_timestamp_secs() -> u64 {
         .as_secs()
 }
 
-/// Serialized on-wire length of a [`Message`] (header + body) — **CON-006** requires byte counters
+/// Serialized on-wire length of a [`DigMessage`] (header + body) — **CON-006** requires byte counters
 /// to reflect wire size, not in-memory struct size.
 ///
 /// **See:** [`CON-006.md`](../../../docs/requirements/domains/connection/specs/CON-006.md) —
 /// “`bytes_read`/`bytes_written` should count the serialized wire size”.
-#[allow(clippy::result_large_err)] // mirrors `encode_message` / Chia `Streamable` error surface
-pub fn message_wire_len(msg: &Message) -> Result<u64, dig_peer_protocol::ClientError> {
-    msg.to_bytes()
-        .map(|b| b.len() as u64)
-        .map_err(dig_peer_protocol::ClientError::Streamable)
+#[must_use]
+pub fn message_wire_len(msg: &DigMessage) -> u64 {
+    // `DigMessage::to_bytes` is infallible -- `msg_type` is already a raw byte and `data` is
+    // already serialized -- so this no longer has an error case to propagate.
+    msg.to_bytes().len() as u64
 }
 
 /// Per-connection byte/message counters shared by [`LiveSlot`](crate::service::state::LiveSlot)
@@ -389,7 +389,7 @@ pub struct PeerConnection {
     /// Reputation snapshot (API-006).
     pub reputation: PeerReputation,
     /// Inbound wire messages for this connection (`connect_peer` / `Peer::from_websocket`).
-    pub inbound_rx: mpsc::Receiver<Message>,
+    pub inbound_rx: mpsc::Receiver<DigMessage>,
 }
 
 impl fmt::Debug for PeerConnection {
@@ -411,7 +411,7 @@ impl fmt::Debug for PeerConnection {
             .field("messages_received", &self.messages_received)
             .field("last_message_time", &self.last_message_time)
             .field("reputation", &self.reputation)
-            .field("inbound_rx", &"<mpsc::Receiver<Message>>")
+            .field("inbound_rx", &"<mpsc::Receiver<DigMessage>>")
             .finish()
     }
 }

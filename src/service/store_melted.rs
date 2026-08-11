@@ -6,7 +6,7 @@
 //! melting node floods a `store-melted` announcement so every peer stops hosting the
 //! store's `.dig` content and reclaims disk. This module defines that wire message:
 //! the opcode constant, the [`StoreMeltedAnnounce`] payload with byte-exact encode/
-//! decode, the sign/verify helpers, and the [`Message`] framing. It is piece #1 of
+//! decode, the sign/verify helpers, and the [`DigMessage`] framing. It is piece #1 of
 //! epic #1316 (store-melt propagation) — the wire dig-node consumes to build the
 //! receive → on-chain-verify → delete → rebroadcast handler (#3).
 //!
@@ -31,7 +31,7 @@
 //!
 //! # Wire layout
 //!
-//! A `store-melted` frame is a stock [`Message`](dig_peer_protocol::Message) with
+//! A `store-melted` frame is a stock [`DigMessage`](dig_peer_protocol::DigMessage) with
 //! `msg_type = 221` ([`STORE_MELTED`]) whose `data` is the fixed-length big-endian
 //! encoding of [`StoreMeltedAnnounce`] (see [`StoreMeltedAnnounce::encode`]).
 //!
@@ -43,7 +43,7 @@
 //! and [`MessagePriority`](crate::gossip::priority::MessagePriority).
 
 use chia_protocol::Bytes32;
-use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, DigMessage, ProtocolMessageTypes};
 use dig_tls::bls::{sign_message, verify_signature, SecretKey};
 use sha2::{Digest, Sha256};
 
@@ -191,19 +191,19 @@ impl StoreMeltedAnnounce {
 
 /// True iff `msg_type` is the `store-melted` opcode ([`STORE_MELTED`]).
 ///
-/// Inbound dispatch calls this on `Message.msg_type as u8` to route opcode-221
+/// Inbound dispatch calls this on `DigMessage.msg_type as u8` to route opcode-221
 /// frames to the store-melted handler seam (dig-node #3).
 #[must_use]
 pub fn is_store_melted(msg_type: u8) -> bool {
     msg_type == STORE_MELTED
 }
 
-/// Lift and decode a [`StoreMeltedAnnounce`] from an inbound [`Message`].
+/// Lift and decode a [`StoreMeltedAnnounce`] from an inbound [`DigMessage`].
 ///
 /// Returns `Some(announce)` iff `msg` is an opcode-221 frame whose `data` decodes
 /// ([`StoreMeltedAnnounce::decode`]), else `None`.
 #[must_use]
-pub fn store_melted_payload(msg: &Message) -> Option<StoreMeltedAnnounce> {
+pub fn store_melted_payload(msg: &DigMessage) -> Option<StoreMeltedAnnounce> {
     if is_store_melted(msg.msg_type as u8) {
         StoreMeltedAnnounce::decode(msg.data.as_ref())
     } else {
@@ -211,18 +211,18 @@ pub fn store_melted_payload(msg: &Message) -> Option<StoreMeltedAnnounce> {
     }
 }
 
-/// Build the outbound opcode-221 [`Message`] that floods `announce` to peers.
+/// Build the outbound opcode-221 [`DigMessage`] that floods `announce` to peers.
 ///
 /// `id` is `None`: a `store-melted` broadcast is fire-and-forget, not a correlated
 /// request/response. The caller broadcasts the returned message through
 /// [`GossipHandle::broadcast`](crate::service::gossip_handle::GossipHandle).
 #[must_use]
-pub fn frame_store_melted(announce: &StoreMeltedAnnounce) -> Message {
-    Message {
-        msg_type: ProtocolMessageTypes::StoreMelted,
-        id: None,
-        data: Bytes::new(announce.encode()),
-    }
+pub fn frame_store_melted(announce: &StoreMeltedAnnounce) -> DigMessage {
+    DigMessage::new(
+        dig_peer_protocol::STORE_MELTED,
+        None,
+        Bytes::new(announce.encode()),
+    )
 }
 
 #[cfg(test)]

@@ -10,8 +10,8 @@
 //! ## SPEC citations
 //!
 //! - SPEC §9.1 — Crate Boundary: `dig-gossip` is a library crate wrapping
-//!   `chia-sdk-client` and `chia-protocol`. Input: `Message` via `broadcast()`/`send_to()`.
-//!   Output: `(PeerId, Message)` via inbound channel. `ServiceState` is the runtime
+//!   `chia-sdk-client` and `chia-protocol`. Input: `DigMessage` via `broadcast()`/`send_to()`.
+//!   Output: `(PeerId, DigMessage)` via inbound channel. `ServiceState` is the runtime
 //!   interior that makes this possible.
 //! - SPEC §2.4 — `PeerConnection` fields: `ServiceState::peers` stores per-connection
 //!   metadata (direction, node type, remote address, reputation, rate limiter) that
@@ -65,7 +65,7 @@ use std::sync::{Arc, Mutex};
 
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::{ClientState, Peer};
-use dig_peer_protocol::{Message, NodeType};
+use dig_peer_protocol::{DigMessage, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
@@ -531,9 +531,9 @@ pub struct ServiceState {
     /// SPEC §8.1 — Plumtree structured gossip.
     pub plumtree: Mutex<crate::gossip::plumtree::PlumtreeState>,
 
-    /// Message cache for Plumtree GRAFT responses.
+    /// DigMessage cache for Plumtree GRAFT responses.
     /// INT-001: recently broadcast messages cached for lazy peers that GRAFT.
-    /// SPEC §8.1 — "Message cache: LRU capacity 1000, TTL 60s."
+    /// SPEC §8.1 — "DigMessage cache: LRU capacity 1000, TTL 60s."
     pub message_cache: Mutex<crate::gossip::message_cache::MessageCache>,
 
     /// **INT-007** — immutable BGP prefix table for IP → AS-number classification (#1703).
@@ -586,7 +586,7 @@ pub struct ServiceState {
     ///
     /// Writers: accept loop (CON-002), `test_inject_message` (API-002).
     /// Readers: each handle's `inbound_receiver()` subscriber.
-    pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, Message)>>>,
+    pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, DigMessage)>>>,
 
     /// Cumulative count of messages sent (API-008). `broadcast` adds one per recipient
     /// that accepted the message; `send_to` adds 1. Never decremented.
@@ -1299,7 +1299,7 @@ pub(crate) fn record_live_peer_outbound_bytes(
     };
 }
 
-/// CON-006 — increment inbound wire counters for a live peer (after a decoded inbound [`Message`]).
+/// CON-006 — increment inbound wire counters for a live peer (after a decoded inbound [`DigMessage`]).
 pub(crate) fn record_live_peer_inbound_bytes(state: &ServiceState, peer_id: PeerId, wire_len: u64) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

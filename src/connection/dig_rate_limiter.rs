@@ -149,7 +149,7 @@ mod tests {
 
     use std::{thread::sleep, time::Duration};
 
-    use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes, RateLimiter, V2_RATE_LIMITS};
+    use dig_peer_protocol::{Bytes, DigMessage, ProtocolMessageTypes, RateLimiter, V2_RATE_LIMITS};
 
     use super::*;
 
@@ -192,7 +192,7 @@ mod tests {
             ProtocolMessageTypes::Handshake,
             RateLimit::new(1.0, 1_000_000.0, None),
         );
-        let handshake = || Message {
+        let handshake = || DigMessage {
             msg_type: ProtocolMessageTypes::Handshake,
             id: None,
             data: Bytes::new(vec![0u8; 10]),

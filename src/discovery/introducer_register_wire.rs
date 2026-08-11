@@ -4,12 +4,12 @@
 //!
 //! Introducer registration is a **DIG extension** — it is not part of stock Chia’s introducer RPC
 //! ([`ProtocolMessageTypes::RequestPeersIntroducer`] / [`RespondPeersIntroducer`] only cover peer
-//! list fetch). We still send traffic inside the standard [`chia_protocol::Message`] envelope so
+//! list fetch). We still send traffic inside the standard [`chia_protocol::DigMessage`] envelope so
 //! [`dig_peer_protocol::Peer::request_infallible`] can correlate request/response `id`s exactly like
 //! full-node RPCs.
 //!
 //! Stock **`chia-protocol` 0.26** on crates.io stops enumerating [`ProtocolMessageTypes`] at **107**,
-//! which means `Message::from_bytes` would reject opcodes **218/219** during decode. `dig-gossip`
+//! which means `DigMessage::from_bytes` would reject opcodes **218/219** during decode. `dig-gossip`
 //! therefore **vendors** `chia-protocol` with two extra enum variants (see `vendor/chia-protocol/README.dig-gossip.md`).
 //! The [`chia_streamable_macro::streamable`] `message` attribute maps struct names **one-to-one**
 //! onto those variants — keep the Rust identifiers `RegisterPeer` / `RegisterAck`.

@@ -50,7 +50,7 @@
 //! therefore checks the SPKI→peer_id binding, that the SPKI is a P-256 key, the ECDSA
 //! signature over the exact message, and the change-count cap — fail-closed on any mismatch.
 
-use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, DigMessage, ProtocolMessageTypes};
 use dig_tls::peer_id_from_tls_spki_der;
 use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
 use sha2::{Digest, Sha256};
@@ -716,12 +716,12 @@ pub fn is_holdings_announce(msg_type: u8) -> bool {
     msg_type == HOLDINGS_ANNOUNCE
 }
 
-/// Lift and decode a [`HoldingsAnnounce`] from an inbound [`Message`].
+/// Lift and decode a [`HoldingsAnnounce`] from an inbound [`DigMessage`].
 ///
 /// Returns `Some(announce)` iff `msg` is an opcode-222 frame whose `data` decodes, else
 /// `None`. The caller MUST still [`verify_holdings_announce`] before ingesting the deltas.
 #[must_use]
-pub fn holdings_announce_payload(msg: &Message) -> Option<HoldingsAnnounce> {
+pub fn holdings_announce_payload(msg: &DigMessage) -> Option<HoldingsAnnounce> {
     if is_holdings_announce(msg.msg_type as u8) {
         HoldingsAnnounce::decode(msg.data.as_ref())
     } else {
@@ -729,17 +729,17 @@ pub fn holdings_announce_payload(msg: &Message) -> Option<HoldingsAnnounce> {
     }
 }
 
-/// Build the outbound opcode-222 [`Message`] that floods `announce` to peers.
+/// Build the outbound opcode-222 [`DigMessage`] that floods `announce` to peers.
 ///
 /// `id` is `None`: a holdings announcement is a fire-and-forget flood broadcast, not a
 /// correlated request/response.
 #[must_use]
-pub fn frame_holdings_announce(announce: &HoldingsAnnounce) -> Message {
-    Message {
-        msg_type: ProtocolMessageTypes::HoldingsAnnounce,
-        id: None,
-        data: Bytes::new(announce.encode()),
-    }
+pub fn frame_holdings_announce(announce: &HoldingsAnnounce) -> DigMessage {
+    DigMessage::new(
+        dig_peer_protocol::HOLDINGS_ANNOUNCE,
+        None,
+        Bytes::new(announce.encode()),
+    )
 }
 
 #[cfg(test)]

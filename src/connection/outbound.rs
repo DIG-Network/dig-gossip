@@ -15,7 +15,7 @@
 //! - **SPEC §1.5 #1** — handshake with capabilities via `connect_peer()`.
 //! - **SPEC §1.6 #1** — peer exchange on outbound connect: after connecting, send
 //!   `RequestPeers` to discover more peers (`node_discovery.py:135-136`).
-//! - **SPEC §1.4** — `Handshake`, `Message`, `NodeType` used directly from `chia-protocol`.
+//! - **SPEC §1.4** — `Handshake`, `DigMessage`, `NodeType` used directly from `chia-protocol`.
 //!
 //! **Normative:** [CON-001](../../../docs/requirements/domains/connection/specs/CON-001.md) /
 //! [NORMATIVE.md](../../../docs/requirements/domains/connection/NORMATIVE.md) — outbound MUST use
@@ -50,7 +50,7 @@ use std::net::SocketAddr;
 use chia_protocol::Handshake;
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Message, NodeType, ProtocolMessageTypes};
+use dig_peer_protocol::{DigMessage, NodeType, ProtocolMessageTypes};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -72,7 +72,7 @@ use dig_peer_protocol::Connector;
 /// (same slice API-005 tests take from `x509-parser`).
 pub struct OutboundConnectResult {
     pub peer: Peer,
-    pub inbound_rx: mpsc::Receiver<Message>,
+    pub inbound_rx: mpsc::Receiver<DigMessage>,
     pub their_handshake: Handshake,
     /// Raw SPKI DER bytes for [`crate::types::peer::peer_id_from_tls_spki_der`].
     pub remote_spki_der: Vec<u8>,
