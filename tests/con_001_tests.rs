@@ -178,16 +178,19 @@ async fn test_request_peers_after_connect() {
     jh.await.expect("join").expect("server");
 }
 
-/// **Row:** `test_outbound_connect_failure` — unreachable WSS peer surfaces [`GossipError::ClientError`].
+/// **Row:** `test_outbound_connect_failure` — unreachable WSS peer surfaces [`GossipError::LinkError`].
 ///
-/// SPEC §4 — GossipError::ClientError wraps chia-sdk-client::ClientError for connection-level errors.
+/// SPEC §4 — since the dial moved onto `DigLink`, a refused TCP connection is a transport failure and
+/// arrives as `LinkError`. `ClientError` still carries handshake-POLICY failures (network-id mismatch,
+/// incompatible protocol version), so asserting the specific variant keeps the two distinguishable —
+/// `is_err()` here would pass on a handshake rejection that never reached the wire.
 #[tokio::test]
 async fn test_outbound_connect_failure() {
     let (_cdir, _svc, h) = running_client().await;
     let dead: std::net::SocketAddr = "127.0.0.1:2".parse().unwrap();
     let err = h.connect_to(dead).await.unwrap_err();
     assert!(
-        matches!(err, GossipError::ClientError(_)),
-        "expected ClientError, got {err:?}"
+        matches!(err, GossipError::LinkError(_)),
+        "expected LinkError, got {err:?}"
     );
 }
