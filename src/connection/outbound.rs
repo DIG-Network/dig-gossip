@@ -114,7 +114,7 @@ pub(crate) fn network_id_handshake_string(network_id: chia_protocol::Bytes32) ->
 
 /// Extract remote **SubjectPublicKeyInfo DER** before [`DigLink::from_websocket`] consumes the stream.
 ///
-/// SPEC §5.3 — "DigLink identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
+/// SPEC §5.3 — "Peer identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
 /// Because mTLS guarantees both sides present certificates, each side can derive the other's
 /// `PeerId` from the certificate exchanged during the TLS handshake. Matches Chia's
 /// `peer_node_id` derivation from certificate hash (`ws_connection.py:95`).

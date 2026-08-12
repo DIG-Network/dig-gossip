@@ -1,4 +1,4 @@
-//! DigLink identity, metadata, and the gossip-layer connection wrapper.
+//! Peer identity, metadata, and the gossip-layer connection wrapper.
 //!
 //! **Layout:** STR-002; **re-exports:** STR-003 /
 //! [`specs/STR-003.md`](../../../docs/requirements/domains/crate_structure/specs/STR-003.md).
@@ -365,7 +365,7 @@ pub struct PeerConnection {
     pub is_outbound: bool,
     /// Declared node role from the [`Handshake`](chia_protocol::Handshake).
     pub node_type: NodeType,
-    /// DigLink protocol version string.
+    /// Peer protocol version string.
     pub protocol_version: String,
     /// DigLink software version string (Cc/Cf stripped per CON-003 / CON-008 — Chia `ws_connection.py`).
     pub software_version: String,

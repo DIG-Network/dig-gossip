@@ -38,7 +38,10 @@ categories = ["network-programming", "cryptography::cryptocurrencies"]
 # The band runs to 222, not 219: 220 is DIG_MESSAGE, 221 STORE_MELTED, 222 HOLDINGS_ANNOUNCE, and
 # all three are live. dig-relay vendors this wire byte-identically, so an understated band here is
 # the kind of number that gets copied into a second implementation.
-# Single import replaces: chia-protocol, chia-sdk-client, chia-ssl, chia-traits, chia_streamable_macro.
+# Single import replaces chia-sdk-client and chia-ssl outright. chia-protocol, chia-traits and
+# chia_streamable_macro stay declared below: the streamable proc-macro reads this manifest and
+# generates `chia_protocol::` paths, so they must be nameable here even though the code prefers
+# the re-exports.
 # `dig-peer-protocol` is the rename of the former `dig-protocol` crate (#1383); the crate name in
 # code is `dig_peer_protocol`. TLS backends are forwarded through it to chia-sdk-client, so we keep
 # `default-features = false` and select the backend exclusively via our own `native-tls` / `rustls`

@@ -20,6 +20,10 @@
 //! Both legs of the handshake now agree: the inbound listener returns [`ClientError`] for a
 //! policy rejection (`listener::negotiate_inbound_over_ws`) and so does the outbound dial, so
 //! an identical rejection surfaces as the same [`GossipError`] variant whoever dialled.
+//!
+//! Specified by **CON-002** (inbound handshake) and **CON-003** (handshake validation), both of
+//! which require `GossipError::ClientError` for a rejection, and by **API-004**, which records the
+//! opposite retry semantics of the two arms.
 
 use dig_peer_protocol::{ClientError, LinkError};
 use thiserror::Error;

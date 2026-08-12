@@ -134,8 +134,9 @@ pub(crate) struct StubPeer {
 /// * **CON-003** -- handshake validation decides which fields are retained.
 /// * **CON-004** -- [`PeerReputation`] is updated by
 ///   [`crate::connection::keepalive::spawn_keepalive_task`] with RTT samples.
-/// * **CON-005** -- [`InboundRateLimiter`] (`incoming = true`, 60 s window) enforced on the inbound
-///   `mpsc` bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
+/// * **CON-005** -- [`InboundRateLimiter`] (60 s window; `incoming = true` on the DIG half only —
+///   see TODO(dig_ecosystem#2228) on [`InboundRateLimiter::new`]) enforced on the inbound `mpsc`
+///   bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
 /// * **CON-006** -- [`PeerConnectionWireMetrics`] updated on each metered send/receive (wire bytes).
 #[derive(Debug)]
 pub(crate) struct LiveSlot {
@@ -531,9 +532,9 @@ pub struct ServiceState {
     /// SPEC §8.1 — Plumtree structured gossip.
     pub plumtree: Mutex<crate::gossip::plumtree::PlumtreeState>,
 
-    /// DigMessage cache for Plumtree GRAFT responses.
+    /// Message cache for Plumtree GRAFT responses.
     /// INT-001: recently broadcast messages cached for lazy peers that GRAFT.
-    /// SPEC §8.1 — "DigMessage cache: LRU capacity 1000, TTL 60s."
+    /// SPEC §8.1 — "Message cache: LRU capacity 1000, TTL 60s."
     pub message_cache: Mutex<crate::gossip::message_cache::MessageCache>,
 
     /// **INT-007** — immutable BGP prefix table for IP → AS-number classification (#1703).

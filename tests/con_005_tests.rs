@@ -28,8 +28,10 @@ use dig_gossip::{
     HOLDINGS_MAX_CHANGES,
 };
 
-/// A DIG limiter over the production table, shaped exactly like a live inbound connection's
-/// (`incoming = true`, 60 s window) so these tests bind the real rows, not a bespoke fixture.
+/// A DIG limiter over the production table, shaped exactly like the DIG half of a live inbound
+/// connection's gate (`incoming = true`, 60 s window) so these tests bind the real rows, not a
+/// bespoke fixture. The gate's Chia half is not inbound-shaped today — see
+/// TODO(dig_ecosystem#2228) on `InboundRateLimiter::new`; these tests cover the DIG half only.
 fn dig_limiter(limit_factor: f64) -> DigRateLimiter {
     DigRateLimiter::new(true, 60, limit_factor, dig_extension_rate_limits_map())
 }

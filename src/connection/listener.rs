@@ -186,7 +186,7 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
 /// Extract the remote peer's **SubjectPublicKeyInfo** (SPKI) DER bytes from a server-side
 /// `native_tls` TLS stream after the TLS handshake completes.
 ///
-/// SPEC §5.3 — "DigLink identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
+/// SPEC §5.3 — "Peer identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
 /// Matches Chia's `peer_node_id` derivation from certificate hash (`ws_connection.py:95`).
 ///
 /// The SPKI is the raw ASN.1 blob containing the peer's public key algorithm + key material.
@@ -556,11 +556,11 @@ fn unix_secs_u64() -> u64 {
         .as_secs()
 }
 
-/// Relay the inbound peer’s [`TimestampedPeerInfo`] to every **existing** live connection (CON-002 DigLink Info Relay).
+/// Relay the inbound peer’s [`TimestampedPeerInfo`] to every **existing** live connection (CON-002 Peer Info Relay).
 ///
 /// SPEC §1.6 #2 — "Inbound peer relay: When an inbound connection arrives, add peer to
 /// address manager and relay to other peers" (`node_discovery.py:112-127`).
-/// SPEC §1.1 — "DigLink sharing via gossip": connected peers exchange peer lists periodically
+/// SPEC §1.1 — "Peer sharing via gossip": connected peers exchange peer lists periodically
 /// via `chia-protocol`’s `RequestPeers`/`RespondPeers`.
 ///
 /// **Mechanism:** Chia nodes often learn addresses via [`RespondPeers`]; we push a one-row list so

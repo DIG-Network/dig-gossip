@@ -75,9 +75,18 @@ pub struct InboundRateLimiter {
 }
 
 impl InboundRateLimiter {
-    /// Builds the gate for one inbound connection — `incoming = true`, a [`RESET_SECONDS`] window,
-    /// every bound scaled by
-    /// [`rate_limit_factor`](crate::types::config::GossipConfig::peer_options).
+    /// Builds the gate for one inbound connection — a [`RESET_SECONDS`] window, every bound scaled
+    /// by [`rate_limit_factor`](crate::types::config::GossipConfig::peer_options).
+    ///
+    /// Only the DIG half is inbound-shaped today: [`DigRateLimiter`] takes `incoming = true`, so a
+    /// frame it refuses still charges its counter and a peer cannot free quota by being refused.
+    /// [`OpcodeRateLimiter`] as of `dig-peer-protocol` 0.5 exposes no such flag, so the Chia half
+    /// charges only frames it admits — a peer flooding past the Chia bound is refused each time but
+    /// does not ratchet itself further into the window.
+    ///
+    /// TODO(dig_ecosystem#2228): restore the inbound ratchet on the Chia half once
+    /// `dig-peer-protocol` 0.6.0 lands `Direction::Inbound`; `OpcodeRateLimits`' fields are private,
+    /// so there is no local substitute and this cannot be fixed from inside `dig-gossip`.
     pub fn new(rate_limit_factor: f64) -> Self {
         Self {
             chia: OpcodeRateLimiter::new(
@@ -96,8 +105,8 @@ impl InboundRateLimiter {
 
     /// Whether `msg` is admitted. A frame passes only if EVERY applicable check passes.
     ///
-    /// 1. [`OpcodeRateLimiter::allow`] — the Chia bound — always, and first, so its counters
-    ///    advance for every frame regardless of opcode.
+    /// 1. [`OpcodeRateLimiter::allow`] — the Chia bound — always, and first, so it is consulted for
+    ///    every frame regardless of opcode.
     /// 2. For frames in the DIG wire band (opcode `>= DIG_WIRE_BAND_START`), ALSO
     ///    [`DigRateLimiter::check`] on the raw opcode.
     ///
@@ -109,7 +118,9 @@ impl InboundRateLimiter {
     /// The DIG half can only ever ADD a restriction: it is consulted after the Chia bound has
     /// already been applied, and an opcode with no row fails open.
     pub fn allows(&mut self, msg: &DigMessage) -> bool {
-        // Always apply the Chia base bound first (and unconditionally, so its counters advance).
+        // Always consult the Chia base bound first, whatever the opcode, so no frame reaches the
+        // DIG half ungated. Note this charges only ADMITTED frames — see `new` and
+        // TODO(dig_ecosystem#2228) for the missing inbound ratchet.
         if !self.chia.allow(msg) {
             return false;
         }
