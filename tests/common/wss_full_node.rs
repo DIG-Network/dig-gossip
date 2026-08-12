@@ -209,7 +209,7 @@ impl HostileFrame {
     /// [`HostileFrame::MalformedFrame`] is by definition not expressible as a `DigMessage` — a
     /// correct encoder cannot emit it. The layout is `DigMessage`'s: `u8` opcode, `u8` id-present
     /// flag, the big-endian `u16` id when present, then a big-endian `u32` length-prefixed body.
-    fn to_wire_bytes(self) -> Vec<u8> {
+    pub fn to_wire_bytes(self) -> Vec<u8> {
         match self {
             Self::UnmatchedCorrelationId => {
                 let body = RespondPeers::new(vec![])

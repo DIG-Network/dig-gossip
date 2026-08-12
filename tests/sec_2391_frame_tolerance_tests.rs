@@ -135,3 +135,36 @@ async fn torn_down_link_fails_the_survival_assertion() {
     );
     println!("[control] torn-down link correctly rejected: {why}");
 }
+
+/// **Fixture guard.** Each hostile frame must still have the property its case is named for.
+///
+/// A fixture that quietly stopped being hostile — a "malformed" frame that in fact decodes, an
+/// "unknown" opcode this build later allocated — would leave all three tests above green while
+/// exercising nothing. This pins the fixtures to the decoder itself.
+#[test]
+fn hostile_fixtures_still_have_the_property_they_are_named_for() {
+    use dig_gossip::DigMessage;
+
+    let malformed = HostileFrame::MalformedFrame.to_wire_bytes();
+    assert!(
+        DigMessage::from_bytes(&malformed).is_none(),
+        "the MalformedFrame fixture decodes, so it no longer exercises the skip-a-bad-frame path"
+    );
+
+    let unknown = DigMessage::from_bytes(&HostileFrame::UnknownOpcode.to_wire_bytes())
+        .expect("the UnknownOpcode fixture must be a well-formed frame with an unusable opcode");
+    assert!(
+        !dig_gossip::is_dig_message(unknown.msg_type)
+            && unknown.msg_type != (dig_gossip::ProtocolMessageTypes::RespondPeers as u8),
+        "opcode {} is no longer unallocated — pick the next free DIG-band slot",
+        unknown.msg_type
+    );
+
+    let unmatched = DigMessage::from_bytes(&HostileFrame::UnmatchedCorrelationId.to_wire_bytes())
+        .expect("the UnmatchedCorrelationId fixture must be a well-formed frame");
+    assert_eq!(
+        unmatched.id,
+        Some(0xBEEF),
+        "the UnmatchedCorrelationId fixture must carry a correlation id nobody is waiting on"
+    );
+}
