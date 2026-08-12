@@ -239,9 +239,7 @@ pub(crate) async fn connect_outbound_peer(
     // Policy, not transport: the link opened and the peer closed it without ever completing
     // the handshake, so re-dialling the same address will meet the same peer behaviour.
     let Some(message) = receiver.recv().await else {
-        return Err(DialError::Client(ClientError::Io(std::io::Error::other(
-            "dig_gossip: missing handshake",
-        ))));
+        return Err(DialError::Client(ClientError::MissingHandshake));
     };
 
     if message.msg_type != chia_opcodes::HANDSHAKE {
