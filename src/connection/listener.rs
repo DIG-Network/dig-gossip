@@ -1,4 +1,4 @@
-//! Inbound P2P acceptance: [`tokio::net::TcpListener`] -> TLS -> WebSocket -> [`dig_peer_protocol::Peer`].
+//! Inbound P2P acceptance: [`tokio::net::TcpListener`] -> TLS -> WebSocket -> [`dig_peer_protocol::DigLink`].
 //!
 //! ## SPEC traceability
 //!
@@ -6,7 +6,7 @@
 //!   1. `TcpListener::accept()`
 //!   2. TLS handshake (using `chia-ssl` certificate)
 //!   3. `tokio_tungstenite::accept_async()`
-//!   4. `Peer::from_websocket(ws, options)`
+//!   4. `DigLink::from_websocket(ws, options)`
 //!   5. Receive Handshake, validate `network_id`
 //!   6. Send Handshake response
 //!   7. Wrap in `PeerConnection`
@@ -15,8 +15,8 @@
 //! - **SPEC §5.3** — mandatory mutual TLS (mTLS) via `chia-ssl`:
 //!   "ALL peer-to-peer connections MUST use mutual TLS. Both client and server present
 //!   certificates." Matches Chia `server.py:54-71`, `server.py:67 verify_mode = ssl.CERT_REQUIRED`.
-//! - **SPEC §1.7 #4** — "Inbound connection listener": `chia-sdk-client`'s `Peer` only does
-//!   outbound connections; we add a `TcpListener` accepting inbound.
+//! - **SPEC §1.7 #4** — "Inbound connection listener": `dig-peer-protocol`'s [`DigLink`] dials
+//!   outbound; we add a `TcpListener` accepting inbound and hand the accepted socket to it.
 //! - **SPEC §1.6 #2** — "Inbound peer relay": when an inbound connection arrives, add peer
 //!   to address manager and relay to other peers (`node_discovery.py:112-127`).
 //! - **SPEC §1.5 #8** — peer ban/trust: `ClientState::ban()` / `is_banned()` checked before
@@ -27,19 +27,21 @@
 //!
 //! ## Why this is not `dig_peer_protocol::connect_peer`
 //!
-//! Upstream [`Peer`](dig_peer_protocol::Peer) is built for **outbound** `wss://` clients. DIG must
+//! Upstream [`DigLink`](dig_peer_protocol::DigLink) is built for **outbound** `wss://` clients. DIG must
 //! **listen** on [`crate::types::config::GossipConfig::listen_addr`], terminate TLS with the node
 //! [`dig_peer_protocol::ChiaCertificate`], run [`tokio_tungstenite::accept_async`], then call
-//! [`Peer::from_websocket`](dig_peer_protocol::Peer::from_websocket) — mirroring the pseudo-code in
+//! [`DigLink::from_websocket`](dig_peer_protocol::DigLink::from_websocket) — mirroring the pseudo-code in
 //! CON-002 and [`SPEC.md`](../../../docs/resources/SPEC.md) §5.2.
 //!
 //! ## TLS backends (STR-004)
 //!
 //! - **`native-tls` (default):** [`native_tls::TlsAcceptor`] + [`tokio_native_tls`], matching
 //!   CON-001 integration tests ([`tests/common/wss_full_node.rs`](../../../tests/common/wss_full_node.rs)).
-//! - **`rustls` without `native-tls` (outbound):** [`chia_sdk_client`] uses rustls for `wss://` dials.
-//!   **Inbound** still uses [`native_tls::TlsAcceptor`] so [`MaybeTlsStream::NativeTls`] matches
-//!   [`Peer::from_websocket`] (upstream only types **client** `MaybeTlsStream::Rustls`).
+//! - **`rustls` without `native-tls` (outbound):** rustls backs the `wss://` dial, forwarded through
+//!   [`dig_peer_protocol`]. **Inbound** still uses [`native_tls::TlsAcceptor`] so
+//!   [`MaybeTlsStream::NativeTls`] matches [`DigLink::from_websocket`], which types only the
+//!   **client** side of `MaybeTlsStream::Rustls`; the server stream reaches `DigLink` through
+//!   [`DigLink::from_server_websocket`](dig_peer_protocol::DigLink::from_server_websocket) instead.
 //! - **CON-009 (mTLS):** On **Linux / non-Apple Unix** (OpenSSL-backed `native-tls`), we use a
 //!   **vendored** [`native-tls`](../../../vendor/native-tls/README.dig-gossip.md) fork that sets
 //!   `CERT_REQUIRED` + Chia CA trust (Chia `server.py:67`). **Windows (SChannel)** and **macOS
@@ -55,21 +57,22 @@
 //! `tests/con_008_tests.rs` (matrix + “matches Chia category policy”); **CON-003** adds protocol /
 //! network gates around the same helper (`tests/con_003_tests.rs`).
 
-// CON-002: Large `ClientError` payloads are intentional — they propagate upstream
-// `chia_sdk_client` variants verbatim, matching the API-004 `GossipError::ClientError` wrapper.
+// CON-002: Large `ClientError` payloads are intentional — they propagate
+// `dig_peer_protocol::ClientError` variants verbatim, matching the API-004
+// `GossipError::ClientError` wrapper.
 #![allow(clippy::result_large_err)]
 
+use crate::connection::chia_opcodes;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chia_protocol::{Handshake, RespondPeers, TimestampedPeerInfo};
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use dig_peer_protocol::ChiaCertificate;
+use dig_peer_protocol::DigMessage;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{ClientError, Peer, PeerOptions};
-use dig_peer_protocol::{
-    Handshake, Message, NodeType, ProtocolMessageTypes, RespondPeers, TimestampedPeerInfo,
-};
+use dig_peer_protocol::{ClientError, DigLink, LinkOptions};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -79,7 +82,21 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::{accept_async_with_config, WebSocketStream};
 
-use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
+/// Wire opcode of a Chia [`Handshake`] frame.
+///
+/// The pre-`DigLink` phase of an inbound negotiation reads raw websocket frames and
+/// compares [`DigMessage::msg_type`], which is a bare wire byte. Deriving these from
+/// `ProtocolMessageTypes` keeps `chia-protocol` the single authority for Chia opcode
+/// numbering rather than restating a literal here.
+const HANDSHAKE_OPCODE: u8 = chia_protocol::ProtocolMessageTypes::Handshake as u8;
+
+/// Wire opcode of a Chia `RequestPeers` frame. See [`HANDSHAKE_OPCODE`].
+const REQUEST_PEERS_OPCODE: u8 = chia_protocol::ProtocolMessageTypes::RequestPeers as u8;
+
+/// Wire opcode of a Chia [`RespondPeers`] frame. See [`HANDSHAKE_OPCODE`].
+const RESPOND_PEERS_OPCODE: u8 = chia_protocol::ProtocolMessageTypes::RespondPeers as u8;
+
+use crate::connection::handshake::{dig_node_type_of, ADVERTISED_PROTOCOL_VERSION};
 use crate::connection::outbound::network_id_handshake_string;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use crate::connection::outbound::spki_der_from_leaf_cert_der;
@@ -107,7 +124,7 @@ const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Inbound TLS (`native_tls::TlsAcceptor`) — used for **both** `native-tls` and `rustls` features.
 //
 // Why `native_tls` for *inbound* even when `rustls` is enabled:
-// Upstream `dig_peer_protocol::Peer::from_websocket` types the stream as
+// Upstream `dig_peer_protocol::DigLink::from_websocket` types the stream as
 // `MaybeTlsStream::NativeTls` on the server side. The `rustls` feature only
 // affects *outbound* dialing (CON-001). Using `native_tls` here keeps the
 // type system happy without forking upstream abstractions. See module-level
@@ -245,7 +262,7 @@ async fn handle_inbound_native(
 /// `peer_id` even though its old slot is dead. That was the #1691 defect: a bounced peer could never
 /// reconnect and every read it attempted 404'd. Instead the freshly-authenticated inbound session is
 /// admitted and **supersedes** the stale slot at insert time (see [`negotiate_inbound_over_ws`],
-/// which aborts the displaced slot's keepalive then closes its [`Peer`]).
+/// which aborts the displaced slot's keepalive then closes its [`DigLink`]).
 ///
 /// This is safe because `peer_id` here is derived from the **completed, verified** TLS handshake
 /// (`SHA-256` of the captured client-cert SPKI; see the SPKI capture at each caller). Only the holder
@@ -365,7 +382,7 @@ async fn handle_inbound_rustls_inner(
 
     // Step 6: WebSocket upgrade over the server rustls stream. The server-side stream cannot inhabit
     // the `#[non_exhaustive]` client `MaybeTlsStream`, so we hand the raw stream to `accept_async`
-    // and later build the `Peer` via `Peer::from_server_websocket` (see `negotiate_inbound_over_ws`).
+    // and later build the `DigLink` via `DigLink::from_server_websocket` (see `negotiate_inbound_over_ws`).
     let ws = accept_async_with_config(tls, Some(crate::connection::ws_config()))
         .await
         .map_err(ws_err)?;
@@ -436,7 +453,7 @@ async fn handle_inbound_native_inner(
 
     // Step 6: WebSocket upgrade over the now-established TLS stream.
     // We wrap the `native_tls` stream in `MaybeTlsStream::NativeTls` so the type matches
-    // what `Peer::from_websocket` expects downstream.
+    // what `DigLink::from_websocket` expects downstream.
     let ws = accept_async_with_config(
         MaybeTlsStream::NativeTls(tls),
         Some(crate::connection::ws_config()),
@@ -553,7 +570,7 @@ async fn relay_new_peer_to_live_peers(
     state: &ServiceState,
     new_row: TimestampedPeerInfo,
 ) -> Result<(), ClientError> {
-    let peers: Vec<Peer> = {
+    let peers: Vec<DigLink> = {
         let g = state
             .peers
             .lock()
@@ -561,7 +578,7 @@ async fn relay_new_peer_to_live_peers(
         g.values()
             .filter_map(|slot| match slot {
                 PeerSlot::Live(l) => Some(l.peer.clone()),
-                // Stub + POOL-* `dig-nat` members have no WebSocket `Peer` to gossip the new row to.
+                // Stub + POOL-* `dig-nat` members have no WebSocket `DigLink` to gossip the new row to.
                 PeerSlot::Stub(_) | PeerSlot::Nat(_) => None,
             })
             .collect()
@@ -573,15 +590,17 @@ async fn relay_new_peer_to_live_peers(
     Ok(())
 }
 
-/// Read the next Chia [`Message`] from a raw [`WebSocketStream`] (ping/pong passthrough).
+/// Read the next Chia [`DigMessage`] from a raw [`WebSocketStream`] (ping/pong passthrough).
 ///
-/// **Why defer `Peer::from_websocket` until after one `RequestPeers` on the raw socket?** The first
+/// **Why defer `DigLink::from_websocket` until after one `RequestPeers` on the raw socket?** The first
 /// outbound packet from [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle::connect_to)
-/// may arrive before our `Peer` reader task exists, so we answer that **initial** probe on the raw
-/// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives use the vendored
-/// [`chia_sdk_client`] patch (`vendor/chia-sdk-client`): inbound `RequestPeers` is forwarded to the
-/// application and answered with [`Peer::send_protocol_message`](dig_peer_protocol::Peer::send_protocol_message).
-async fn read_next_wire_message<S>(ws: &mut WebSocketStream<S>) -> Result<Message, ClientError>
+/// may arrive before our `DigLink` reader task exists, so we answer that **initial** probe on the raw
+/// WebSocket. Later [`RequestPeers`](chia_protocol::RequestPeers) keepalives need no such special
+/// handling: [`DigLink`] forwards every unmatched inbound message on the receiver it returns, and we
+/// answer from there with [`DigLink::send`](dig_peer_protocol::DigLink::send). (This is why the
+/// `chia-sdk-client` fork could be deleted — upstream's `Peer` swallowed unmatched inbound messages,
+/// which is the behaviour that fork existed to patch.)
+async fn read_next_wire_message<S>(ws: &mut WebSocketStream<S>) -> Result<DigMessage, ClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -589,7 +608,8 @@ where
         let raw = ws.next().await.ok_or(ClientError::MissingHandshake)??;
         match raw {
             WsMsg::Binary(bin) => {
-                return Message::from_bytes(&bin).map_err(ClientError::Streamable);
+                return DigMessage::from_bytes(&bin)
+                    .ok_or_else(|| ClientError::Io(std::io::Error::other("malformed DIG frame")));
             }
             WsMsg::Ping(p) => {
                 ws.send(WsMsg::Pong(p))
@@ -614,7 +634,7 @@ where
 /// 4. **Receive and answer `RequestPeers`** — outbound peers issue this immediately (CON-001).
 /// 5. **Address manager insert** — add the newcomer to the new-table (DSC-001 bucketing).
 /// 6. **Relay** — push the newcomer's `TimestampedPeerInfo` to all existing live peers.
-/// 7. **Upgrade to `Peer`** — hand off to [`Peer::from_websocket`] for the steady-state reader.
+/// 7. **Upgrade to `DigLink`** — hand off to [`DigLink::from_websocket`] for the steady-state reader.
 /// 8. **Bridge inbound messages** — spawn a task that forwards wire messages into the
 ///    [`ServiceState::inbound_tx`] broadcast channel (API-002 event bus).
 /// 9. **Insert `LiveSlot`** — the peer is now fully registered and visible to `peer_count`, etc.
@@ -640,7 +660,7 @@ async fn negotiate_inbound_over_ws<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let opts: PeerOptions = state.config.peer_options;
+    let opts: LinkOptions = state.config.peer_options;
 
     // --- Phase 1: Receive the remote's Handshake (with timeout) ---
     let first = tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, read_next_wire_message(&mut ws))
@@ -653,11 +673,11 @@ where
         })??;
 
     // The first application message MUST be a Handshake; anything else is a protocol violation.
-    if first.msg_type != ProtocolMessageTypes::Handshake {
-        return Err(ClientError::InvalidResponse(
-            vec![ProtocolMessageTypes::Handshake],
-            first.msg_type,
-        ));
+    if first.msg_type != HANDSHAKE_OPCODE {
+        return Err(ClientError::Io(std::io::Error::other(format!(
+            "expected a Handshake (opcode {HANDSHAKE_OPCODE}), got opcode {}",
+            first.msg_type
+        ))));
     }
     let their_handshake = Handshake::from_bytes(&first.data)?;
 
@@ -677,26 +697,24 @@ where
         // #2215: the ONE configured value, identical to what the dial path sends.
         software_version: state.config.software_version.clone(),
         server_port: listen_port_for_handshake(&state),
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![
             (1, "1".to_string()), // BASE protocol
             (2, "1".to_string()), // BLOCK_HEADERS
             (3, "1".to_string()), // RATE_LIMITS_V2
         ],
     };
-    let reply = Message {
-        msg_type: ProtocolMessageTypes::Handshake,
-        id: None, // Handshakes have no correlation id in the Chia wire protocol.
-        data: our_handshake
+    let reply = DigMessage::new(
+        HANDSHAKE_OPCODE,
+        None, // Handshakes have no correlation id in the Chia wire protocol.
+        our_handshake
             .to_bytes()
             .map_err(ClientError::Streamable)?
             .into(),
-    };
-    ws.send(WsMsg::Binary(
-        reply.to_bytes().map_err(ClientError::Streamable)?,
-    ))
-    .await
-    .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
+    );
+    ws.send(WsMsg::Binary(reply.to_bytes()))
+        .await
+        .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
 
     // CON-003: remote_software_version_sanitized was computed *before* our reply was sent.
     // This means we validate-then-respond, never the reverse — a malformed remote version
@@ -705,7 +723,7 @@ where
     // --- Phase 4: Handle the expected `RequestPeers` from the outbound peer (CON-001 pattern) ---
     // The outbound `connect_to` issues `RequestPeers` immediately after the handshake exchange
     // (see `GossipHandle::connect_to`). We answer on the *raw* WebSocket before handing to
-    // `Peer::from_websocket` — see `read_next_wire_message` doc for the rationale.
+    // `DigLink::from_websocket` — see `read_next_wire_message` doc for the rationale.
     let second = tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, read_next_wire_message(&mut ws))
         .await
         .map_err(|_| {
@@ -714,20 +732,18 @@ where
                 "inbound RequestPeers timeout",
             ))
         })??;
-    if second.msg_type == ProtocolMessageTypes::RequestPeers {
+    if second.msg_type == REQUEST_PEERS_OPCODE {
         // Reply with an empty peer list for now. Future DSC-* requirements will populate this
         // from the address manager's tried/new tables.
         let resp = RespondPeers::new(vec![]);
-        let out = Message {
-            msg_type: ProtocolMessageTypes::RespondPeers,
-            id: second.id, // Preserve correlation id so the outbound Peer reader can match it.
-            data: resp.to_bytes().map_err(ClientError::Streamable)?.into(),
-        };
-        ws.send(WsMsg::Binary(
-            out.to_bytes().map_err(ClientError::Streamable)?,
-        ))
-        .await
-        .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
+        let out = DigMessage::new(
+            RESPOND_PEERS_OPCODE,
+            second.id, // Preserve correlation id so the requester's link can match it.
+            resp.to_bytes().map_err(ClientError::Streamable)?.into(),
+        );
+        ws.send(WsMsg::Binary(out.to_bytes()))
+            .await
+            .map_err(|e| ClientError::Io(std::io::Error::other(e.to_string())))?;
     }
 
     // --- Phase 5: Register in the address manager (DSC-001 new-table bucketing) ---
@@ -749,13 +765,13 @@ where
     // SPEC §5.2 step 9 — "Relay peer info (node_discovery.py:126-127)."
     relay_new_peer_to_live_peers(&state, new_row).await?;
 
-    // --- Phase 7: Upgrade to `Peer` (chia_sdk_client managed reader/writer) ---
+    // --- Phase 7: Upgrade to `DigLink` (dig-peer-protocol's managed reader/writer) ---
     // After this point the WebSocket is consumed; all further communication goes through
-    // the `Peer` handle (send) and the `inbound_rx` channel (receive). We use
+    // the `DigLink` handle (send) and the `inbound_rx` channel (receive). We use
     // `from_server_websocket` (not `from_websocket`) because the server rustls stream cannot inhabit
     // the client-oriented `MaybeTlsStream`; the peer address is already known so no stream
     // introspection is needed. Byte-identical behaviour for the native-tls path (#1371).
-    let (peer, mut inbound_rx) = Peer::from_server_websocket(ws, remote_addr, opts)?;
+    let (peer, mut inbound_rx) = DigLink::from_server_websocket(ws, remote_addr, opts);
 
     // --- Phase 8: Per-connection inbound rate limiter (CON-005) + peer map insert ---
     // SPEC §5.4 — "Inbound: create a separate rate limiter for each connection"
@@ -767,7 +783,7 @@ where
     ));
     let meta = StubPeer {
         remote: remote_addr,
-        node_type: their_handshake.node_type,
+        node_type: dig_node_type_of(their_handshake.node_type),
         is_outbound: false, // This is the *inbound* path; outbound has its own insertion logic.
     };
     let peer_for_keepalive = peer.clone();
@@ -828,10 +844,10 @@ where
 
     // --- Phase 9: Bridge inbound wire messages into the service broadcast channel ---
     // CON-005: [`InboundRateLimiter::allows`] must approve each frame before CON-004 keepalive
-    // auto-replies and before the `(PeerId, Message)` publish.
+    // auto-replies and before the `(PeerId, DigMessage)` publish.
     if let Ok(guard) = state.inbound_tx.lock() {
         if let Some(tx_b) = guard.as_ref() {
-            let tx: broadcast::Sender<(PeerId, Message)> = tx_b.clone();
+            let tx: broadcast::Sender<(PeerId, DigMessage)> = tx_b.clone();
             let pid_task = peer_id;
             // This session's generation — so a rate-limit trip cannot penalize a later reconnect (#1691).
             let gen_task = generation;
@@ -851,18 +867,16 @@ where
                         }
                         continue;
                     }
-                    if let Ok(wl_in) = message_wire_len(&msg) {
+                    {
+                        let wl_in = message_wire_len(&msg);
                         record_live_peer_inbound_bytes(&state_fwd, pid_task, wl_in);
                     }
-                    if msg.msg_type == ProtocolMessageTypes::RequestPeers {
+                    if msg.msg_type == chia_opcodes::REQUEST_PEERS {
                         if let Ok(body) = RespondPeers::new(vec![]).to_bytes() {
-                            let reply = Message {
-                                msg_type: ProtocolMessageTypes::RespondPeers,
-                                id: msg.id,
-                                data: body.into(),
-                            };
-                            let wl_out = message_wire_len(&reply).ok();
-                            let _ = peer_rpc.send_protocol_message(reply).await;
+                            let reply =
+                                DigMessage::new(chia_opcodes::RESPOND_PEERS, msg.id, body.into());
+                            let wl_out = Some(message_wire_len(&reply));
+                            let _ = peer_rpc.send_message(reply).await;
                             if let Some(w) = wl_out {
                                 record_live_peer_outbound_bytes(&state_fwd, pid_task, w);
                             }

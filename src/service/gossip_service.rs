@@ -45,8 +45,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use chia_protocol::Bytes32;
 use dig_peer_protocol::load_ssl_cert;
-use dig_peer_protocol::Bytes32;
 use dig_peer_protocol::{ClientError, ClientState};
 
 use crate::error::GossipError;

@@ -51,10 +51,10 @@ fn test_discovery_types_importable() {
 #[test]
 fn test_chia_types_importable() {
     let _ = std::any::type_name::<dig_gossip::Bytes32>();
-    let _ = std::any::type_name::<dig_gossip::Message>();
+    let _ = std::any::type_name::<dig_gossip::DigMessage>();
     let _ = std::any::type_name::<dig_gossip::Handshake>();
     let _ = std::any::type_name::<dig_gossip::NodeType>();
-    let _ = std::any::type_name::<dig_gossip::Peer>();
+    let _ = std::any::type_name::<dig_gossip::DigLink>();
     let _ = std::any::type_name::<dig_gossip::ChiaCertificate>();
 }
 

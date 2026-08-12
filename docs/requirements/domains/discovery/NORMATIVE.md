@@ -20,7 +20,7 @@ AddressManager MUST support save()/load() to a peers file path. Binary serializa
 
 ### DSC-003: DNS Seeding
 
-DNS seeding MUST use chia-sdk-client::Network::lookup_all() with configurable timeout and batching. DNS introducers MUST be configurable via GossipConfig.
+DNS seeding MUST use the re-exported Network::lookup_all() with configurable timeout and batching. DNS introducers MUST be configurable via GossipConfig.
 
 **Spec reference:** SPEC Section 6.2 (DNS Seeding)
 

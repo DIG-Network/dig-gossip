@@ -45,12 +45,12 @@
 
 ## Hard Requirements
 
-1. **Use chia crate ecosystem first** — never reimplement what `chia-protocol`, `chia-sdk-client`, `chia-ssl`, `chia-traits` provide. The SPEC Section 1.4 lists every type reused from Chia crates.
+1. **Use `dig-peer-protocol` first** — it owns the peer link (`DigLink`) and the `DigMessage` envelope, and re-exports everything `chia-protocol`, `chia-sdk-client`, `chia-ssl` and `chia-traits` provide. Never depend on `chia-sdk-client` directly, and never vendor or patch a Chia crate. The SPEC Section 1.4 lists every reused type and where it comes from.
 2. **No custom handshake** — use `chia-protocol::Handshake` with DIG values.
 3. **No custom message framing** — use `chia-protocol::Message` and `chia-traits::Streamable`.
-4. **No custom rate limiting** — use `chia-sdk-client::RateLimiter` with `V2_RATE_LIMITS`.
-5. **No custom TLS** — use `chia-ssl::ChiaCertificate` and `chia-sdk-client` TLS utilities.
-6. **No custom DNS resolution** — use `chia-sdk-client::Network::lookup_all()`.
+4. **No custom rate limiting** — use `dig_peer_protocol::OpcodeRateLimiter`, which enforces Chia's `V2_RATE_LIMITS` keyed by raw wire opcode.
+5. **No custom TLS** — use the re-exported `ChiaCertificate` and TLS utilities.
+6. **No custom DNS resolution** — use the re-exported `Network::lookup_all()`.
 7. **Re-export, don't redefine** — `Peer`, `Message`, `Handshake`, `NodeType`, `ProtocolMessageTypes` from upstream.
 8. **No block validation** — this crate transports messages; it never validates block/transaction content.
 9. **No CLVM execution** — this crate is payload-agnostic.
@@ -66,9 +66,8 @@
 
 | Component | Crate | Version |
 |-----------|-------|---------|
+| Peer wire (link, envelope, opcodes, re-exports) | `dig-peer-protocol` | 0.4 |
 | Protocol types | `chia-protocol` | 0.26 |
-| Peer connections | `chia-sdk-client` | 0.28 |
-| TLS certificates | `chia-ssl` | 0.26 |
 | Serialization traits | `chia-traits` | 0.26 |
 | Async runtime | `tokio` | 1.x |
 | WebSocket | `tokio-tungstenite` | 0.24 |

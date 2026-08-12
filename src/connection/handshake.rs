@@ -9,11 +9,13 @@
 //!
 //! ## SPEC traceability
 //!
-//! - **SPEC §5.1 step 3** — outbound: `connect_peer()` “receives and validates Handshake response”.
+//! - **SPEC §5.1 step 3** — outbound: the dial
+//!   ([`connect_outbound_peer`](crate::connection::outbound::connect_outbound_peer)) “receives and
+//!   validates Handshake response”.
 //! - **SPEC §5.2 step 5** — inbound: “Receive Handshake, validate `network_id`.”
-//! - **SPEC §1.5 #1** — capabilities negotiated via `chia-protocol::Handshake` (`connect_peer()`
-//!   sends capabilities list). Validation here ensures the remote meets DIG compatibility.
-//! - **SPEC §1.5 #7** — `connect_peer()` rejects peers with mismatched `network_id`.
+//! - **SPEC §1.5 #1** — capabilities negotiated via `chia-protocol::Handshake` (the outbound dial
+//!   sends the capabilities list). Validation here ensures the remote meets DIG compatibility.
+//! - **SPEC §1.5 #7** — the outbound dial rejects peers with mismatched `network_id`.
 //! - **SPEC §1.4** — `Handshake` type used directly from `chia-protocol` (not redefined).
 //!
 //! ## Normative trace
@@ -40,8 +42,8 @@
 
 #![allow(clippy::result_large_err)]
 
+use chia_protocol::Handshake;
 use dig_peer_protocol::ClientError;
-use dig_peer_protocol::Handshake;
 use thiserror::Error;
 use unicode_general_category::{get_general_category, GeneralCategory};
 
@@ -172,6 +174,18 @@ impl From<HandshakeValidationError> for ClientError {
     }
 }
 
+// There is deliberately NO `From<HandshakeValidationError> for LinkError`.
+//
+// `LinkError` has no wrong-network variant, so such an impl could only render the verdict as
+// `LinkError::Io(String)` — and that lossy conversion is exactly the defect this crate already
+// shipped once: the outbound dial reached for it via `?`, a caller lost the typed
+// `ClientError::WrongNetwork`, and telling "not our network" (never retry) from "host is down"
+// (retry) came down to matching on an error string.
+//
+// A handshake verdict is policy by definition, so it has exactly one home:
+// `From<HandshakeValidationError> for DialError` takes the `Client` arm. Keeping the `LinkError`
+// route absent means the compiler, not review, is what stops the downgrade coming back.
+
 /// Validate `their_handshake` against our expected network id string (hex genesis id from
 /// [`crate::connection::outbound::network_id_handshake_string`]).
 ///
@@ -214,4 +228,120 @@ pub fn validate_remote_handshake(
         });
     }
     Ok(sanitized)
+}
+
+// ============================================================================
+// NodeType bridge — the chia/DIG boundary
+// ============================================================================
+
+/// Translate the `node_type` carried on a Chia [`Handshake`] into the DIG role enum.
+///
+/// # Why a bridge and not a cast
+///
+/// `Handshake` is a Chia full-node message, so its `node_type` is
+/// `chia_protocol::NodeType`; every DIG-side surface (peer records, introducer
+/// registration, SPEC §6.5) speaks [`dig_peer_protocol::NodeType`]. The two enums
+/// enumerate the same seven roles with the same wire discriminants `1..=7`, but they
+/// are distinct Rust types, and an `as`-cast between them would silently paper over
+/// any future divergence in either crate.
+///
+/// # Why this is total
+///
+/// Both are closed Rust enums, so a value of either type is necessarily one of the
+/// seven roles — there is no unknown-discriminant case to handle, and therefore no
+/// temptation to default one. (An unparseable byte is rejected earlier, when
+/// `Handshake` itself is decoded.) The exhaustive match means adding a role to
+/// either crate breaks the build here rather than silently mapping to a wrong role.
+#[must_use]
+pub fn dig_node_type_of(node_type: chia_protocol::NodeType) -> dig_peer_protocol::NodeType {
+    match node_type {
+        chia_protocol::NodeType::FullNode => dig_peer_protocol::NodeType::FullNode,
+        chia_protocol::NodeType::Harvester => dig_peer_protocol::NodeType::Harvester,
+        chia_protocol::NodeType::Farmer => dig_peer_protocol::NodeType::Farmer,
+        chia_protocol::NodeType::Timelord => dig_peer_protocol::NodeType::Timelord,
+        chia_protocol::NodeType::Introducer => dig_peer_protocol::NodeType::Introducer,
+        chia_protocol::NodeType::Wallet => dig_peer_protocol::NodeType::Wallet,
+        chia_protocol::NodeType::DataLayer => dig_peer_protocol::NodeType::DataLayer,
+    }
+}
+
+/// Translate a DIG role into the `node_type` a Chia [`Handshake`] carries.
+///
+/// The exact inverse of [`dig_node_type_of`]; see that function for why the two
+/// enums need a bridge at all and why both directions are total.
+#[must_use]
+pub fn chia_node_type_of(node_type: dig_peer_protocol::NodeType) -> chia_protocol::NodeType {
+    match node_type {
+        dig_peer_protocol::NodeType::FullNode => chia_protocol::NodeType::FullNode,
+        dig_peer_protocol::NodeType::Harvester => chia_protocol::NodeType::Harvester,
+        dig_peer_protocol::NodeType::Farmer => chia_protocol::NodeType::Farmer,
+        dig_peer_protocol::NodeType::Timelord => chia_protocol::NodeType::Timelord,
+        dig_peer_protocol::NodeType::Introducer => chia_protocol::NodeType::Introducer,
+        dig_peer_protocol::NodeType::Wallet => chia_protocol::NodeType::Wallet,
+        dig_peer_protocol::NodeType::DataLayer => chia_protocol::NodeType::DataLayer,
+    }
+}
+
+#[cfg(test)]
+mod node_type_bridge_tests {
+    use super::{chia_node_type_of, dig_node_type_of};
+
+    /// Every DIG role round-trips through the Chia enum and back to itself, and
+    /// lands on the same wire byte in both representations.
+    ///
+    /// Asserting the byte as well as the round-trip is what makes this test
+    /// load-bearing: a bridge that mapped two roles onto each other consistently
+    /// in both directions would round-trip perfectly while putting the wrong
+    /// discriminant on the wire.
+    #[test]
+    fn node_type_bridge_covers_every_role() {
+        use dig_peer_protocol::NodeType as Dig;
+
+        let roles = [
+            Dig::FullNode,
+            Dig::Harvester,
+            Dig::Farmer,
+            Dig::Timelord,
+            Dig::Introducer,
+            Dig::Wallet,
+            Dig::DataLayer,
+        ];
+        assert_eq!(roles.len(), 7, "all seven roles are covered");
+
+        for role in roles {
+            let chia = chia_node_type_of(role);
+            assert_eq!(
+                chia as u8,
+                role.to_byte(),
+                "{role:?} must occupy the same wire byte in both enums"
+            );
+            assert_eq!(dig_node_type_of(chia), role, "{role:?} round-trips");
+        }
+    }
+
+    /// The bridge is a bijection: mapping DIG -> Chia -> DIG returns the original
+    /// role for all seven, so no two roles collapse onto one.
+    #[test]
+    fn node_type_bridge_is_a_bijection() {
+        use dig_peer_protocol::NodeType as Dig;
+
+        let roles = [
+            Dig::FullNode,
+            Dig::Harvester,
+            Dig::Farmer,
+            Dig::Timelord,
+            Dig::Introducer,
+            Dig::Wallet,
+            Dig::DataLayer,
+        ];
+        let mapped: Vec<u8> = roles.iter().map(|r| chia_node_type_of(*r) as u8).collect();
+        let mut unique = mapped.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            roles.len(),
+            "no two DIG roles share a Chia role"
+        );
+    }
 }

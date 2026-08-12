@@ -47,12 +47,12 @@ fn test_reexport_handshake() {
     assert_send_sync::<dig_gossip::Handshake>();
 }
 
-/// **Acceptance:** `Message` (Chia wire frame) is re-exported and `Send + Sync`.
+/// **Acceptance:** `DigMessage` (Chia wire frame) is re-exported and `Send + Sync`.
 ///
-/// `Message` wraps `msg_type + id + data` for every on-wire protocol frame.
+/// `DigMessage` wraps `msg_type + id + data` for every on-wire protocol frame.
 #[test]
 fn test_reexport_message() {
-    assert_send_sync::<dig_gossip::Message>();
+    assert_send_sync::<dig_gossip::DigMessage>();
 }
 
 /// **Acceptance:** `NodeType` (Chia enum: FullNode, Wallet, etc.) is re-exported.
@@ -66,7 +66,7 @@ fn test_reexport_node_type() {
 /// **Acceptance:** `ProtocolMessageTypes` (Chia opcode enum) is re-exported.
 ///
 /// This enum carries discriminants for all Chia wire messages (Handshake, RequestPeers, etc.)
-/// and is needed by any code that inspects `Message::msg_type`.
+/// and is needed by any code that inspects `DigMessage::msg_type`.
 #[test]
 fn test_reexport_protocol_message_types() {
     assert_send_sync::<dig_gossip::ProtocolMessageTypes>();
@@ -84,8 +84,9 @@ fn test_introducer_ops_are_protocol_message_variants() {
     use dig_gossip::ProtocolMessageTypes as M;
     let _ = M::RequestPeersIntroducer;
     let _ = M::RespondPeersIntroducer;
-    let _ = M::RegisterPeer;
-    let _ = M::RegisterAck;
+    // 218/219 are DIG opcodes: they exist as DigMessageType, not as Chia enum variants.
+    let _ = dig_gossip::DigMessageType::RegisterPeer;
+    let _ = dig_gossip::DigMessageType::RegisterAck;
     let _: dig_gossip::RequestPeersIntroducer = dig_gossip::RequestPeersIntroducer::new();
     let _: dig_gossip::RegisterPeer =
         dig_gossip::RegisterPeer::new("127.0.0.1".into(), 9444, dig_gossip::NodeType::FullNode);
@@ -93,11 +94,11 @@ fn test_introducer_ops_are_protocol_message_variants() {
 
 /// **Acceptance:** `Peer` (chia-sdk-client WebSocket handle) is re-exported.
 ///
-/// `Peer` is the runtime handle for sending/receiving `Message` frames over a
+/// `Peer` is the runtime handle for sending/receiving `DigMessage` frames over a
 /// WebSocket connection. CON-001 and API-005 depend on it.
 #[test]
 fn test_reexport_peer() {
-    assert_send_sync::<dig_gossip::Peer>();
+    assert_send_sync::<dig_gossip::DigLink>();
 }
 
 /// **Acceptance:** `RateLimiter` (Chia rate-limit enforcement) is re-exported.
@@ -105,7 +106,7 @@ fn test_reexport_peer() {
 /// Used internally for per-peer message throttling per V2 rate limit tables.
 #[test]
 fn test_reexport_rate_limiter() {
-    assert_send_sync::<dig_gossip::RateLimiter>();
+    assert_send_sync::<dig_gossip::OpcodeRateLimiter>();
 }
 
 /// **Acceptance:** `V2_RATE_LIMITS` static is re-exported.
@@ -224,16 +225,16 @@ fn test_full_import_set() {
         dig_extension_rate_limits_map, load_ssl_cert, message_wire_len, metric_unix_timestamp_secs,
         new_inbound_rate_limiter, peer_id_for_addr, peer_id_from_tls_spki_der, AddressManager,
         BackpressureConfig, Bytes32, ChiaCertificate, ChiaProtocolMessage, Client, ClientError,
-        ClientState, DigMessageType, ExtendedPeerInfo, FullBlock, GossipConfig, GossipError,
-        GossipHandle, GossipService, GossipStats, Handshake, IntroducerClient, IntroducerConfig,
-        IntroducerPeers, Message, Network, NewPeak, NewTransaction, NewUnfinishedBlock, NodeType,
-        Peer, PeerConnection, PeerConnectionWireMetrics, PeerId, PeerIdRotationConfig, PeerInfo,
-        PeerOptions, PeerReputation, PenaltyReason, ProtocolMessageTypes, RateLimit, RateLimiter,
-        RateLimits, RelayConfig, RelayStats, RequestBlock, RequestBlocks,
-        RequestMempoolTransactions, RequestPeers, RequestTransaction, RequestUnfinishedBlock,
-        RespondBlock, RespondBlocks, RespondPeers, RespondTransaction, RespondUnfinishedBlock,
-        ServiceState, SpendBundle, Streamable, TimestampedPeerInfo, UnknownDigMessageType,
-        VettedPeer, DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
+        ClientState, DigLink, DigMessage, DigMessageType, ExtendedPeerInfo, FullBlock,
+        GossipConfig, GossipError, GossipHandle, GossipService, GossipStats, Handshake,
+        IntroducerClient, IntroducerConfig, IntroducerPeers, LinkOptions, Network, NewPeak,
+        NewTransaction, NewUnfinishedBlock, NodeType, OpcodeRateLimiter, PeerConnection,
+        PeerConnectionWireMetrics, PeerId, PeerIdRotationConfig, PeerInfo, PeerReputation,
+        PenaltyReason, ProtocolMessageTypes, RateLimit, RateLimits, RelayConfig, RelayStats,
+        RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
+        RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
+        RespondUnfinishedBlock, ServiceState, SpendBundle, Streamable, TimestampedPeerInfo,
+        UnknownDigMessageType, VettedPeer, DEFAULT_INTRODUCER_NETWORK_ID, V2_RATE_LIMITS,
     };
 }
 

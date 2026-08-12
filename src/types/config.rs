@@ -28,7 +28,7 @@
 //! # Chia context
 //!
 //! Several fields in [`GossipConfig`] originate from Chia's Python `node_discovery.py` and
-//! `server_api.py`: target outbound count, connect interval, and the `PeerOptions` rate limit
+//! `server_api.py`: target outbound count, connect interval, and the `LinkOptions` rate limit
 //! factor. The [`Network`](dig_peer_protocol::Network) field delegates DNS seed lookup to
 //! `chia-sdk-client`'s `Network::lookup_all()`, avoiding reimplementation.
 //!
@@ -44,8 +44,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use dig_peer_protocol::Bytes32;
-use dig_peer_protocol::{Network, PeerOptions};
+use chia_protocol::Bytes32;
+use dig_peer_protocol::{LinkOptions, Network};
 use serde::{Deserialize, Serialize};
 
 use super::peer::PeerId;
@@ -228,7 +228,7 @@ pub struct GossipConfig {
 
     /// Per-connection options forwarded to `chia-sdk-client` when constructing a [`Peer`](dig_peer_protocol::Peer).
     /// The main knob here is `rate_limit_factor` which scales the V2 rate limits (CON-005).
-    pub peer_options: PeerOptions,
+    pub peer_options: LinkOptions,
 
     /// Dandelion++ stem/fluff configuration (SPEC §1.9.1 / PRV-001).
     /// Only compiled when the `dandelion` feature flag is enabled (STR-004).
@@ -373,7 +373,7 @@ impl Default for GossipConfig {
             gossip_fanout: 8,
             max_seen_messages: DEFAULT_MAX_SEEN_MESSAGES,
             peers_file_path: PathBuf::new(),
-            peer_options: PeerOptions::default(),
+            peer_options: LinkOptions::default(),
             #[cfg(feature = "dandelion")]
             dandelion: None,
             peer_id_rotation: None,

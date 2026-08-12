@@ -13,14 +13,23 @@ name: CI
 # the merge on transient flakiness. Coverage instrumentation still runs via
 # `cargo llvm-cov nextest` so the 80% floor is measured the same way.
 #
+# `--no-fail-fast` (dig_ecosystem#2228) is what makes the numbers this job prints
+# TOTALS rather than floors. Without it nextest stops at the first failing target,
+# and the run reports a pass count that reads exactly like a complete one: a red
+# head here stopped at 531 of 977, so 446 tests never executed AND the 80% line
+# floor below was never measured at all — the job failed for the one broken test
+# while silently declining to answer the coverage question it exists to answer.
+# "Unmeasured" and "measured and under" are different verdicts and must not look
+# alike. The job still fails on any real failure; it just finishes counting first.
+#
 # Coverage notes:
 # - Measured against the production-shaped **default** feature set
 #   (`native-tls,relay,erlay,compact-blocks,dandelion`). The `tor` and `rustls`
 #   features are opt-in and pull heavy / alternate-TLS dependencies, so they are
 #   not part of the coverage gate (their cfg-gated code is excluded from the
 #   default-feature report rather than counted as "uncovered").
-# - `vendor/` (the patched chia-protocol / chia-sdk-client / native-tls crates)
-#   is excluded via `--ignore-filename-regex` — we only gate on our own `src/`.
+# - `vendor/` (the patched `native-tls` crate — the only remaining fork) is
+#   excluded via `--ignore-filename-regex` — we only gate on our own `src/`.
 # - Integration tests bind loopback TLS listeners; they run single-threaded
 #   (`--test-threads=1`) to match `publish.yml` and avoid port/handshake races.
 
@@ -112,6 +121,7 @@ jobs:
           --no-default-features
           --features rustls,relay,erlay,compact-blocks,dandelion
           --lib
+          --no-fail-fast
           --
           --test-threads=1
 
@@ -146,6 +156,7 @@ jobs:
           --ignore-filename-regex 'vendor/'
           --fail-under-lines 80
           --lcov --output-path lcov.info
+          --no-fail-fast
           --test-threads=1
           --retries 2
 

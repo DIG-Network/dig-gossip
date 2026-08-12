@@ -12,29 +12,41 @@
 //!
 //! # Design decisions
 //!
-//! - **Mirror `dig_peer_protocol::connect_peer` handshake:** Upstream
-//!   [`connect_peer`](dig_peer_protocol::connect_peer) only accepts a [`std::net::SocketAddr`].
+//! - **Mirror the one-call dial's handshake:** [`DigLink::connect`](dig_peer_protocol::DigLink::connect)
+//!   only accepts a [`std::net::SocketAddr`].
 //!   Introducers advertise a full `wss://…/ws` URL ([`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig)),
-//!   so we call [`Peer::connect_full_uri`](dig_peer_protocol::Peer::connect_full_uri) then replay the same
-//!   outbound [`Handshake`] + FullNode validation as `vendor/chia-sdk-client/src/connect.rs` —
+//!   so we call [`DigLink::connect_full_uri`](dig_peer_protocol::DigLink::connect_full_uri) then replay the same
+//!   outbound [`Handshake`] + FullNode validation the one-call dial performs internally
+//!   (see [`src/connection/outbound.rs`](crate::connection::outbound) for how the dial sequence is replayed);
 //!   any drift vs upstream should be fixed in lockstep when bumping `chia-sdk-client`.
 //! - **Whole-operation timeout:** DSC-004 requires one timeout covering connect + handshake + RPC.
 //!   We wrap the async block in [`tokio::time::timeout`]; on expiry we return
 //!   [`GossipError::IntroducerError`](crate::error::GossipError::IntroducerError) with a stable substring
 //!   so tests can distinguish timeout from transport failures.
-//! - **TLS feature gate:** Without `native-tls` / `rustls`, [`Peer::connect_full_uri`] does not exist;
-//!   [`IntroducerClient::query_peers`] returns [`GossipError::ClientError`](crate::error::GossipError::ClientError)
-//!   (`UnsupportedTls`) so `--no-default-features` builds remain coherent.
+//! - **TLS feature gate:** [`DigLink::connect_full_uri`] exists only with `native-tls` or `rustls`,
+//!   so the dials below are gated on one of them being enabled.
+//!
+//!   A build with NEITHER backend **does not compile today** — `dig_peer_protocol::{Client,
+//!   ClientState}` are imported unconditionally in `service::state`, `service::gossip_service` and
+//!   `lib.rs`, and no CI job builds without a TLS backend. This module used to carry
+//!   `UnsupportedTls` stubs and a claim that `--no-default-features` builds "remain coherent"; both
+//!   are gone, because the stubs served only that claim and the claim was false
+//!   (dig_ecosystem#2225 tracks making such a build work, or removing the possibility).
 
+use crate::connection::chia_opcodes;
+use crate::connection::dial_error::{non_handshake_first_frame, DialError};
+use crate::types::dig_messages::DigMessageType;
+use dig_peer_protocol::LinkError;
 use std::time::Duration;
 
-use dig_peer_protocol::{Bytes32, Handshake, NodeType, ProtocolMessageTypes, TimestampedPeerInfo};
+use chia_protocol::{Bytes32, Handshake, TimestampedPeerInfo};
+use dig_peer_protocol::NodeType;
 
 use crate::discovery::introducer_register_wire::{RegisterAck, RegisterPeer};
 use crate::discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
 use dig_peer_protocol::ChiaCertificate;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{load_ssl_cert, ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{load_ssl_cert, ClientError, DigLink, LinkOptions};
 
 use crate::connection::handshake::ADVERTISED_PROTOCOL_VERSION;
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
@@ -70,7 +82,7 @@ impl IntroducerClient {
     /// * `wss_uri` — full WebSocket URI (`wss://host:port/ws`, …) from [`IntroducerConfig::endpoint`](crate::types::config::IntroducerConfig).
     /// * `local_certificate` — this node’s TLS identity (mutual TLS with the introducer).
     /// * `network_id` — DIG genesis id; encoded for the Chia handshake string via [`network_id_handshake_string`].
-    /// * `peer_options` — forwarded to [`Peer::connect_full_uri`](dig_peer_protocol::Peer::connect_full_uri) (rate limits, etc.).
+    /// * `peer_options` — forwarded to [`DigLink::connect_full_uri`](dig_peer_protocol::DigLink::connect_full_uri) (rate limits, etc.).
     /// * `operation_timeout` — hard cap for **connect + handshake + introducer request** (DSC-004 acceptance).
     /// * `software_version` — [`GossipConfig::software_version`](crate::types::config::GossipConfig::software_version),
     ///   advertised to the introducer exactly as it is to any other peer (dig_ecosystem#2215). An
@@ -86,7 +98,7 @@ impl IntroducerClient {
         wss_uri: &str,
         local_certificate: &ChiaCertificate,
         network_id: Bytes32,
-        peer_options: PeerOptions,
+        peer_options: LinkOptions,
         operation_timeout: Duration,
         software_version: &str,
     ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
@@ -94,53 +106,58 @@ impl IntroducerClient {
 
         let work = async {
             let connector = tls_connector_for_cert(local_certificate)?;
-            let (peer, mut receiver) =
-                Peer::connect_full_uri(wss_uri, connector, peer_options).await?;
+            let (peer, mut receiver) = DigLink::connect_full_uri(wss_uri, connector, peer_options)
+                .await
+                .map_err(DialError::Link)?;
 
             peer.send(Handshake {
                 network_id: network_string.clone(),
                 protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
                 software_version: software_version.to_string(),
                 server_port: 0,
-                node_type: NodeType::Wallet,
+                node_type: chia_protocol::NodeType::Wallet,
                 capabilities: vec![
                     (1, "1".to_string()),
                     (2, "1".to_string()),
                     (3, "1".to_string()),
                 ],
             })
-            .await?;
+            .await
+            .map_err(DialError::Link)?;
 
+            // Policy, not transport: the link opened and the introducer closed it without ever
+            // completing the handshake, so re-dialling the same endpoint meets the same behaviour.
             let Some(message) = receiver.recv().await else {
-                return Err(ClientError::MissingHandshake);
+                return Err(DialError::Client(ClientError::MissingHandshake));
             };
 
-            if message.msg_type != ProtocolMessageTypes::Handshake {
-                return Err(ClientError::InvalidResponse(
-                    vec![ProtocolMessageTypes::Handshake],
-                    message.msg_type,
-                ));
+            // Policy, not transport: the peer was reached and answered with something other
+            // than a `Handshake`, so re-dialling meets the same behaviour (`dial_error` docs).
+            if message.msg_type != chia_opcodes::HANDSHAKE {
+                return Err(non_handshake_first_frame(message.msg_type));
             }
 
-            let handshake = Handshake::from_bytes(&message.data)?;
+            let handshake = Handshake::from_bytes(&message.data)
+                .map_err(|e| DialError::Link(LinkError::from(e)))?;
 
-            if handshake.node_type != NodeType::FullNode {
-                return Err(ClientError::WrongNodeType(
-                    NodeType::FullNode,
+            if handshake.node_type != chia_protocol::NodeType::FullNode {
+                return Err(DialError::Client(ClientError::WrongNodeType(
+                    chia_protocol::NodeType::FullNode,
                     handshake.node_type,
-                ));
+                )));
             }
 
             if handshake.network_id != network_string {
-                return Err(ClientError::WrongNetwork(
+                return Err(DialError::Client(ClientError::WrongNetwork(
                     network_string,
                     handshake.network_id,
-                ));
+                )));
             }
 
             let response: RespondPeersIntroducer = peer
                 .request_infallible(RequestPeersIntroducer::new())
-                .await?;
+                .await
+                .map_err(DialError::Link)?;
 
             Ok(response.peer_list)
         };
@@ -156,7 +173,7 @@ impl IntroducerClient {
     /// Register this node’s P2P address with a DIG introducer (**DSC-005**).
     ///
     /// Mirrors [`Self::query_peers`] for TLS + [`Handshake`] validation, then performs
-    /// `RegisterPeer → RegisterAck` via [`Peer::request_infallible`](dig_peer_protocol::Peer::request_infallible).
+    /// `RegisterPeer → RegisterAck` via [`DigLink::request_infallible`](dig_peer_protocol::DigLink::request_infallible).
     ///
     /// # Returns
     ///
@@ -168,7 +185,7 @@ impl IntroducerClient {
         wss_uri: &str,
         local_certificate: &ChiaCertificate,
         network_id: Bytes32,
-        peer_options: PeerOptions,
+        peer_options: LinkOptions,
         operation_timeout: Duration,
         registration: &PeerRegistration,
         software_version: &str,
@@ -177,48 +194,52 @@ impl IntroducerClient {
 
         let work = async {
             let connector = tls_connector_for_cert(local_certificate)?;
-            let (peer, mut receiver) =
-                Peer::connect_full_uri(wss_uri, connector, peer_options).await?;
+            let (peer, mut receiver) = DigLink::connect_full_uri(wss_uri, connector, peer_options)
+                .await
+                .map_err(DialError::Link)?;
 
             peer.send(Handshake {
                 network_id: network_string.clone(),
                 protocol_version: ADVERTISED_PROTOCOL_VERSION.to_string(),
                 software_version: software_version.to_string(),
                 server_port: 0,
-                node_type: NodeType::Wallet,
+                node_type: chia_protocol::NodeType::Wallet,
                 capabilities: vec![
                     (1, "1".to_string()),
                     (2, "1".to_string()),
                     (3, "1".to_string()),
                 ],
             })
-            .await?;
+            .await
+            .map_err(DialError::Link)?;
 
+            // Policy, not transport: the link opened and the introducer closed it without ever
+            // completing the handshake, so re-dialling the same endpoint meets the same behaviour.
             let Some(message) = receiver.recv().await else {
-                return Err(ClientError::MissingHandshake);
+                return Err(DialError::Client(ClientError::MissingHandshake));
             };
 
-            if message.msg_type != ProtocolMessageTypes::Handshake {
-                return Err(ClientError::InvalidResponse(
-                    vec![ProtocolMessageTypes::Handshake],
-                    message.msg_type,
-                ));
+            // Policy, not transport: the peer was reached and answered with something other
+            // than a `Handshake`, so re-dialling meets the same behaviour (`dial_error` docs).
+            if message.msg_type != chia_opcodes::HANDSHAKE {
+                return Err(non_handshake_first_frame(message.msg_type));
             }
 
-            let handshake = Handshake::from_bytes(&message.data)?;
+            let handshake = Handshake::from_bytes(&message.data)
+                .map_err(|e| DialError::Link(LinkError::from(e)))?;
 
-            if handshake.node_type != NodeType::FullNode {
-                return Err(ClientError::WrongNodeType(
-                    NodeType::FullNode,
+            if handshake.node_type != chia_protocol::NodeType::FullNode {
+                return Err(DialError::Client(ClientError::WrongNodeType(
+                    chia_protocol::NodeType::FullNode,
                     handshake.node_type,
-                ));
+                )));
             }
 
             if handshake.network_id != network_string {
-                return Err(ClientError::WrongNetwork(
+                return Err(DialError::Client(ClientError::WrongNetwork(
                     network_string,
                     handshake.network_id,
-                ));
+                )));
             }
 
             let body = RegisterPeer::new(
@@ -226,7 +247,25 @@ impl IntroducerClient {
                 registration.port,
                 registration.node_type,
             );
-            peer.request_infallible::<RegisterAck, _>(body).await
+            // Opcode 218/219 have no `ProtocolMessageTypes` variant, so they travel as raw
+            // DIG opcodes rather than through the Chia-typed `request_infallible` path.
+            let reply = peer
+                .request_dig(
+                    DigMessageType::RegisterPeer as u8,
+                    body.to_bytes()
+                        .map_err(|e| DialError::Link(LinkError::from(e)))?
+                        .into(),
+                )
+                .await
+                .map_err(DialError::Link)?;
+            RegisterAck::from_dig_message(&reply)
+                .ok_or_else(|| {
+                    DialError::Link(LinkError::InvalidResponse(
+                        vec![DigMessageType::RegisterAck as u8],
+                        reply.msg_type,
+                    ))
+                })?
+                .map_err(|e| DialError::Link(LinkError::from(e)))
         };
 
         match tokio::time::timeout(operation_timeout, work).await {
@@ -235,35 +274,6 @@ impl IntroducerClient {
                 "introducer registration timed out".into(),
             )),
         }
-    }
-
-    /// TLS-disabled builds cannot dial introducers — fail fast with the same error shape other
-    /// transports use when TLS is unavailable.
-    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
-    pub async fn register_with_introducer(
-        _wss_uri: &str,
-        _local_certificate: &ChiaCertificate,
-        _network_id: Bytes32,
-        _peer_options: PeerOptions,
-        _operation_timeout: Duration,
-        _registration: &PeerRegistration,
-        _software_version: &str,
-    ) -> Result<RegisterAck, GossipError> {
-        Err(ClientError::UnsupportedTls.into())
-    }
-
-    /// TLS-disabled builds cannot dial introducers — fail fast with the same error shape other
-    /// transports use when TLS is unavailable.
-    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
-    pub async fn query_peers(
-        _wss_uri: &str,
-        _local_certificate: &ChiaCertificate,
-        _network_id: Bytes32,
-        _peer_options: PeerOptions,
-        _operation_timeout: Duration,
-        _software_version: &str,
-    ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
-        Err(ClientError::UnsupportedTls.into())
     }
 }
 

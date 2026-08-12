@@ -221,9 +221,11 @@ check the accept-loop admission gates first.
   proof-of-possession is still enforced via the TLS CertificateVerify signature. `peer_id` reuses the
   shared `spki_der_from_leaf_cert_der` + `peer_id_from_tls_spki_der` helpers → byte-identical.
 - **`MaybeTlsStream` is `#[non_exhaustive]` and only types the CLIENT rustls stream.** A server-side
-  `tokio_rustls::server::TlsStream` cannot inhabit it, so `Peer::from_websocket` is unusable inbound.
-  The vendored `chia-sdk-client` boxes `PeerInner`'s split sink/stream and exposes
-  `Peer::from_server_websocket(ws, addr, opts)` (generic over the transport, `Peer` stays non-generic).
+  `tokio_rustls::server::TlsStream` cannot inhabit it, so `from_websocket` is unusable inbound.
+  The fix boxes the split sink/stream and exposes `from_server_websocket(ws, addr, opts)` (generic
+  over the transport, while the link handle itself stays non-generic). That escape hatch originally
+  lived in the vendored `chia-sdk-client`; it now lives in `dig_peer_protocol::DigLink`, which is one
+  of the reasons the fork could be deleted.
 - **aws-lc-sys on Windows.** The rustls `aws_lc_rs` backend fails to C-compile in a deep worktree
   (CMake `tlog` path exceeds Windows MAX_PATH). Build/test the rustls features with a short
   `CARGO_TARGET_DIR` (e.g. `/c/t/...`); CI (Linux) is unaffected.
@@ -584,3 +586,71 @@ a hand-written README.** Both vendored READMEs understated their fork, and a han
 wrong twice in one investigation. `vendor/fork-delta.sh <crate>` regenerates it; the vendored trees
 are unpacked tarballs of a known version, so the same-version registry source is an exact baseline
 and everything the diff reports is DIG's by construction.
+
+## An unused `[patch.crates-io]` entry is a WARNING, not an error (dig_ecosystem#2228)
+
+`[patch.crates-io]` substitutes a package only where the patched version SATISFIES the existing
+requirement. When it does not, Cargo drops the patch, resolves the pristine upstream crate, and
+exits **zero**:
+
+```
+$ cargo metadata --offline          # after setting vendor/chia-protocol version = "0.36.1"
+warning: patch `chia-protocol v0.36.1 (vendor/chia-protocol)` was not used in the crate graph
+     Locking 1 package to latest compatible version
+      Adding chia-protocol v0.26.0 (available: v0.47.0)
+EXIT=0
+```
+
+The failure had no shape at all. dig-gossip does not depend on `chia-protocol` alone — it depends on
+`dig-peer-protocol`, which pins its own `chia-protocol` / `chia-sdk-client` requirements, and a
+0.36.1 patch satisfied neither. The only thing that made it loud was that the code stopped compiling
+for an unrelated reason.
+
+Two durable consequences, both still true now that only `native-tls` is patched:
+
+- **A patch-not-used warning must never be "fixed" by deleting the reference that surfaces it.** The
+  compile break IS the guard. Treat it as one.
+- **The remaining `native-tls` patch has NO such compile guard, which is exactly why the crates.io
+  publish is blocked in CI rather than left to the build.** `cargo publish` strips
+  `[patch.crates-io]`, so a published dig-gossip would build cleanly against upstream `native-tls`
+  and silently accept inbound peers presenting no client certificate — upstream `TlsAcceptorBuilder`
+  cannot request one. A guard step in `publish.yml` is the only thing standing between that and a
+  release (dig_ecosystem#2647).
+
+Also measured and still worth keeping: upstream's `ProtocolMessageTypes` stops at
+`RespondCostInfo = 107` at **0.26.0, 0.36.1 and 0.47.0**, so DIG's 200-222 band collides with nothing
+upstream and will not force a renumber on any future rebase.
+
+## Deleting the vendored Chia forks: the raw `u8` opcode was the whole mechanism (dig_ecosystem#2228)
+
+An earlier investigation concluded that `chia-protocol` could not be deleted "without moving the wire
+off the typed `Message`", and filed that move as a prerequisite redesign rather than a deletion. The
+redesign was then done, and it worked. Recording what actually made it possible, because the shape of
+the answer generalises:
+
+- **The blocker was one field's TYPE, not the crate.** Chia's `ProtocolMessageTypes` is a closed
+  `#[repr(u8)]` enum (not `#[non_exhaustive]`), and `Message.msg_type` is typed as it, so
+  `Message::from_bytes` rejects a DIG opcode. The fork existed solely to add variants 200-222 to that
+  enum. `dig_peer_protocol::DigMessage` keeps the identical layout and leaves `msg_type` a raw `u8`,
+  so the same bytes decode with no enum to extend.
+- **The cost was that three call sites stopped being enum-typed** — the inbound decode, the broadcast
+  classifier, and the rate-limit keying. That is what made it a redesign. It is also what made it
+  cheap in the end: the rate limiter was ALREADY keyed by the raw opcode byte (`HashMap<u8, _>`), so
+  it needed relocating, not rewriting.
+- **The wire was pinned BEFORE the refactor and proven identical after.** All nine golden hex vectors
+  are byte-for-byte unchanged. A transport swap with no wire-level regression test is a rewrite you
+  cannot audit; with one, "did the bytes move?" is a question the suite answers rather than a claim
+  the author makes.
+- **`chia-sdk-client` fell out for free once `DigLink` existed.** Its three fork items —
+  `send_protocol_message`, `from_server_websocket`, and inbound `RequestPeers` routing — are
+  properties of the link, and the new link has them natively.
+
+What survives: `native-tls` is the **only** remaining `[patch.crates-io]` entry and is
+security-load-bearing (CERT_REQUIRED + Chia CA trust on the OpenSSL server acceptor, CON-009). Every
+`chia-*` crate now resolves from crates.io with no path or vendor source. `chia-protocol` and
+`chia-sdk-client` remain legitimate TRANSITIVE dependencies via `dig-peer-protocol`, so a mention of
+either crate is not by itself stale — only a claim about a *vendored fork* of one is.
+
+And the general lesson: **a "cannot be deleted" verdict is only as good as the alternative that was
+priced.** The earlier verdict was correct about the constraint and wrong about the conclusion,
+because it treated "this needs a redesign" as a stopping condition instead of a cost estimate.

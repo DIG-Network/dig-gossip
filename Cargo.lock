@@ -665,6 +665,8 @@ dependencies = [
 [[package]]
 name = "chia-protocol"
 version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9256179e4c912313532d7a47a50f67f6128313ee86a3798e54050afb73d6042"
 dependencies = [
  "chia-bls 0.26.0",
  "chia-sha2 0.26.0",
@@ -706,6 +708,8 @@ dependencies = [
 [[package]]
 name = "chia-sdk-client"
 version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bc22c29cc7562e9b65bf4d02bd0881657f1628dca84ad5b40d87a912e8a0f5d"
 dependencies = [
  "aws-lc-rs",
  "chia-protocol",
@@ -1437,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.22.2"
+version = "0.23.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1538,9 +1542,9 @@ dependencies = [
 
 [[package]]
 name = "dig-peer-protocol"
-version = "0.2.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "114832cad5ae6b8adfd319e8480d1eed0ffb8bc77e41b9d3f7fb4ce9ef6219ee"
+checksum = "05ae7bfaf7d9535ef214ba53b019be888560d410b7472b3ad76a0ef07b62654b"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",
@@ -1548,7 +1552,13 @@ dependencies = [
  "chia-ssl",
  "chia-traits 0.26.0",
  "chia_streamable_macro 0.26.0",
+ "futures-util",
  "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tungstenite",
 ]
 
 [[package]]

@@ -10,8 +10,8 @@
 //! ## SPEC citations
 //!
 //! - SPEC §9.1 — Crate Boundary: `dig-gossip` is a library crate wrapping
-//!   `chia-sdk-client` and `chia-protocol`. Input: `Message` via `broadcast()`/`send_to()`.
-//!   Output: `(PeerId, Message)` via inbound channel. `ServiceState` is the runtime
+//!   `chia-sdk-client` and `chia-protocol`. Input: `DigMessage` via `broadcast()`/`send_to()`.
+//!   Output: `(PeerId, DigMessage)` via inbound channel. `ServiceState` is the runtime
 //!   interior that makes this possible.
 //! - SPEC §2.4 — `PeerConnection` fields: `ServiceState::peers` stores per-connection
 //!   metadata (direction, node type, remote address, reputation, rate limiter) that
@@ -42,7 +42,7 @@
 //!
 //! # Stub peers (pre-CON-001)
 //!
-//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_peer_protocol::Peer`].
+//! Real [`crate::types::peer::PeerConnection`] values require a live [`dig_peer_protocol::DigLink`].
 //! Until CON-001 (outbound WSS connect) was implemented, we tracked synthetic peers in
 //! [`ServiceState::peers`] via [`PeerSlot::Stub`] so `peer_count`, `broadcast`, and
 //! `connect_to` semantics could be tested without TLS sockets. Stubs remain for
@@ -64,15 +64,15 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dig_peer_protocol::ChiaCertificate;
-use dig_peer_protocol::{ClientState, Peer};
-use dig_peer_protocol::{Message, NodeType};
+use dig_peer_protocol::{ClientState, DigLink};
+use dig_peer_protocol::{DigMessage, NodeType};
 use lru::LruCache;
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use dig_peer_protocol::Bytes32;
+use chia_protocol::Bytes32;
 
 use crate::connection::inbound_limits::InboundRateLimiter;
 use crate::discovery::address_manager::AddressManager;
@@ -94,7 +94,7 @@ pub(crate) const LC_STOPPED: u8 = 2;
 /// Minimal metadata shared by both stub rows and live TLS peers.
 ///
 /// Kept separate from [`LiveSlot`] so that unit tests can create lightweight entries
-/// without a real [`Peer`] handle. Every peer -- stub or live -- has a direction, a
+/// without a real [`DigLink`] handle. Every peer -- stub or live -- has a direction, a
 /// declared [`NodeType`] (from the Chia `Handshake`), and a remote socket address.
 ///
 /// # Fields
@@ -115,7 +115,7 @@ pub(crate) struct StubPeer {
     pub is_outbound: bool,
 }
 
-/// A *live* TLS peer with a real [`Peer`] handle (CON-001 outbound `wss://` or CON-002 inbound).
+/// A *live* TLS peer with a real [`DigLink`] handle (CON-001 outbound `wss://` or CON-002 inbound).
 ///
 /// Created after a successful Chia handshake and policy validation (CON-003). The slot
 /// retains handshake metadata so that snapshot types like
@@ -123,9 +123,9 @@ pub(crate) struct StubPeer {
 ///
 /// # Ownership
 ///
-/// The [`Peer`] inside is an `Arc`-backed handle from `chia-sdk-client`; dropping this
+/// The [`DigLink`] inside is an `Arc`-backed handle from `chia-sdk-client`; dropping this
 /// slot does *not* close the underlying WebSocket -- the caller must call
-/// [`Peer::close()`](Peer::close) explicitly (done in
+/// [`DigLink::close()`](DigLink::close) explicitly (done in
 /// [`GossipService::stop`](super::gossip_service::GossipService::stop)).
 ///
 /// # Requirement traceability
@@ -134,15 +134,16 @@ pub(crate) struct StubPeer {
 /// * **CON-003** -- handshake validation decides which fields are retained.
 /// * **CON-004** -- [`PeerReputation`] is updated by
 ///   [`crate::connection::keepalive::spawn_keepalive_task`] with RTT samples.
-/// * **CON-005** -- [`InboundRateLimiter`] (`incoming = true`, 60 s window) enforced on the inbound
-///   `mpsc` bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
+/// * **CON-005** -- [`InboundRateLimiter`] (60 s window; `incoming = true` on the DIG half only —
+///   see TODO(dig_ecosystem#2228) on [`InboundRateLimiter::new`]) enforced on the inbound `mpsc`
+///   bridge before broadcast; violations call [`apply_inbound_rate_limit_violation`].
 /// * **CON-006** -- [`PeerConnectionWireMetrics`] updated on each metered send/receive (wire bytes).
 #[derive(Debug)]
 pub(crate) struct LiveSlot {
     /// Common metadata (direction, node type, remote address) shared with [`StubPeer`].
     pub meta: StubPeer,
     /// The `chia-sdk-client` WebSocket handle for sending/receiving wire messages.
-    pub peer: Peer,
+    pub peer: DigLink,
     /// Remote’s declared protocol version string from the Chia `Handshake`, retained
     /// after [`crate::connection::handshake::validate_remote_handshake`] succeeds (CON-003).
     pub remote_protocol_version: String,
@@ -210,7 +211,7 @@ pub(crate) struct DigBanEntry {
 /// This is a peer the connected-peer pool dialed via `dig-nat`'s `connect()` (mTLS, verified
 /// `peer_id`, NAT-traversal ladder). It owns the multiplexed [`crate::nat::NatPeerConnection`] — the
 /// stream transport dig-node opens gossip channels + range streams on. Unlike a [`LiveSlot`] it has no
-/// `chia-sdk-client` [`Peer`] (the WebSocket peer path); the gossip message loop over this mux
+/// `chia-sdk-client` [`DigLink`] (the WebSocket peer path); the gossip message loop over this mux
 /// transport is wired by the dig-node integration phase. The slot exists so a `dig-nat`-dialed peer
 /// COUNTS as a connected pool member for `peer_count` / stats / dedup / churn from the moment it
 /// connects.
@@ -259,7 +260,7 @@ impl fmt::Debug for NatSlot {
 }
 
 /// Canonical form of a `peer_id` hex for identity comparison: a stripped optional `0x` prefix,
-/// lowercased. Different producers (this node's [`Bytes32`](dig_peer_protocol::Bytes32) `Display`, a
+/// lowercased. Different producers (this node's [`Bytes32`](chia_protocol::Bytes32) `Display`, a
 /// relay's echo) may spell the same id with/without `0x` and in either case — normalizing both sides
 /// before comparing makes self-exclusion robust to the spelling (#924 self-filter).
 pub(crate) fn normalize_peer_id_hex(id: &str) -> String {
@@ -294,8 +295,8 @@ pub(crate) fn peer_id_from_hex(id: &str) -> Option<PeerId> {
 ///
 /// # Invariant
 ///
-/// A `Live` slot always has a valid [`Peer`] handle; a `Stub` never has one; a `Nat` slot owns a
-/// verified [`crate::nat::NatPeerConnection`] but no `chia-sdk-client` `Peer`. Pattern-matching on the
+/// A `Live` slot always has a valid [`DigLink`] handle; a `Stub` never has one; a `Nat` slot owns a
+/// verified [`crate::nat::NatPeerConnection`] but no `chia-sdk-client` `DigLink`. Pattern-matching on the
 /// variant is the only way to reach the handle, preventing accidental sends to the wrong transport.
 #[derive(Debug)]
 pub(crate) enum PeerSlot {
@@ -303,7 +304,7 @@ pub(crate) enum PeerSlot {
     /// `connect_stub_inner` test hook (#1718); never instantiated in the production library.
     #[cfg_attr(not(any(test, feature = "test-util")), allow(dead_code))]
     Stub(StubPeer),
-    /// Real TLS peer with a `chia-sdk-client` [`Peer`] handle.
+    /// Real TLS peer with a `chia-sdk-client` [`DigLink`] handle.
     Live(LiveSlot),
     /// A connected-pool member reached over the `dig-nat` transport (POOL-*).
     Nat(NatSlot),
@@ -586,7 +587,7 @@ pub struct ServiceState {
     ///
     /// Writers: accept loop (CON-002), `test_inject_message` (API-002).
     /// Readers: each handle's `inbound_receiver()` subscriber.
-    pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, Message)>>>,
+    pub inbound_tx: Mutex<Option<broadcast::Sender<(PeerId, DigMessage)>>>,
 
     /// Cumulative count of messages sent (API-008). `broadcast` adds one per recipient
     /// that accepted the message; `send_to` adds 1. Never decremented.
@@ -1279,7 +1280,7 @@ pub fn apply_inbound_rate_limit_violation(
     }
 }
 
-/// CON-006 — increment outbound wire counters for a live peer (after a successful `Peer::send_*`).
+/// CON-006 — increment outbound wire counters for a live peer (after a successful `DigLink::send_*`).
 pub(crate) fn record_live_peer_outbound_bytes(
     state: &ServiceState,
     peer_id: PeerId,
@@ -1299,7 +1300,7 @@ pub(crate) fn record_live_peer_outbound_bytes(
     };
 }
 
-/// CON-006 — increment inbound wire counters for a live peer (after a decoded inbound [`Message`]).
+/// CON-006 — increment inbound wire counters for a live peer (after a decoded inbound [`DigMessage`]).
 pub(crate) fn record_live_peer_inbound_bytes(state: &ServiceState, peer_id: PeerId, wire_len: u64) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

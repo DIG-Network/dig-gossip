@@ -56,7 +56,7 @@ fn stub_addr(port: u16) -> SocketAddr {
 #[test]
 fn dig_message_opcode_is_220() {
     assert_eq!(DIG_MESSAGE, 220);
-    assert_eq!(DIG_MESSAGE, ProtocolMessageTypes::DigMessage as u8);
+    assert_eq!(DIG_MESSAGE, dig_peer_protocol::DIG_MESSAGE);
 }
 
 /// **Row:** `is_dig_message` recognises 220 and only 220.
@@ -78,8 +78,8 @@ fn payload_extracted_only_from_opcode_220_frame() {
     assert_eq!(dig_message_payload(&msg), Some(envelope.as_slice()));
 
     let z = Bytes32::default();
-    let not_dig = dig_gossip::Message {
-        msg_type: ProtocolMessageTypes::NewPeak,
+    let not_dig = dig_gossip::DigMessage {
+        msg_type: ProtocolMessageTypes::NewPeak as u8,
         id: None,
         data: NewPeak::new(z, 1, 1, 0, z).to_bytes().unwrap().into(),
     };
@@ -90,7 +90,7 @@ fn payload_extracted_only_from_opcode_220_frame() {
 #[test]
 fn dig_message_is_classified_unicast() {
     assert_eq!(
-        classify_broadcast(ProtocolMessageTypes::DigMessage, false),
+        classify_broadcast(dig_peer_protocol::DIG_MESSAGE, false),
         BroadcastStrategy::Unicast
     );
 }

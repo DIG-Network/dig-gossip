@@ -85,21 +85,40 @@ use crate::types::peer::PeerId;
 #[derive(Debug, Clone, Error)]
 pub enum GossipError {
     // -- Transport / wire errors -----------------------------------------------
-    /// Errors originating from `chia-sdk-client` internals: `connect_peer()`,
-    /// TLS connector creation, WebSocket I/O, rate-limiter rejection, etc.
+    /// **The peer was reached and we rejected it on policy** — or a client-side TLS/certificate
+    /// step failed. See [`DialError`](crate::connection::dial_error::DialError) for the full
+    /// statement of the split and why it is load-bearing.
     ///
     /// Wrapped in [`Arc`] so that `GossipError` can derive [`Clone`] even though
     /// [`dig_peer_protocol::ClientError`] does not (API-004 implementation notes).
     ///
-    /// **When:** Any `chia-sdk-client` call fails (outbound connect, `Peer::send()`,
-    /// `Peer::request_raw()`).
-    /// **Caller action:** Log the inner error; depending on context, retry the
-    /// operation or disconnect the peer.
+    /// **When:** A remote handshake fails validation (wrong `network_id`, wrong `node_type`, an
+    /// incompatible protocol version — the typed
+    /// [`ClientError::WrongNetwork`](dig_peer_protocol::ClientError::WrongNetwork) and friends
+    /// reach the caller intact), or TLS material fails to load.
+    /// **Caller action:** Do **not** retry the same address — the verdict will not change. Try a
+    /// different peer.
     /// **Produced by:** [`crate::service::gossip_service::load_tls_material`],
-    /// [`crate::service::gossip_handle::GossipHandle::connect_to`],
-    /// [`crate::service::gossip_handle::GossipHandle::request`].
+    /// [`crate::connection::outbound`] and
+    /// [`crate::connection::listener`] (both handshake legs agree),
+    /// [`crate::discovery::introducer_client::IntroducerClient`].
     #[error("client error: {0}")]
     ClientError(Arc<dig_peer_protocol::ClientError>),
+
+    /// A [`DigLink`](dig_peer_protocol::DigLink) transport operation failed.
+    ///
+    /// Wrapped in [`Arc`] for the same reason as [`ClientError`](Self::ClientError):
+    /// [`dig_peer_protocol::LinkError`] is not [`Clone`], but `GossipError` is.
+    ///
+    /// **The peer was never reached, or the pipe broke** — connection refused, TLS failure,
+    /// timeout, framing error. The counterpart to [`ClientError`](Self::ClientError); see
+    /// [`DialError`](crate::connection::dial_error::DialError) for the split.
+    ///
+    /// **When:** Any peer-link call fails — dialling a peer, adopting an accepted
+    /// websocket, sending a frame, or awaiting a correlated reply.
+    /// **Caller action:** Retrying the same address is reasonable; the peer may simply be down.
+    #[error("link error: {0}")]
+    LinkError(Arc<dig_peer_protocol::LinkError>),
 
     /// File-system or network I/O failure not covered by [`ClientError`](Self::ClientError).
     ///
@@ -183,6 +202,18 @@ pub enum GossipError {
     #[error("duplicate connection to peer {0}")]
     DuplicateConnection(PeerId),
 
+    /// The peer answered a dial with an opcode outside `ProtocolMessageTypes`, so no typed
+    /// [`ClientError`](dig_peer_protocol::ClientError) can name it.
+    ///
+    /// **When:** the first frame after connect is neither a `Handshake` nor any other Chia-band
+    /// message — a DIG-band opcode, or garbage.
+    /// **Caller action:** Treat as **policy**, not transport: the peer was reached and rejected on
+    /// content, so re-dialling the same address meets the same behaviour.
+    /// **Produced by:** [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle)
+    /// and the DSC-004 introducer dials.
+    #[error("expected a Handshake, found unknown opcode {0}")]
+    UnknownHandshakeOpcode(u8),
+
     /// The target address resolved to our own listen address (self-dial guard).
     ///
     /// **When:** `connect_to` detects that the target matches
@@ -218,7 +249,10 @@ pub enum GossipError {
     /// **Produced by:** [`crate::discovery::introducer_client::IntroducerClient`] when the
     /// whole-operation [`tokio::time::timeout`] fires (**DSC-004** query: `"introducer query timed out"`;
     /// **DSC-005** registration: `"introducer registration timed out"`).
-    /// Transport failures during the same call surface as [`ClientError`](Self::ClientError) instead.
+    /// Other failures during the same call are split by
+    /// [`DialError`](crate::connection::dial_error::DialError): a transport failure surfaces as
+    /// [`LinkError`](Self::LinkError) (retryable), a handshake-policy rejection as
+    /// [`ClientError`](Self::ClientError) (not).
     #[error("introducer error: {0}")]
     IntroducerError(String),
 
@@ -374,5 +408,11 @@ pub enum GossipError {
 impl From<dig_peer_protocol::ClientError> for GossipError {
     fn from(value: dig_peer_protocol::ClientError) -> Self {
         Self::ClientError(Arc::new(value))
+    }
+}
+
+impl From<dig_peer_protocol::LinkError> for GossipError {
+    fn from(value: dig_peer_protocol::LinkError) -> Self {
+        Self::LinkError(Arc::new(value))
     }
 }

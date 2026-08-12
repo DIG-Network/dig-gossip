@@ -5,7 +5,7 @@
 //! dig-gossip is the **transport** for the DIG directed-message protocol
 //! (`dig-message`): it carries a sealed dig-message *envelope* between peers but
 //! never inspects, seals, or opens it. On the wire a directed message is a stock
-//! [`Message`](dig_peer_protocol::Message) with `msg_type = 220` ([`DIG_MESSAGE`]) whose
+//! [`DigMessage`](dig_peer_protocol::DigMessage) with `msg_type = 220` ([`DIG_MESSAGE`]) whose
 //! `data` field holds the envelope as **opaque bytes** — bytes in equal bytes out.
 //!
 //! This is WU6 of epic #796 (Wave A, envelope-only): the seam that the dig-message
@@ -18,7 +18,7 @@
 //!   (200-219 are the consensus band, [`DigMessageType`](dig_peer_protocol::DigMessageType)).
 //! - [`is_dig_message`] / [`dig_message_payload`] — inbound routing: recognise an
 //!   opcode-220 frame and lift its opaque envelope.
-//! - [`frame_envelope`] — build the outbound [`Message`] carrying an envelope.
+//! - [`frame_envelope`] — build the outbound [`DigMessage`] carrying an envelope.
 //! - [`StreamFrame`] + [`StreamReassembler`] — the streaming seam: OPEN/DATA/CLOSE
 //!   frames ride *inside* the opaque envelope payload; the reassembler restores
 //!   in-order delivery. The streaming *state machine* itself lives in dig-message
@@ -30,75 +30,63 @@
 
 use std::collections::BTreeMap;
 
-use dig_peer_protocol::{DigMessageType, Message, ProtocolMessageTypes, Streamable};
+use dig_peer_protocol::{DigMessage, DigMessageType};
 
 /// Wire opcode for a directed dig-message envelope.
 ///
-/// Canonical value **220** — the first opcode of the free 220-255 band. Mirrors
-/// [`ProtocolMessageTypes::DigMessage`]; also exported as `dig_peer_protocol::DIG_MESSAGE`
-/// for consumers that do not depend on dig-gossip. This value is a cross-repo
-/// canonical constant — it MUST NOT drift.
-pub const DIG_MESSAGE: u8 = ProtocolMessageTypes::DigMessage as u8;
+/// Canonical value **220** — the first opcode of the free 220-255 band. Re-exported
+/// verbatim from [`dig_peer_protocol::DIG_MESSAGE`], which is the single definition;
+/// dig-gossip keeps this name so consumers importing it from here are unaffected.
+/// This value is a cross-repo canonical constant — it MUST NOT drift.
+pub const DIG_MESSAGE: u8 = dig_peer_protocol::DIG_MESSAGE;
 
 /// True iff `msg_type` is the directed dig-message opcode ([`DIG_MESSAGE`]).
 ///
-/// Inbound dispatch calls this on `Message.msg_type as u8` to route opcode-220
+/// Inbound dispatch calls this on `DigMessage.msg_type` to route opcode-220
 /// frames to the dig-message handler seam.
 #[must_use]
 pub fn is_dig_message(msg_type: u8) -> bool {
     msg_type == DIG_MESSAGE
 }
 
-/// Lift the opaque dig-message envelope from an inbound [`Message`].
+/// Lift the opaque dig-message envelope from an inbound [`DigMessage`].
 ///
 /// Returns `Some(&envelope_bytes)` iff `msg` is an opcode-220 frame, else `None`.
 /// The returned slice is the payload verbatim — dig-gossip does not parse it.
 #[must_use]
-pub fn dig_message_payload(msg: &Message) -> Option<&[u8]> {
-    if is_dig_message(msg.msg_type as u8) {
+pub fn dig_message_payload(msg: &DigMessage) -> Option<&[u8]> {
+    if is_dig_message(msg.msg_type) {
         Some(msg.data.as_ref())
     } else {
         None
     }
 }
 
-/// Build the outbound opcode-220 [`Message`] that carries `envelope` as opaque bytes.
+/// Build the outbound opcode-220 [`DigMessage`] that carries `envelope` as opaque bytes.
 ///
-/// `correlation_id` maps to `Message.id` — used to pair a streaming exchange (all
+/// `correlation_id` maps to `DigMessage.id` — used to pair a streaming exchange (all
 /// frames of one stream share an id) or a request/response. `None` for a
 /// fire-and-forget directed message.
 #[must_use]
-pub fn frame_envelope(envelope: &[u8], correlation_id: Option<u16>) -> Message {
-    Message {
-        msg_type: ProtocolMessageTypes::DigMessage,
-        id: correlation_id,
-        data: envelope.to_vec().into(),
-    }
+pub fn frame_envelope(envelope: &[u8], correlation_id: Option<u16>) -> DigMessage {
+    DigMessage::new(DIG_MESSAGE, correlation_id, envelope.to_vec().into())
 }
 
-/// Build the on-wire [`Message`] that carries a DIG **consensus-band** opcode (200-219).
+/// Build the on-wire [`DigMessage`] that carries a DIG **consensus-band** opcode (200-219).
 ///
-/// The DIG opcodes extend Chia's namespace: the vendored [`ProtocolMessageTypes`] mirrors every
-/// [`DigMessageType`] discriminant 1:1 (#1404), so a stock [`Message`] can carry a DIG opcode in
-/// its `msg_type` field. This is the SINGLE opcode-encoding path for the consensus band — the
+/// [`DigMessage::msg_type`] is a raw wire byte, so a DIG opcode needs no enum variant to name it —
+/// which is precisely why the vendored `chia-protocol` fork is no longer required on this path
+/// (dig_ecosystem#2228). This is the SINGLE opcode-encoding path for the consensus band — the
 /// dispatch authority ([`GossipHandle::broadcast_dig`](crate::service::gossip_handle::GossipHandle)
 /// / [`send_dig`](crate::service::gossip_handle::GossipHandle)) frames every DIG message through
 /// here so no second, drifting encoder can appear.
 ///
-/// `body` is the already-serialized opcode payload; it is carried verbatim in `Message.data`.
+/// `body` is the already-serialized opcode payload; it is carried verbatim in `DigMessage.data`.
 /// The frame has no correlation `id` — the consensus band is fire-and-forget on the overlay,
 /// unlike the directed opcode-220 envelope built by [`frame_envelope`].
 #[must_use]
-pub fn frame_dig_message(msg_type: DigMessageType, body: Vec<u8>) -> Message {
-    // Total for the whole 200-219 band: `ProtocolMessageTypes` has a variant for every
-    // `DigMessageType` discriminant (vendored, #1404), so this single-byte decode never fails.
-    let pmt = ProtocolMessageTypes::from_bytes(&[msg_type as u8])
-        .expect("every DigMessageType opcode has a mirrored ProtocolMessageTypes variant (#1404)");
-    Message {
-        msg_type: pmt,
-        id: None,
-        data: body.into(),
-    }
+pub fn frame_dig_message(msg_type: DigMessageType, body: Vec<u8>) -> DigMessage {
+    DigMessage::new(msg_type as u8, None, body.into())
 }
 
 // ============================================================================

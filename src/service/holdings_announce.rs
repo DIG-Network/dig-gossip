@@ -50,7 +50,7 @@
 //! therefore checks the SPKI→peer_id binding, that the SPKI is a P-256 key, the ECDSA
 //! signature over the exact message, and the change-count cap — fail-closed on any mismatch.
 
-use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes};
+use dig_peer_protocol::{Bytes, DigMessage};
 use dig_tls::peer_id_from_tls_spki_der;
 use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
 use sha2::{Digest, Sha256};
@@ -62,9 +62,9 @@ use x509_parser::prelude::{FromDer, SubjectPublicKeyInfo};
 /// Canonical value **222** — the third opcode of the 220-255 "free" band, after
 /// [`DIG_MESSAGE`](crate::service::dig_message::DIG_MESSAGE)`= 220` and
 /// [`STORE_MELTED`](crate::service::store_melted::STORE_MELTED)`= 221`. Mirrors
-/// [`ProtocolMessageTypes::HoldingsAnnounce`]. This value is a cross-repo canonical
-/// constant (dig-node pins it to decode the broadcast) — it MUST NOT drift.
-pub const HOLDINGS_ANNOUNCE: u8 = ProtocolMessageTypes::HoldingsAnnounce as u8;
+/// [`dig_peer_protocol::HOLDINGS_ANNOUNCE`], which is the single definition. This value is a
+/// cross-repo canonical constant (dig-node pins it to decode the broadcast) — it MUST NOT drift.
+pub const HOLDINGS_ANNOUNCE: u8 = dig_peer_protocol::HOLDINGS_ANNOUNCE;
 
 /// Domain-separation tag for the `holdings-announce` signing message.
 ///
@@ -716,30 +716,30 @@ pub fn is_holdings_announce(msg_type: u8) -> bool {
     msg_type == HOLDINGS_ANNOUNCE
 }
 
-/// Lift and decode a [`HoldingsAnnounce`] from an inbound [`Message`].
+/// Lift and decode a [`HoldingsAnnounce`] from an inbound [`DigMessage`].
 ///
 /// Returns `Some(announce)` iff `msg` is an opcode-222 frame whose `data` decodes, else
 /// `None`. The caller MUST still [`verify_holdings_announce`] before ingesting the deltas.
 #[must_use]
-pub fn holdings_announce_payload(msg: &Message) -> Option<HoldingsAnnounce> {
-    if is_holdings_announce(msg.msg_type as u8) {
+pub fn holdings_announce_payload(msg: &DigMessage) -> Option<HoldingsAnnounce> {
+    if is_holdings_announce(msg.msg_type) {
         HoldingsAnnounce::decode(msg.data.as_ref())
     } else {
         None
     }
 }
 
-/// Build the outbound opcode-222 [`Message`] that floods `announce` to peers.
+/// Build the outbound opcode-222 [`DigMessage`] that floods `announce` to peers.
 ///
 /// `id` is `None`: a holdings announcement is a fire-and-forget flood broadcast, not a
 /// correlated request/response.
 #[must_use]
-pub fn frame_holdings_announce(announce: &HoldingsAnnounce) -> Message {
-    Message {
-        msg_type: ProtocolMessageTypes::HoldingsAnnounce,
-        id: None,
-        data: Bytes::new(announce.encode()),
-    }
+pub fn frame_holdings_announce(announce: &HoldingsAnnounce) -> DigMessage {
+    DigMessage::new(
+        dig_peer_protocol::HOLDINGS_ANNOUNCE,
+        None,
+        Bytes::new(announce.encode()),
+    )
 }
 
 #[cfg(test)]
@@ -1191,7 +1191,7 @@ mod tests {
     fn frame_and_lift_round_trip() {
         let a = sample();
         let msg = frame_holdings_announce(&a);
-        assert_eq!(msg.msg_type as u8, HOLDINGS_ANNOUNCE);
+        assert_eq!(msg.msg_type, HOLDINGS_ANNOUNCE);
         assert_eq!(msg.id, None);
         assert_eq!(holdings_announce_payload(&msg), Some(a));
     }
@@ -1209,13 +1209,11 @@ mod tests {
 
         // Public all-peers flood at bulk priority — never unicast, never consensus-critical.
         assert_eq!(
-            classify_broadcast(ProtocolMessageTypes::HoldingsAnnounce, false),
+            classify_broadcast(HOLDINGS_ANNOUNCE, false),
             BroadcastStrategy::Plumtree
         );
-        assert_eq!(
-            MessagePriority::from_chia_type(ProtocolMessageTypes::HoldingsAnnounce),
-            MessagePriority::Bulk
-        );
+        // Only the raw-opcode path can classify 222: upstream `ProtocolMessageTypes` is a closed
+        // enum with no `HoldingsAnnounce` variant, so `from_chia_type` cannot be asked about it.
         assert_eq!(
             MessagePriority::from_dig_type(HOLDINGS_ANNOUNCE),
             MessagePriority::Bulk

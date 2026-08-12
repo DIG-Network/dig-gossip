@@ -528,7 +528,7 @@ mod low_5_broadcast_lock_scope {
     use std::time::Duration;
 
     use dig_gossip::{
-        Bytes32, GossipHandle, GossipService, Message, NewPeak, ProtocolMessageTypes, Streamable,
+        Bytes32, DigMessage, GossipHandle, GossipService, NewPeak, ProtocolMessageTypes, Streamable,
     };
 
     async fn running_server() -> (tempfile::TempDir, GossipService, GossipHandle, SocketAddr) {
@@ -557,7 +557,7 @@ mod low_5_broadcast_lock_scope {
     /// The audit flagged `broadcast()`'s eager-peer classification block for acquiring the
     /// `peers` + `plumtree` locks TOGETHER, then sending while (potentially) still holding them.
     /// `std::sync::MutexGuard` is `!Send`, so if EITHER guard were held across the
-    /// `peer.send_protocol_message(...).await` point, the `broadcast()` future itself would
+    /// `peer.send_message(...).await` point, the `broadcast()` future itself would
     /// become `!Send` — and `tokio::spawn` (which requires `F: Future + Send`) would fail to
     /// COMPILE. This test spawns `broadcast()` onto its own task via `tokio::spawn`: it is a
     /// compile-time proof, not a timing heuristic — if a future change re-introduces a
@@ -586,8 +586,8 @@ mod low_5_broadcast_lock_scope {
         let msg = {
             let z = Bytes32::default();
             let body = NewPeak::new(z, 1, 1, 0, z);
-            Message {
-                msg_type: ProtocolMessageTypes::NewPeak,
+            DigMessage {
+                msg_type: ProtocolMessageTypes::NewPeak as u8,
                 id: None,
                 data: body.to_bytes().unwrap().into(),
             }

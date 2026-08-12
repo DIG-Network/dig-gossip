@@ -7,7 +7,7 @@
 
 | ID      | Status | Summary                                          | Verification Approach                                                                      |
 |---------|--------|--------------------------------------------------|--------------------------------------------------------------------------------------------|
-| CON-001 | verified | Outbound connection via connect_peer() | `tests/con_001_tests.rs`: TLS load/generate/connector; WSS harness handshake + RequestPeers; `GossipHandle::connect_to` + `AddressManager` batch; `ClientError` → `GossipError`; peer field wiring / creation_time |
+| CON-001 | verified | Outbound connection: handshake, then DigLink | `tests/con_001_tests.rs`: TLS load/generate/connector; WSS harness handshake + RequestPeers; `GossipHandle::connect_to` + `AddressManager` batch; `ClientError` → `GossipError`; peer field wiring / creation_time |
 | CON-002 | verified | Inbound connection listener                    | `tests/con_002_tests.rs`: bind `:0`, TLS+WSS+Handshake, wrong network_id reject, PeerConnection inbound metadata, AddressManager batch, RespondPeers relay to live peer, max_connections cap; self-connection reject on non-Windows (cert-based PeerId) |
 | CON-003 | verified | Handshake validation                           | `tests/con_003_tests.rs`: sanitize Cc/Cf; protocol floor; network_id; 128-byte limit; empty id fields; integration two-node `__con003_peer_versions_for_tests` (inbound + outbound) |
 | CON-004 | verified | Keepalive via Ping/Pong                        | `tests/con_004_tests.rs`: RequestPeers keepalive probe, RTT samples, bidirectional, remote stop → disconnect + ConnectionIssue penalty; config overrides for timing |

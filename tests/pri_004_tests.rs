@@ -7,11 +7,11 @@
 
 use dig_gossip::gossip::priority::{MessagePriority, PriorityOutbound};
 use dig_gossip::PRIORITY_STARVATION_RATIO;
-use dig_gossip::{Message, ProtocolMessageTypes};
+use dig_gossip::{DigMessage, ProtocolMessageTypes};
 
-fn make_msg(msg_type: ProtocolMessageTypes) -> Message {
-    Message {
-        msg_type,
+fn make_msg(msg_type: ProtocolMessageTypes) -> DigMessage {
+    DigMessage {
+        msg_type: msg_type as u8,
         id: None,
         data: vec![].into(),
     }
@@ -37,14 +37,14 @@ fn test_starvation_prevention() {
     // Drain RATIO critical messages
     for _ in 0..PRIORITY_STARVATION_RATIO {
         let m = q.drain_next().unwrap();
-        assert_eq!(m.msg_type, ProtocolMessageTypes::NewPeak);
+        assert_eq!(m.msg_type, ProtocolMessageTypes::NewPeak as u8);
     }
 
     // Next should be forced bulk (starvation prevention)
     let m = q.drain_next().unwrap();
     assert_eq!(
         m.msg_type,
-        ProtocolMessageTypes::RequestBlocks,
+        ProtocolMessageTypes::RequestBlocks as u8,
         "after {} critical msgs, bulk must be forced",
         PRIORITY_STARVATION_RATIO
     );

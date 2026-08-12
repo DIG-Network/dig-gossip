@@ -8,19 +8,19 @@
 
 `dig-gossip` is a self-contained Rust crate that manages **peer-to-peer networking and gossip** for the DIG Network L2 blockchain. It handles peer discovery, connection management, message routing, and protocol-level communication between full nodes. The crate accepts application-level payloads (blocks, transactions, attestations) as opaque typed inputs and delivers them to connected peers via a Chia-compatible gossip protocol.
 
-**This crate maximally reuses the Chia Rust ecosystem** rather than reimplementing functionality. The wire protocol types (`Handshake`, `Message`, `NodeType`, `ProtocolMessageTypes`), peer connection management (`Peer`, `Client`), rate limiting (`RateLimiter`, `RateLimits`), TLS handling, and DNS resolution are all provided by `chia-protocol` and `chia-sdk-client`. `dig-gossip` builds on top of these, adding: relay fallback, introducer registration, address manager persistence, gossip fanout, and message deduplication.
+**This crate maximally reuses the Chia Rust ecosystem** rather than reimplementing functionality, and it reaches that ecosystem through exactly one dependency: **`dig-peer-protocol`**. That crate re-exports the Chia wire types (`Handshake`, `NodeType`, `ProtocolMessageTypes`, `Streamable`, `ChiaCertificate`), the Chia peer-manager and TLS surface (`Client`/`ClientState`, `Connector`, `load_ssl_cert`, `create_native_tls_connector`/`create_rustls_connector`, `Network`), and supplies the DIG peer link itself — `DigLink`, framing a raw `u8` opcode so DIG's 200-222 extension band is expressible on the wire. `dig-gossip` builds on top of these, adding: relay fallback, introducer registration, address manager persistence, gossip fanout, and message deduplication.
 
 The gossip layer **does** perform:
-- **Peer discovery** via introducer registration and querying, DNS seeding (using `chia-sdk-client`'s `Network::lookup_all()`), and peer exchange between connected nodes.
-- **Connection management** — establishing connections via `chia-sdk-client`'s `Peer::connect()` and `connect_peer()`, maintaining connections with keepalive, and tearing down on timeout.
+- **Peer discovery** via introducer registration and querying, DNS seeding (using `dig-peer-protocol`'s re-exported `Network::lookup_all()`), and peer exchange between connected nodes.
+- **Connection management** — establishing WebSocket-over-mTLS peer links as `dig_peer_protocol::DigLink`, maintaining connections with keepalive, and tearing down on timeout.
 - **Relay fallback** — when direct P2P connections cannot be established (NAT, firewall), messages are routed through a relay server as a transparent fallback.
 - **Structured gossip (Plumtree)** — eager/lazy push protocol that maintains a spanning tree for full-message push and uses lazy push (hash-only announcements) for redundancy, reducing bandwidth by 60-80% over Chia's naive flood-to-all approach.
 - **Compact block relay** — blocks are propagated as header + short transaction IDs; receivers reconstruct from mempool, requesting only missing transactions. Reduces block propagation bandwidth by 90%+.
 - **ERLAY-style transaction relay** — low-fanout flooding (announce to ~8 peers) combined with periodic set reconciliation (minisketch/IBLT) with remaining peers, reducing per-transaction bandwidth from O(connections) to O(1).
 - **Message priority lanes** — consensus-critical messages (NewPeak, attestations, blocks) are sent ahead of bulk data (mempool sync, peer exchange, historical block requests), preventing head-of-line blocking.
 - **Peer sharing** — exchanging known peer lists between connected nodes via `chia-protocol`'s `RequestPeers`/`RespondPeers`.
-- **Rate limiting with adaptive backpressure** — using `chia-sdk-client`'s `RateLimiter` with `V2_RATE_LIMITS` for per-connection message rate enforcement, extended with adaptive backpressure that monitors outbound queue depth and selectively throttles non-critical messages under load.
-- **Peer reputation with latency-aware scoring** — tracking peer behavior (valid/invalid messages, timeouts, protocol violations) with penalty-based banning, extending `chia-sdk-client`'s `ClientState` ban/trust model. Peers are scored by RTT (from Ping/Pong) and low-latency peers are preferred for outbound connections.
+- **Rate limiting with adaptive backpressure** — using `dig-peer-protocol`'s `OpcodeRateLimiter`, which enforces Chia's published `V2_RATE_LIMITS` table re-keyed by raw wire opcode, for per-connection message rate enforcement, extended with adaptive backpressure that monitors outbound queue depth and selectively throttles non-critical messages under load.
+- **Peer reputation with latency-aware scoring** — tracking peer behavior (valid/invalid messages, timeouts, protocol violations) with penalty-based banning, extending the re-exported `ClientState` ban/trust model. Peers are scored by RTT (from Ping/Pong) and low-latency peers are preferred for outbound connections.
 - **Address management with AS-level diversity** — maintaining tried/new peer address tables with bucket-based eviction, matching Chia's `AddressManager` (ported from Bitcoin's `CAddrMan`), enhanced with AS-level diversity (one outbound per autonomous system) for stronger eclipse attack resistance than Chia's /16 grouping.
 - **Parallel connection establishment** — bootstrap connects to multiple peers concurrently rather than Chia's sequential one-at-a-time approach.
 - **NAT traversal upgrade** — relay connections can be upgraded to direct P2P via STUN-style hole punching coordinated through the relay server.
@@ -32,13 +32,25 @@ The gossip layer does **not** perform:
 - **Coinstate management** (coin record storage, state root computation) — handled by `dig-coinstore`.
 - **Consensus** (fork choice, finality, validator set management, checkpoint aggregation).
 
-The design is derived from Chia's production networking stack, primarily consumed through the **Chia Rust crates** rather than ported from the Python source:
+The design is derived from Chia's production networking stack, primarily consumed through the **Chia Rust crates** rather than ported from the Python source. Those crates are reached through `dig-peer-protocol`, which re-exports them and adds the DIG extension band:
 
-**Chia Rust crates used directly (not reimplemented):**
-- **`chia-protocol`** ([crates.io](https://crates.io/crates/chia-protocol)): Wire protocol types — `Handshake`, `Message`, `NodeType`, `ProtocolMessageTypes`, `RequestPeers`, `RespondPeers`, `RequestPeersIntroducer`, `RespondPeersIntroducer`, `NewPeak`, `NewTransaction`, `RequestTransaction`, `RespondTransaction`, `RequestBlock`, `RespondBlock`, `RequestBlocks`, `RespondBlocks`, `NewUnfinishedBlock`, `RequestUnfinishedBlock`, `RespondUnfinishedBlock`, `RequestMempoolTransactions`, `SpendBundle`, `FullBlock`, `Bytes32`, `ChiaProtocolMessage` trait.
-- **`chia-sdk-client`** ([crates.io](https://crates.io/crates/chia-sdk-client)): Peer connection — `Peer` (WebSocket connection wrapper with `send()`, `request_raw()`, `request_infallible()`, `request_fallible()`), `Client`/`ClientState` (peer manager with ban/trust), `PeerOptions`, `Network` (DNS introducer lookup), `RateLimiter` (per-connection rate enforcement), `RateLimits`/`RateLimit` (rate limit tables), `V1_RATE_LIMITS`/`V2_RATE_LIMITS` (pre-configured Chia rate limits), `connect_peer()` (full handshake flow), `load_ssl_cert()`, `create_native_tls_connector()`/`create_rustls_connector()` (TLS setup), `ClientError`.
-- **`chia-ssl`** ([crates.io](https://crates.io/crates/chia-ssl)): TLS certificates — `ChiaCertificate` (generate/load), `CHIA_CA_CRT` (Chia CA certificate).
-- **`chia-traits`** ([crates.io](https://crates.io/crates/chia-traits)): Serialization — `Streamable` trait for wire format encoding/decoding.
+**`dig-peer-protocol`** ([crates.io](https://crates.io/crates/dig-peer-protocol)) — the sole owner of the peer link, and the path through which the client, TLS and DIG-extension surfaces are consumed:
+- **DIG peer link** — `DigLink` (WebSocket peer link with `send_message()`, `send_protocol_message()`, `request_infallible()`, `request_fallible()`, `from_websocket()`, `from_server_websocket()`), `LinkOptions`, `LinkError`.
+- **DIG wire envelope** — `DigMessage` (a `msg_type: u8` / `id: Option<u16>` / `data: Bytes` envelope, layout-identical to Chia's `Message` but with the discriminant left as a raw byte), `DigMessageType`, `Bytes`, and the opcode constants (`DIG_BAND_START`, `DIG_MESSAGE`, `HOLDINGS_ANNOUNCE`, `STORE_MELTED`, `ALL_DIG_OPCODES`, `is_dig_opcode`).
+- **Introducer wire types** — `RegisterPeer`, `RegisterAck`, `RequestPeersIntroducer`, `RespondPeersIntroducer`.
+- **Opcode-keyed rate limiting** — `OpcodeRateLimiter`, `OpcodeRateLimits`, `Admission`.
+- **Re-exported Chia surface** — `ProtocolMessageTypes`, `ChiaProtocolMessage`, `TimestampedPeerInfo`, `Streamable`, `ChiaCertificate`, `NodeType`, `Network`, `Client`/`ClientState`, `Connector`, `RateLimit`, `load_ssl_cert`, `create_native_tls_connector`/`create_rustls_connector`, `ClientError`.
+
+**Chia Rust crates used directly (not reimplemented).** They arrive by two different routes, and the
+distinction is normative because it decides what a reimplementation must declare in its own manifest:
+`chia-protocol` and `chia-traits` are **direct dependencies** of this crate (`Cargo.toml`; the wire
+types are re-exported straight from `chia_protocol` — see `src/lib.rs`), while `chia-sdk-client` and
+`chia-ssl` are reached **transitively**, through `dig-peer-protocol`'s re-exports above, and are not
+declared here at all.
+- **`chia-protocol`** ([crates.io](https://crates.io/crates/chia-protocol)): Wire protocol types — `Handshake`, `NodeType`, `ProtocolMessageTypes`, `RequestPeers`, `RespondPeers`, `RequestPeersIntroducer`, `RespondPeersIntroducer`, `NewPeak`, `NewTransaction`, `RequestTransaction`, `RespondTransaction`, `RequestBlock`, `RespondBlock`, `RequestBlocks`, `RespondBlocks`, `NewUnfinishedBlock`, `RequestUnfinishedBlock`, `RespondUnfinishedBlock`, `RequestMempoolTransactions`, `SpendBundle`, `FullBlock`, `Bytes32`, `ChiaProtocolMessage` trait.
+- **`chia-sdk-client`** ([crates.io](https://crates.io/crates/chia-sdk-client)): `Client`/`ClientState` (peer manager with ban/trust), `Network` (DNS introducer lookup), `RateLimit` (rate-limit table row), `load_ssl_cert()`, `create_native_tls_connector()`/`create_rustls_connector()` (TLS setup), `ClientError`. Consumed through `dig-peer-protocol`'s re-exports, never as a direct dependency. The peer connection itself is `dig_peer_protocol::DigLink`, not this crate's `Peer`.
+- **`chia-ssl`** ([crates.io](https://crates.io/crates/chia-ssl)): TLS certificates — `ChiaCertificate` (generate/load), `CHIA_CA_CRT` (Chia CA certificate). Consumed through `dig-peer-protocol`'s re-exports, never as a direct dependency.
+- **`chia-traits`** ([crates.io](https://crates.io/crates/chia-traits)): Serialization — `Streamable` trait for wire format encoding/decoding. A direct dependency.
 
 **Chia Python source (reference for address manager and discovery loop logic):**
 - **Peer discovery**: [`chia/server/node_discovery.py`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/node_discovery.py)
@@ -49,15 +61,16 @@ The design is derived from Chia's production networking stack, primarily consume
 - **Relay client**: `l2_driver_state_channel/src/services/relay/client.rs`, `l2_driver_state_channel/src/services/relay/types.rs`
 - **Introducer client**: `l2_driver_state_channel/src/services/network/introducer_client.rs`
 
-**Hard boundary:** Inputs = application payloads (`Vec<u8>` or typed via `chia-protocol`'s `Streamable + ChiaProtocolMessage`) to broadcast/send. Outputs = received payloads delivered to the caller via async channels as `chia-protocol::Message`. Block validation, CLVM execution, mempool management, coinstate, and consensus are outside this crate. The gossip crate is **payload-agnostic** — it transports `Message`s between peers. The caller defines what those bytes mean.
+**Hard boundary:** Inputs = application payloads (`Vec<u8>` or typed via `chia-protocol`'s `Streamable + ChiaProtocolMessage`) to broadcast/send. Outputs = received payloads delivered to the caller via async channels as `dig_peer_protocol::DigMessage`. Block validation, CLVM execution, mempool management, coinstate, and consensus are outside this crate. The gossip crate is **payload-agnostic** — it transports `dig_peer_protocol::DigMessage` envelopes between peers. The caller defines what those bytes mean. It does **not** transport `chia_protocol::Message`: that type's discriminant is a closed `#[repr(u8)]` enum which cannot name a DIG opcode, and a reimplementation that builds on it will reject every frame in the DIG 200-222 band at decode time.
 
 ### 1.1 Design Principles
 
-- **Chia crate reuse over reimplementation**: Every type and behavior that exists in the Chia Rust crates (`chia-protocol`, `chia-sdk-client`, `chia-ssl`, `chia-traits`) is used directly. We do NOT redefine `Handshake`, `NodeType`, `Message`, `ProtocolMessageTypes`, `Peer`, `RateLimiter`, or TLS handling. We only implement what doesn't exist in the Chia ecosystem: address manager, discovery loop, relay fallback, introducer registration, gossip fanout, and message deduplication.
+- **Chia crate reuse over reimplementation**: Every type and behavior that exists in the Chia Rust crates (`chia-protocol`, `chia-sdk-client`, `chia-ssl`, `chia-traits`) is used as-is — the wire types from `chia-protocol`/`chia-traits` directly, the client and TLS surfaces via `dig-peer-protocol`'s re-exports. We do NOT redefine `Handshake`, `NodeType`, `ProtocolMessageTypes`, `ClientState`, or TLS handling. We only implement what doesn't exist upstream: address manager, discovery loop, relay fallback, introducer registration, gossip fanout, and message deduplication.
+- **One dependency for the peer wire**: `dig-peer-protocol` is the sole owner of the peer link and the sole path to the client/TLS surfaces. `dig-gossip` MUST NOT depend on `chia-sdk-client` or `chia-ssl` directly, and MUST NOT vendor or patch a Chia crate. It MAY depend on `chia-protocol`/`chia-traits` directly, and does — they carry only wire *types*, not a transport, so a direct dependency cannot reintroduce a second peer link. Chia's `ProtocolMessageTypes` is a closed `#[repr(u8)]` enum that cannot name a DIG opcode; `DigLink` frames a raw `u8` instead, so the DIG 200-222 band needs no fork of the Chia types.
 - **Chia protocol parity**: The handshake, message framing, peer exchange, and discovery protocols match Chia's networking protocol. `chia-protocol`'s `Handshake` struct is used directly with DIG-specific `network_id` and `capabilities` values.
 - **Relay as transparent fallback**: When direct P2P fails (NAT, firewall), the relay server acts as a message proxy. The caller sees no difference — messages arrive through the same channel regardless of transport. Matches `l2_driver_state_channel/src/services/relay/service.rs`.
 - **Introducer for bootstrap**: New nodes register with an introducer and query it for initial peers, matching Chia's `FullNodeDiscovery._introducer_client()` ([`node_discovery.py:173-184`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/node_discovery.py#L173)) and `l2_driver_state_channel/src/services/network/introducer_client.rs`.
-- **Payload-agnostic transport**: The gossip layer does not inspect or validate message payloads. It transports `chia-protocol::Message` envelopes between peers. The caller registers handlers for specific `ProtocolMessageTypes`.
+- **Payload-agnostic transport**: The gossip layer does not inspect or validate message payloads. It transports `dig_peer_protocol::DigMessage` envelopes between peers. The caller registers handlers keyed by the envelope's raw `msg_type` opcode.
 - **Peer sharing via gossip**: Connected peers exchange peer lists periodically via `chia-protocol`'s `RequestPeers`/`RespondPeers` ([`full_node_protocol.py:207-216`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/protocols/full_node_protocol.py#L207)).
 - **Address manager with tried/new tables**: Peer addresses are managed using the Bitcoin/Chia bucket-based address manager ([`address_manager.py`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/address_manager.py)), providing resistance to eclipse attacks. This is the one major component that must be ported to Rust — no Chia Rust crate provides it.
 
@@ -65,12 +78,13 @@ The design is derived from Chia's production networking stack, primarily consume
 
 | Crate | Purpose | Reuse vs New |
 |-------|---------|-------------|
-| `chia-protocol` | Wire protocol types: `Handshake`, `Message`, `NodeType`, `ProtocolMessageTypes`, `Bytes32`, `RequestPeers`, `RespondPeers`, `NewPeak`, `NewTransaction`, `SpendBundle`, `FullBlock`, all request/respond/reject types. `ChiaProtocolMessage` trait. | **Direct reuse** |
-| `chia-sdk-client` | `Peer` (WebSocket connection), `Client`/`ClientState` (peer manager), `PeerOptions`, `Network` (DNS lookup), `RateLimiter`/`RateLimits` (rate limiting), `V2_RATE_LIMITS`, `connect_peer()` (handshake), TLS utilities. | **Direct reuse** |
-| `chia-ssl` | `ChiaCertificate`, `CHIA_CA_CRT`. TLS certificate generation and loading. | **Direct reuse** |
+| `chia-protocol` | Wire protocol types: `Handshake`, `NodeType`, `ProtocolMessageTypes`, `Bytes32`, `RequestPeers`, `RespondPeers`, `NewPeak`, `NewTransaction`, `SpendBundle`, `FullBlock`, all request/respond/reject types. `ChiaProtocolMessage` trait. | **Direct reuse** |
+| `dig-peer-protocol` | `DigLink` (WebSocket peer link), `LinkOptions`, `DigMessage`/`DigMessageType`, the DIG opcode constants, the introducer wire types, `OpcodeRateLimiter`/`OpcodeRateLimits`, and the re-exported Chia surface below. | **Direct dependency** |
+| `chia-sdk-client` | `Client`/`ClientState` (peer manager), `Network` (DNS lookup), `RateLimit`, `ClientError`, TLS utilities. | **Transitive**, via `dig-peer-protocol` re-exports |
+| `chia-ssl` | `ChiaCertificate`, `CHIA_CA_CRT`. TLS certificate generation and loading. | **Transitive**, via `dig-peer-protocol` re-exports |
 | `chia-traits` | `Streamable` trait for wire serialization/deserialization. | **Direct reuse** |
 | `tokio` | Async runtime. Timers, tasks, channels, TCP listeners. | Dependency |
-| `tokio-tungstenite` | WebSocket (already a dependency of `chia-sdk-client`). | Transitive |
+| `tokio-tungstenite` | WebSocket (also a dependency of `dig-peer-protocol`). | Dependency |
 | `serde` / `bincode` | Serialization for relay protocol and address manager persistence. | Dependency |
 | `serde_json` | JSON serialization for relay and introducer messages. | Dependency |
 | `tracing` | Structured logging. | Dependency |
@@ -84,16 +98,16 @@ The design is derived from Chia's production networking stack, primarily consume
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | Reuse `chia-sdk-client::Peer` for connections | `Peer` already handles WebSocket TLS connections, message framing (4-byte length prefix), `Streamable` serialization, request/response correlation via message IDs, and outbound rate limiting. No reason to reimplement. |
-| 2 | Reuse `chia-sdk-client::RateLimiter` + `V2_RATE_LIMITS` | Complete Chia-compatible rate limiting with V1/V2 limit tables. The DIG per-opcode table is keyed by the raw wire byte and is dig-gossip's own (`DigRateLimiter`), composed with the Chia bound rather than merged into it. |
-| 3 | Reuse `chia-protocol::Handshake` for connection setup | The handshake struct has `network_id`, `protocol_version`, `software_version`, `server_port`, `node_type`, `capabilities`. We pass DIG-specific values, not a new struct. `connect_peer()` handles the full handshake flow. |
+| 1 | Reuse `dig_peer_protocol::DigLink` for connections | `DigLink` handles WebSocket TLS connections, message framing (4-byte length prefix), `Streamable` serialization, request/response correlation via message IDs, and outbound rate limiting — and, unlike Chia's `Peer`, frames the discriminant as a raw `u8`, so the DIG 200-222 band travels on a stock envelope. No reason to reimplement. |
+| 2 | Reuse `dig_peer_protocol::OpcodeRateLimiter` | Chia-compatible rate limiting: `OpcodeRateLimits` carries Chia's published `V2_RATE_LIMITS` rows re-keyed by raw wire opcode. The DIG per-opcode table is keyed by the same raw byte and is dig-gossip's own (`DigRateLimiter`), composed with the Chia bound rather than merged into it. |
+| 3 | Reuse `chia-protocol::Handshake` for connection setup | The handshake struct has `network_id`, `protocol_version`, `software_version`, `server_port`, `node_type`, `capabilities`. We pass DIG-specific values, not a new struct. The outbound module drives the handshake exchange over the raw WebSocket before upgrading to `DigLink`. |
 | 4 | Reuse `chia-ssl` for TLS | `ChiaCertificate::generate()`, `load_ssl_cert()`, and `create_native_tls_connector()` / `create_rustls_connector()` already exist. |
-| 5 | Reuse `chia-sdk-client::Network` for DNS seeding | `Network::lookup_all()` handles DNS resolution with timeout and batching. We configure with DIG DNS servers. |
+| 5 | Reuse the re-exported `Network` for DNS seeding | `Network::lookup_all()` handles DNS resolution with timeout and batching. We configure with DIG DNS servers. |
 | 6 | Port `AddressManager` from Python (no Rust crate exists) | Chia's `address_manager.py` is a Python port of Bitcoin's `CAddrMan`. No Rust equivalent exists in the Chia crate ecosystem. This must be ported. |
 | 7 | Port discovery loop from Python (no Rust crate exists) | Chia's `node_discovery.py` discovery loop (introducer backoff, feeler connections, peer connect logic) has no Rust equivalent. This must be ported. |
-| 8 | Relay as fallback, not primary | Direct P2P via `chia-sdk-client::Peer` is attempted first. Relay is used only when direct connection fails. Matches `l2_driver_state_channel/src/services/relay/types.rs` `RelayConfig::prefer_relay` default `false`. |
-| 9 | DIG-specific `ProtocolMessageTypes` for extensions | Chia's `ProtocolMessageTypes` enum doesn't include DIG L2 messages (attestations, checkpoints). We define DIG extension types in a separate enum and map them to unused Chia message type IDs (200+). |
-| 10 | `chia-sdk-client::ClientState` extended for reputation | `ClientState` provides basic ban/trust per IP. We extend with penalty-based reputation tracking per `PeerId`. |
+| 8 | Relay as fallback, not primary | Direct P2P via `DigLink` is attempted first. Relay is used only when direct connection fails. Matches `l2_driver_state_channel/src/services/relay/types.rs` `RelayConfig::prefer_relay` default `false`. |
+| 9 | DIG opcodes travel as raw bytes, never as `ProtocolMessageTypes` | Chia's `ProtocolMessageTypes` enum doesn't include DIG L2 messages (attestations, checkpoints), and it is a closed `#[repr(u8)]` enum, so a DIG discriminant is not representable in it. `dig_peer_protocol::DigMessageType` names the DIG extension opcodes (200-222, an unused band upstream — Chia's highest is `RespondCostInfo = 107`) and `DigMessage` carries the discriminant as a raw `u8`. No Chia type is forked, extended, or renumbered. |
+| 10 | The re-exported `ClientState` extended for reputation | `ClientState` provides basic ban/trust per IP. We extend with penalty-based reputation tracking per `PeerId`. |
 | 11 | `std` only | Full-node networking infrastructure. No `no_std` support needed. |
 | 12 | Plumtree structured gossip over naive flooding | Chia broadcasts to ALL connected peers. This is O(peers × messages). Plumtree maintains a spanning tree for eager push and uses lazy push (hash-only) for redundancy. Reduces bandwidth 60-80%. Critical for DIG L2's faster block times and higher attestation volume. |
 | 13 | Compact block relay (BIP 152 equivalent) | Chia sends full `RespondBlock` (up to 2MB+). Most transactions are already in the receiver's mempool. Compact blocks send header + 6-byte short tx IDs; receiver reconstructs from mempool. Reduces block propagation bandwidth 90%+ and latency significantly. |
@@ -113,7 +127,7 @@ Types used **directly** from Chia crates (NOT redefined in dig-gossip):
 |------|-------------|-------------------|
 | `Bytes32` | `chia-protocol` | Peer IDs, network IDs, message hashes |
 | `Handshake` | `chia-protocol` | Connection handshake (populated with DIG values) |
-| `Message` | `chia-protocol` | Wire-level message envelope (`msg_type`, `id`, `data`) |
+| `DigMessage` | `dig-peer-protocol` | Wire-level message envelope (`msg_type: u8`, `id`, `data`) — layout-identical to Chia's `Message`, with the discriminant left as a raw byte so DIG opcodes 200-222 are expressible |
 | `NodeType` | `chia-protocol` | Node type discrimination (FullNode, Wallet, Introducer) |
 | `ProtocolMessageTypes` | `chia-protocol` | Message type discriminant |
 | `RequestPeers` / `RespondPeers` | `chia-protocol` | Peer exchange between full nodes |
@@ -127,31 +141,31 @@ Types used **directly** from Chia crates (NOT redefined in dig-gossip):
 | `SpendBundle` | `chia-protocol` | Transaction payload |
 | `FullBlock` | `chia-protocol` | Block payload |
 | `TimestampedPeerInfo` | `chia-protocol` | Peer info in `RespondPeers` |
-| `Peer` | `chia-sdk-client` | WebSocket connection wrapper |
-| `PeerOptions` | `chia-sdk-client` | Connection options (rate_limit_factor) |
-| `Client` / `ClientState` | `chia-sdk-client` | Peer connection manager with ban/trust |
-| `Network` | `chia-sdk-client` | DNS introducer lookup |
-| `RateLimiter` | `chia-sdk-client` | Per-connection rate limiting |
-| `RateLimits` / `RateLimit` | `chia-sdk-client` | Rate limit configuration |
-| `V2_RATE_LIMITS` | `chia-sdk-client` | Pre-configured Chia V2 rate limits |
-| `connect_peer()` | `chia-sdk-client` | Full handshake + connect flow |
-| `load_ssl_cert()` | `chia-sdk-client` | TLS certificate loading |
-| `create_native_tls_connector()` | `chia-sdk-client` | TLS connector creation |
-| `ClientError` | `chia-sdk-client` | Connection error types |
-| `ChiaCertificate` | `chia-ssl` | TLS certificate generation |
-| `Streamable` | `chia-traits` | Wire serialization trait |
+| `DigLink` | `dig-peer-protocol` | WebSocket peer link (client and server side) |
+| `LinkOptions` | `dig-peer-protocol` | Link options (rate-limit factor, budget timeout) |
+| `DigMessageType` | `dig-peer-protocol` | DIG extension opcode names (200-222) |
+| `OpcodeRateLimiter` / `OpcodeRateLimits` | `dig-peer-protocol` | Chia's rate-limit table re-keyed by raw wire opcode |
+| `RegisterPeer` / `RegisterAck` / `RequestPeersIntroducer` / `RespondPeersIntroducer` | `dig-peer-protocol` | Introducer wire types |
+| `Client` / `ClientState` | `chia-sdk-client`, re-exported by `dig-peer-protocol` | Peer connection manager with ban/trust |
+| `Network` | `chia-sdk-client`, re-exported by `dig-peer-protocol` | DNS introducer lookup |
+| `RateLimits` / `RateLimit` / `V2_RATE_LIMITS` | `chia-sdk-client`, re-exported by `dig-peer-protocol` | Chia's published rate-limit configuration |
+| `load_ssl_cert()` | `chia-sdk-client`, re-exported by `dig-peer-protocol` | TLS certificate loading |
+| `create_native_tls_connector()` / `create_rustls_connector()` | `chia-sdk-client`, re-exported by `dig-peer-protocol` | TLS connector creation |
+| `ClientError` | `chia-sdk-client`, re-exported by `dig-peer-protocol` | Connection error types |
+| `ChiaCertificate` | `chia-ssl`, re-exported by `dig-peer-protocol` | TLS certificate generation |
+| `Streamable` | `chia-traits`, re-exported by `dig-peer-protocol` | Wire serialization trait |
 
 ### 1.5 Chia Behaviors Adopted (via crate reuse)
 
 | # | Behavior | How Adopted | Reference |
 |---|----------|-------------|-----------|
-| 1 | Handshake with capabilities | `connect_peer()` sends `chia-protocol::Handshake` with capabilities list. | [`chia-sdk-client/src/connect.rs:20-32`](https://github.com/Chia-Network/chia-wallet-sdk) |
-| 2 | V2 rate limiting | `chia-sdk-client::RateLimiter` with `V2_RATE_LIMITS` handles per-message-type frequency and size limits. | [`chia-sdk-client/src/rate_limits.rs`](https://github.com/Chia-Network/chia-wallet-sdk) |
+| 1 | Handshake with capabilities | The outbound module sends `chia-protocol::Handshake` with the capabilities list over the raw WebSocket, mirroring upstream's `connect.rs` flow, before upgrading to `DigLink`. | [`chia-sdk-client/src/connect.rs:20-32`](https://github.com/Chia-Network/chia-wallet-sdk) |
+| 2 | V2 rate limiting | `dig_peer_protocol::OpcodeRateLimiter` enforces Chia's `V2_RATE_LIMITS` frequency and size limits, keyed by raw wire opcode. | [`chia-sdk-client/src/rate_limits.rs`](https://github.com/Chia-Network/chia-wallet-sdk) |
 | 3 | TLS mutual authentication | `chia-ssl::ChiaCertificate::generate()` + `create_native_tls_connector()` or `create_rustls_connector()`. | [`chia-sdk-client/src/tls.rs`](https://github.com/Chia-Network/chia-wallet-sdk) |
-| 4 | Message framing | `chia-protocol::Message` uses `Streamable` for binary encoding. `Peer` handles WebSocket binary frames. | [`chia-protocol`](https://crates.io/crates/chia-protocol) |
-| 5 | Request/response correlation | `Peer::request_raw()` assigns message IDs and waits for correlated responses via `RequestMap`. | [`chia-sdk-client/src/peer.rs:302-316`](https://github.com/Chia-Network/chia-wallet-sdk) |
+| 4 | Message framing | `dig_peer_protocol::DigMessage` uses `Streamable` for binary encoding, byte-identical to Chia's `Message`. `DigLink` handles WebSocket binary frames. | [`chia-protocol`](https://crates.io/crates/chia-protocol) |
+| 5 | Request/response correlation | `DigLink`'s request methods assign message IDs and wait for correlated responses via its request map. | [`chia-sdk-client/src/peer.rs:302-316`](https://github.com/Chia-Network/chia-wallet-sdk) |
 | 6 | DNS seeding | `Network::lookup_all()` with timeout and batching. | [`chia-sdk-client/src/network.rs:40-68`](https://github.com/Chia-Network/chia-wallet-sdk) |
-| 7 | Network ID validation | `connect_peer()` rejects peers with mismatched `network_id`. | [`chia-sdk-client/src/connect.rs:54-58`](https://github.com/Chia-Network/chia-wallet-sdk) |
+| 7 | Network ID validation | Handshake validation rejects peers with a mismatched `network_id`. | [`chia-sdk-client/src/connect.rs:54-58`](https://github.com/Chia-Network/chia-wallet-sdk) |
 | 8 | Peer ban/trust | `ClientState::ban()`, `ClientState::unban()`, `ClientState::trust()`, `ClientState::is_banned()`. | [`chia-sdk-client/src/client.rs:93-133`](https://github.com/Chia-Network/chia-wallet-sdk) |
 
 ### 1.6 Chia Behaviors Ported from Python (no Rust crate)
@@ -176,8 +190,8 @@ Types used **directly** from Chia crates (NOT redefined in dig-gossip):
 |---|-----------|-------------|
 | 1 | Relay server fallback | Nodes behind NAT/firewall can participate in gossip through a relay server. Chia has no relay. From `l2_driver_state_channel/src/services/relay/`. |
 | 2 | Introducer registration | Nodes actively register with the introducer (IP, port, node_type), not just query it. Chia's introducer is query-only. From `l2_driver_state_channel/src/services/network/introducer_client.rs`. |
-| 3 | DIG protocol message types | Attestation, checkpoint, and status messages (types 200+). |
-| 4 | Inbound connection listener | `chia-sdk-client`'s `Peer` only does outbound connections. We add a `TcpListener` accepting inbound. |
+| 3 | DIG protocol message types | Attestation, checkpoint, and status messages (opcodes 200-222), carried as raw `msg_type` bytes in a `DigMessage`. |
+| 4 | Inbound connection listener | `DigLink` is built for outbound `wss://` dials. We add a `TcpListener` accepting inbound and upgrade the accepted server stream via `DigLink::from_server_websocket()`. |
 
 ### 1.8 Improvements Over Chia L1
 
@@ -406,16 +420,15 @@ transport-layer rejection from an app-layer one because both surface to the clie
 
 ### 2.1 Types Reused from Chia Crates
 
-The following types are **re-exported** from Chia crates, not redefined:
+The following types are **re-exported**, not redefined. The Chia types are reached through
+`dig-peer-protocol`; `chia-protocol` remains a direct dependency only for the full-node wire
+structs it does not re-export.
 
 ```rust
 // From chia-protocol
 pub use chia_protocol::{
     Bytes32,
     Handshake,
-    Message,
-    NodeType,
-    ProtocolMessageTypes,
     // Full node protocol messages
     NewPeak, NewTransaction, RequestTransaction, RespondTransaction,
     RequestBlock, RespondBlock, RejectBlock,
@@ -423,29 +436,28 @@ pub use chia_protocol::{
     NewUnfinishedBlock, RequestUnfinishedBlock, RespondUnfinishedBlock,
     RequestMempoolTransactions,
     RequestPeers, RespondPeers,
-    RequestPeersIntroducer, RespondPeersIntroducer,
     // Payload types
     SpendBundle, FullBlock,
     // Peer info
     TimestampedPeerInfo,
 };
 
-// From chia-sdk-client
-pub use chia_sdk_client::{
-    Peer, PeerOptions,
-    Client, ClientState,
-    Network,
-    RateLimiter, RateLimits, RateLimit,
-    V2_RATE_LIMITS,
-    ClientError,
-    load_ssl_cert,
+// The DIG peer wire, owned by dig-peer-protocol.
+pub use dig_peer_protocol::{
+    Bytes, ChiaProtocolMessage, DigLink, DigMessage, LinkError, LinkOptions,
+    NodeType, ProtocolMessageTypes,
+    OpcodeRateLimiter, OpcodeRateLimits,
 };
 
-// From chia-ssl
-pub use chia_ssl::ChiaCertificate;
-
-// From chia-traits
-pub use chia_traits::Streamable;
+// The Chia surface, re-exported by dig-peer-protocol rather than depended on directly.
+pub use dig_peer_protocol::{
+    Client, ClientState, ClientError,
+    Network,
+    RateLimits, RateLimit, V2_RATE_LIMITS,
+    load_ssl_cert,
+    ChiaCertificate,   // chia-ssl
+    Streamable,        // chia-traits
+};
 ```
 
 ### 2.2 PeerId (type alias)
@@ -497,17 +509,17 @@ application protocols — directed (`DIG_MESSAGE = 220`) or broadcast
 
 Opcode **220** (`DIG_MESSAGE`) carries a `dig-message` **directed envelope** between
 two peers. It is a first-class `ProtocolMessageTypes::DigMessage` variant so it rides
-the ordinary [`Message`](chia_protocol::Message) transport (send / inbound), and the
+the ordinary [`DigMessage`](dig_peer_protocol::DigMessage) transport (send / inbound), and the
 canonical constant is exported as `dig_gossip::DIG_MESSAGE` (mirrored by
 `dig_peer_protocol::DIG_MESSAGE` for non-gossip consumers).
 
 - **Envelope is OPAQUE.** dig-gossip is the transport only — the sealed envelope rides
-  verbatim in `Message.data` (bytes in equal bytes out). dig-gossip never seals, opens,
+  verbatim in `DigMessage.data` (bytes in equal bytes out). dig-gossip never seals, opens,
   or parses it, and has no BLS / recipient-key dependency (Wave A, envelope-only). The
   end-to-end sealing to the recipient's DID key is `dig-message`'s (CLAUDE.md §5.4).
 - **Directed, never broadcast.** `classify_broadcast(DigMessage) = Unicast`; a directed
   message is delivered 1:1 via `send_dig_message`, never Plumtree-flooded.
-- **Correlation.** `Message.id` pairs the frames of one exchange (e.g. a stream).
+- **Correlation.** `DigMessage.id` pairs the frames of one exchange (e.g. a stream).
 
 **Send/route API** (on `GossipHandle`, plus free functions in `service::dig_message`):
 
@@ -516,7 +528,7 @@ canonical constant is exported as `dig_gossip::DIG_MESSAGE` (mirrored by
 | `send_dig_message(peer, envelope, correlation_id)` | Send a directed envelope over opcode 220. |
 | `dig_message_payload(&Message) -> Option<&[u8]>` | Inbound routing: lift the opaque envelope from an opcode-220 frame (else `None`). |
 | `is_dig_message(u8) -> bool` | Recognise opcode 220. |
-| `frame_envelope(&[u8], Option<u16>) -> Message` | Build the outbound opcode-220 frame. |
+| `frame_envelope(&[u8], Option<u16>) -> DigMessage` | Build the outbound opcode-220 frame. |
 
 **Opcode 220 (`DigMessage`, directed envelope) — base-bounded by design (accepted).**
 Unlike the 221/222 public-flood broadcasts, opcode 220 carries a *directed* (unicast) dig-message envelope as opaque bytes; dig-gossip is pure transport and never opens, decodes, or verifies the envelope. Opcode 220 therefore has NO dedicated DIG rate-limit row and is deliberately bounded only by the Chia `default_settings` base limit — 100 frames/min, 1 MiB/frame, 100 MiB cumulative per connection — applied FIRST and unconditionally by `RateLimiter::handle_message` inside `InboundRateLimiter::allows`. This bound is REAL and non-fail-open: the fail-open `DigRateLimiter::check` runs only afterward and can add, never loosen, a restriction.
@@ -587,8 +599,8 @@ key**, supplied by the caller from the peer's mTLS cert binding (the message car
 | `StoreMeltedAnnounce::verify(&self, signer_pk_g1: &[u8; 48]) -> bool` | Verify the signature against the signer's BLS G1 key (receiver). |
 | `StoreMeltedAnnounce::{encode,decode}` | Fixed-length big-endian wire round-trip. |
 | `sign_store_melted(sk, store_id, melt_height) -> [u8; 96]` / `store_melted_sig_preimage(store_id, melt_height) -> [u8; 32]` | Signature helpers. |
-| `frame_store_melted(&StoreMeltedAnnounce) -> Message` | Build the outbound opcode-221 broadcast frame (`id = None`). |
-| `store_melted_payload(&Message) -> Option<StoreMeltedAnnounce>` | Inbound routing: lift + decode an opcode-221 frame (else `None`). |
+| `frame_store_melted(&StoreMeltedAnnounce) -> DigMessage` | Build the outbound opcode-221 broadcast frame (`id = None`). |
+| `store_melted_payload(&DigMessage) -> Option<StoreMeltedAnnounce>` | Inbound routing: lift + decode an opcode-221 frame (else `None`). |
 | `is_store_melted(u8) -> bool` | Recognise opcode 221. |
 
 #### 2.3.4 `HOLDINGS_ANNOUNCE = 222` — holdings-announce broadcast (#1428, spec #1394)
@@ -703,8 +715,8 @@ dig-dht's ingest recompute it byte-identically.
 | `HoldingsAnnounce::{encode,decode}` | Variable-length big-endian wire round-trip. |
 | `canonical_encode(&[HoldingsDelta]) -> Vec<u8>` / `holdings_signing_message(&peer_id, seq, announced_at, &changes) -> Vec<u8>` | Signed-bytes + signing-message helpers. |
 | `signing_message_digest(&peer_id, seq, announced_at, &changes) -> [u8;32]` | SHA-256 fingerprint of the signing message (KAT/layout helper; NOT what is signed). |
-| `frame_holdings_announce(&HoldingsAnnounce) -> Message` | Build the outbound opcode-222 broadcast frame (`id = None`). |
-| `holdings_announce_payload(&Message) -> Option<HoldingsAnnounce>` | Inbound routing: lift + decode an opcode-222 frame (else `None`). |
+| `frame_holdings_announce(&HoldingsAnnounce) -> DigMessage` | Build the outbound opcode-222 broadcast frame (`id = None`). |
+| `holdings_announce_payload(&DigMessage) -> Option<HoldingsAnnounce>` | Inbound routing: lift + decode an opcode-222 frame (else `None`). |
 | `is_holdings_announce(u8) -> bool` | Recognise opcode 222. |
 
 **KAT golden vector.** The ECDSA-P256 signature is randomized, so it is NOT hex-pinnable;
@@ -714,16 +726,16 @@ domain tag / `canonical_encode` / field order of this cross-repo wire contract. 
 SPKI→peer_id binding and the sign/verify behaviour (including the "sign with a foreign key,
 present the victim's SPKI" forgery rejection) are covered by behavioural tests.
 
-### 2.4 PeerConnection (DIG extension of `chia-sdk-client::Peer`)
+### 2.4 PeerConnection (DIG extension of `dig_peer_protocol::DigLink`)
 
-`chia-sdk-client::Peer` handles the WebSocket connection and message I/O. `PeerConnection` wraps it with additional metadata for the gossip layer.
+`DigLink` handles the WebSocket connection and message I/O. `PeerConnection` wraps it with additional metadata for the gossip layer.
 
 ```rust
 /// Extended peer connection state for the gossip layer.
-/// Wraps `chia-sdk-client::Peer` with gossip-specific metadata.
+/// Wraps `dig_peer_protocol::DigLink` with gossip-specific metadata.
 pub struct PeerConnection {
-    /// The underlying chia-sdk-client Peer connection.
-    pub peer: Peer,
+    /// The underlying DigLink connection.
+    pub peer: DigLink,
     /// Unique peer identifier (SHA256 of TLS public key).
     pub peer_id: PeerId,
     /// Remote socket address.
@@ -751,13 +763,13 @@ pub struct PeerConnection {
     /// Peer reputation tracker (DIG extension).
     pub reputation: PeerReputation,
     /// Inbound message receiver for this connection.
-    pub inbound_rx: mpsc::Receiver<Message>,
+    pub inbound_rx: mpsc::Receiver<DigMessage>,
 }
 ```
 
 ### 2.5 PeerReputation (DIG extension)
 
-Extends `chia-sdk-client::ClientState`'s binary ban/trust with numeric penalties.
+Extends `ClientState`'s binary ban/trust with numeric penalties.
 
 ```rust
 /// Reasons a peer can be penalized.
@@ -903,7 +915,7 @@ pub struct GossipConfig {
     pub peer_id: PeerId,
     /// Network ID (e.g., SHA256("dig_mainnet")).
     pub network_id: Bytes32,
-    /// Network config for DNS lookup (uses chia-sdk-client::Network).
+    /// Network config for DNS lookup (uses the re-exported `Network`).
     pub network: Network,
     /// Target number of outbound connections.
     /// Chia: node_discovery.py:49. Default: 8.
@@ -1184,7 +1196,7 @@ pub struct GossipHandle { /* ... */ }
 impl GossipHandle {
     // -- Message sending --
 
-    /// Broadcast a chia-protocol::Message to connected peers via gossip fanout.
+    /// Broadcast a DigMessage to connected peers via gossip fanout.
     pub async fn broadcast(
         &self,
         message: Message,
@@ -1192,14 +1204,14 @@ impl GossipHandle {
     ) -> Result<usize, GossipError>;
 
     /// Broadcast a typed Streamable + ChiaProtocolMessage.
-    /// Serializes to Message internally using chia-traits::Streamable.
+    /// Serializes to DigMessage internally using chia-traits::Streamable.
     pub async fn broadcast_typed<T: Streamable + ChiaProtocolMessage>(
         &self,
         body: T,
         exclude: Option<PeerId>,
     ) -> Result<usize, GossipError>;
 
-    /// Send a message to a specific peer (via their chia-sdk-client::Peer).
+    /// Send a message to a specific peer (via their `DigLink`).
     pub async fn send_to<T: Streamable + ChiaProtocolMessage>(
         &self,
         peer_id: PeerId,
@@ -1219,7 +1231,7 @@ impl GossipHandle {
     // -- Message receiving --
 
     /// Inbound message receiver. Each item is (sender_peer_id, chia-protocol::Message).
-    pub fn inbound_receiver(&self) -> &mpsc::Receiver<(PeerId, Message)>;
+    pub fn inbound_receiver(&self) -> Result<broadcast::Receiver<(PeerId, DigMessage)>, GossipError>;
 
     // -- Peer management --
 
@@ -1236,7 +1248,7 @@ impl GossipHandle {
         outbound_only: bool,
     ) -> Vec<PeerConnection>;
 
-    /// Connect to a peer (uses chia-sdk-client::connect_peer internally).
+    /// Connect to a peer (drives the handshake, then upgrades to `DigLink`).
     pub async fn connect_to(&self, addr: SocketAddr) -> Result<PeerId, GossipError>;
 
     /// Disconnect a peer.
@@ -1308,7 +1320,7 @@ pub struct RelayStats {
 ```rust
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum GossipError {
-    /// Wraps chia-sdk-client::ClientError for connection-level errors.
+    /// Wraps the re-exported `ClientError` for connection-level errors.
     #[error("client error: {0}")]
     ClientError(#[from] ClientError),
 
@@ -1360,22 +1372,42 @@ pub enum GossipError {
 
 ## 5. Connection Lifecycle
 
-### 5.1 Outbound Connection (reuses `chia-sdk-client`)
+### 5.1 Outbound Connection
+
+The outbound module mirrors upstream's `connect.rs` flow rather than calling it, because
+upstream discards the parsed `Handshake` and never exposes the remote TLS SubjectPublicKeyInfo
+bytes — both of which `PeerConnection` and `PeerId` (§5.3, API-005) require.
 
 ```
-Outbound connection (uses connect_peer() from chia-sdk-client):
+Outbound connection:
    │
    ├─ 1. Load TLS cert via load_ssl_cert() / ChiaCertificate::generate()
    ├─ 2. Create connector via create_native_tls_connector() or create_rustls_connector()
-   ├─ 3. Call connect_peer(network_id, connector, socket_addr, options)
-   │      → Internally: Peer::connect() → WebSocket TLS connect
-   │      → Sends chia-protocol::Handshake with DIG network_id
-   │      → Receives and validates Handshake response
-   │      → Returns (Peer, mpsc::Receiver<Message>)
+   ├─ 3. Dial wss:// with that connector
+   │      → Capture remote_spki_der from the WebSocketStream before it is consumed
+   │      → Send chia-protocol::Handshake with DIG network_id
+   │      → Receive and validate the Handshake response
+   │      → Upgrade via DigLink::from_websocket(ws, options)
+   │      → Yields (DigLink, mpsc::Receiver<DigMessage>, Handshake, remote_spki_der)
    ├─ 4. Wrap in PeerConnection with gossip metadata
    ├─ 5. Add peer to address manager
    ├─ 6. Send RequestPeers for discovery (node_discovery.py:135-136)
    └─ 7. Spawn per-connection message loop task
+
+Step 7 includes the CON-004 keepalive. Every `PING_INTERVAL_SECS` the loop sends a `RequestPeers`
+probe **with no correlation id** and waits up to `PEER_TIMEOUT_SECS` for the peer's `RespondPeers`
+on the application inbound stream.
+
+The probe MUST NOT be correlated. Both peers allocate correlation ids from a counter starting at
+zero and both keepalive loops start at handshake on the same interval, so two correlated probes can
+carry the same id — and because a link matches an inbound frame on correlation id before forwarding
+it, each side's waiter would receive the peer's **request** rather than a response. The peer's
+request would never reach the auto-reply path, neither side would record a success, and both would
+disconnect at the staleness check while logging a timeout that names the wrong cause.
+
+The design fails loose: an alive-but-silent peer is kept, and a round whose reply cannot be observed
+at all (the inbound stream is absent while the service starts or stops) is skipped without charging
+the staleness window.
 
 Relay fallback (when direct P2P fails):
    │
@@ -1387,7 +1419,9 @@ Relay fallback (when direct P2P fails):
 
 ### 5.2 Inbound Connection
 
-`chia-sdk-client`'s `Peer` only supports outbound connections. For inbound, we accept TCP/TLS connections and use `Peer::from_websocket()`:
+`DigLink::from_websocket()` types the stream as the client-oriented `MaybeTlsStream`, so it cannot
+take a server-side TLS stream. For inbound, we accept TCP/TLS connections and use
+`DigLink::from_server_websocket()`:
 
 ```
 Listener bind (GossipService::start, once at startup):
@@ -1401,8 +1435,8 @@ Inbound connection (per accepted socket):
    ├─ 1. TcpListener::accept()
    ├─ 2. TLS handshake (using chia-ssl certificate)
    ├─ 3. tokio_tungstenite::accept_async()
-   ├─ 4. Peer::from_websocket(ws, options)
-   │      → Returns (Peer, mpsc::Receiver<Message>)
+   ├─ 4. DigLink::from_server_websocket(ws, remote_addr, options)
+   │      → Returns (DigLink, mpsc::Receiver<DigMessage>)
    ├─ 5. Receive Handshake, validate network_id
    ├─ 6. Send Handshake response
    ├─ 7. Wrap in PeerConnection
@@ -1640,8 +1674,8 @@ check→insert stays atomic.
 
 - **Mutual authentication**: Both sides of every P2P connection present a `chia-ssl` certificate. The connecting peer presents its certificate to the listener, and the listener presents its certificate to the connecting peer. Both sides extract `PeerId = SHA256(remote_certificate_public_key)` from the peer's presented certificate.
 - **Certificate management**: Exclusively via `chia-ssl`. `ChiaCertificate::generate()` creates new node certificates on first run. `load_ssl_cert()` loads existing certificates on subsequent runs.
-- **Outbound mTLS**: `create_native_tls_connector()` or `create_rustls_connector()` from `chia-sdk-client` creates a TLS connector that includes the node's own certificate (client cert) for mutual authentication. This connector is passed to `connect_peer()`.
-- **Inbound mTLS**: The TLS acceptor is configured to **request + require** the peer client certificate (matching Chia's [`server.py:67`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/server.py#L67) `ssl_context.verify_mode = ssl.CERT_REQUIRED`). The listener requires the connecting peer to present a certificate; if none is presented, or if the TLS handshake fails, the connection is dropped. Under the `rustls` feature (the production `dig-node` build) the acceptor is a **rustls `ServerConfig`** presenting the node's `chia-ssl` certificate with a **CA-agnostic `ClientCertVerifier`** that requests, requires, and captures the peer certificate but does not validate it against any CA (self-signed peers are expected — see below); proof-of-possession of the peer's private key is still enforced via the TLS CertificateVerify signature. This replaces the `native-tls` acceptor for `rustls` builds because a `[patch.crates-io]` `native-tls` fork does not propagate through a git dependency, which left the stock acceptor **not requesting** the client certificate on OpenSSL/Linux (peer certificate absent → `PeerId` underivable → inbound dropped). The `native-tls` acceptor is retained for `native-tls`-only builds. The captured server-side stream is handed to `Peer::from_server_websocket()` (the server counterpart to `Peer::from_websocket()`, which only types the client `MaybeTlsStream`).
+- **Outbound mTLS**: `create_native_tls_connector()` or `create_rustls_connector()` creates a TLS connector that includes the node's own certificate (client cert) for mutual authentication. This connector is used for the `wss://` dial that the `DigLink` is built on.
+- **Inbound mTLS**: The TLS acceptor is configured to **request + require** the peer client certificate (matching Chia's [`server.py:67`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/server.py#L67) `ssl_context.verify_mode = ssl.CERT_REQUIRED`). The listener requires the connecting peer to present a certificate; if none is presented, or if the TLS handshake fails, the connection is dropped. Under the `rustls` feature (the production `dig-node` build) the acceptor is a **rustls `ServerConfig`** presenting the node's `chia-ssl` certificate with a **CA-agnostic `ClientCertVerifier`** that requests, requires, and captures the peer certificate but does not validate it against any CA (self-signed peers are expected — see below); proof-of-possession of the peer's private key is still enforced via the TLS CertificateVerify signature. This replaces the `native-tls` acceptor for `rustls` builds because a `[patch.crates-io]` `native-tls` fork does not propagate through a git dependency, which left the stock acceptor **not requesting** the client certificate on OpenSSL/Linux (peer certificate absent → `PeerId` underivable → inbound dropped). The `native-tls` acceptor is retained for `native-tls`-only builds; its `[patch.crates-io]` fork sets `CERT_REQUIRED` plus Chia CA trust on the OpenSSL server acceptor, which upstream `TlsAcceptorBuilder` offers no way to request. The captured server-side stream is handed to `DigLink::from_server_websocket()` (the server counterpart to `DigLink::from_websocket()`, which only types the client `MaybeTlsStream`).
 - **Peer identity from mTLS**: `PeerId = SHA256(remote_TLS_certificate_public_key)`. Because mTLS guarantees both sides present certificates, each side can derive the other's `PeerId` from the certificate exchanged during the TLS handshake. This binds peer identity to cryptographic key material — impersonation requires possessing the private key. Matches Chia's `peer_node_id` derivation from certificate hash ([`ws_connection.py:95`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/ws_connection.py#L95)).
 - **Self-signed certificates**: Expected (Chia model). Both connector and acceptor use `danger_accept_invalid_certs(true)` / skip CA chain validation — peer identity is verified by `PeerId` hash, not by a certificate authority. The Chia CA cert (`CHIA_CA_CRT` from `chia-ssl`) is used as a root but verification is relaxed for self-signed node certs.
 - **No fallback**: If mTLS handshake fails for any reason (missing cert, expired cert, corrupt cert), the connection MUST be dropped. There is no fallback to plain WebSocket or server-only TLS.
@@ -1651,16 +1685,18 @@ This matches Chia's mTLS design where both client and server present certificate
 
 ### 5.4 Rate Limiting
 
-Uses `chia-sdk-client::RateLimiter` for the Chia bound, composed with dig-gossip's own
-`DigRateLimiter` for the DIG per-opcode bound (dig_ecosystem#2228):
+Uses `dig_peer_protocol::OpcodeRateLimiter` for the Chia bound, composed with dig-gossip's own
+`DigRateLimiter` for the DIG per-opcode bound (dig_ecosystem#2228). Both are keyed by the raw
+wire opcode, so no rate-limit decision names `ProtocolMessageTypes`:
 
 ```rust
-// Outbound: RateLimiter is built into Peer::send_raw()
-// (it loops with 1s sleep until rate limit clears)
+// Outbound: rate limiting is built into DigLink's send path
+// (it waits for budget, up to LinkOptions::budget_timeout)
 
 // Inbound: create a separate admission gate for each connection. It composes the Chia
-// RateLimiter (V2_RATE_LIMITS, keyed by ProtocolMessageTypes) with DigRateLimiter
-// (dig_extension_rate_limits_map(), keyed by the raw opcode byte) behind one lock.
+// bound (OpcodeRateLimiter over OpcodeRateLimits, i.e. V2_RATE_LIMITS re-keyed by opcode)
+// with DigRateLimiter (dig_extension_rate_limits_map(), keyed by the raw opcode byte)
+// behind one lock.
 let inbound_limiter = InboundRateLimiter::new(config.peer_options.rate_limit_factor);
 
 // For DIG extension messages, extend V2_RATE_LIMITS with additional entries
@@ -1682,9 +1718,9 @@ When a received frame is rejected by the per-connection inbound cap, the forward
 
 ### 6.1 Overview
 
-Uses `chia-sdk-client::Network::lookup_all()` for DNS resolution. The discovery loop and address manager are ported from Chia Python.
+Uses the re-exported `Network::lookup_all()` for DNS resolution. The discovery loop and address manager are ported from Chia Python.
 
-### 6.2 DNS Seeding (reuses `chia-sdk-client::Network`)
+### 6.2 DNS Seeding (reuses the re-exported `Network`)
 
 ```rust
 let network = Network {
@@ -2026,12 +2062,11 @@ map and `PlumtreeState`) MUST release both locks before step 5's per-peer send l
 Neither lock may be held across a `send_raw`/`send_protocol_message(...).await` point — a
 `std::sync::MutexGuard` held across an await is `!Send`, so `GossipHandle::broadcast`'s future
 would itself become non-`Send`, breaking `tokio::spawn`-ability. `dig-gossip`'s implementation
-satisfies this today. Each eager send clones the outbound `Message` body (a `Vec<u8>`-backed
-type from the vendored `chia-protocol` crate, not reference-counted) — this is an accepted O(N)
-per-broadcast cost proportional to the eager fan-out (bounded by `GossipConfig::gossip_fanout`,
-default 8), not a growth-over-time or attacker-amplifiable vector; eliminating it would require
-changing the vendored wire `Message` type to a refcounted buffer, which is out of scope for this
-crate (see `vendor/` policy — thin wrapper, never fork upstream types).
+satisfies this today. Each eager send clones the outbound `DigMessage` body (a `Vec<u8>`-backed
+`dig_peer_protocol::Bytes`, not reference-counted) — this is an accepted O(N) per-broadcast cost
+proportional to the eager fan-out (bounded by `GossipConfig::gossip_fanout`, default 8), not a
+growth-over-time or attacker-amplifiable vector; eliminating it would require changing the wire
+envelope to a refcounted buffer in `dig-peer-protocol`, which is out of scope for this crate.
 
 **On receiving a message via eager push:**
 
@@ -2219,9 +2254,9 @@ pub enum MessagePriority {
 
 ```rust
 struct PriorityOutbound {
-    critical: VecDeque<Message>,  // Drained first, always
-    normal: VecDeque<Message>,    // Drained when critical is empty
-    bulk: VecDeque<Message>,      // Drained when both above are empty
+    critical: VecDeque<DigMessage>,  // Drained first, always
+    normal: VecDeque<DigMessage>,    // Drained when critical is empty
+    bulk: VecDeque<DigMessage>,      // Drained when both above are empty
 }
 
 // Drain order: exhaust critical → exhaust normal → one bulk message → check critical again
@@ -2312,9 +2347,11 @@ broadcast. INT-016 tests assert every opcode routes by its declared strategy.
 `route_dig_message` is not only the routing map; it is the **live per-opcode dispatch authority**.
 The two `GossipHandle` entry points below are the ONLY sanctioned way to put a `200..=219` opcode on
 the wire — a caller MUST NOT hand-frame a DIG opcode and call `broadcast` / `send_directed_message`
-directly. Both frame the opcode through the single encoder `frame_dig_message` (which mirrors each
-`DigMessageType` discriminant onto the vendored `ProtocolMessageTypes`, so a stock `Message` carries
-the DIG opcode) and then dispatch by strategy:
+directly. Both frame the opcode through the single encoder `frame_dig_message`, which writes the
+`DigMessageType` discriminant directly into `DigMessage::msg_type` as a raw `u8`. No Chia enum is
+consulted or extended: `ProtocolMessageTypes` is a closed `#[repr(u8)]` enum that cannot name a DIG
+opcode, and the raw-byte envelope is what makes the 200-222 band expressible without forking it.
+Dispatch then proceeds by strategy:
 
 | Strategy (opcodes) | Entry point | Behaviour | Wrong entry point |
 |--------------------|-------------|-----------|-------------------|
@@ -2332,27 +2369,27 @@ opcode's dispatch outcome-class equals its `route_dig_message` classification (t
 
 ### 9.1 Crate Boundary
 
-`dig-gossip` is a **library crate** (`lib`). It wraps `chia-sdk-client` and `chia-protocol` to provide a gossip layer. It does **not** include block validation, CLVM, mempool, coinstate, or consensus.
+`dig-gossip` is a **library crate** (`lib`). It wraps `dig-peer-protocol` (and, through it, the Chia crates) to provide a gossip layer. It does **not** include block validation, CLVM, mempool, coinstate, or consensus.
 
 **Input**: `chia-protocol::Message` (or typed `T: Streamable + ChiaProtocolMessage`) via `broadcast()` / `send_to()`.
-**Output**: `(PeerId, chia-protocol::Message)` via inbound channel receiver.
+**Output**: `(PeerId, dig_peer_protocol::DigMessage)` via inbound channel receiver.
 
 ### 9.2 What dig-gossip Implements vs Reuses
 
 | Component | Source | dig-gossip Role |
 |-----------|--------|----------------|
 | Wire protocol types | `chia-protocol` | **Reuse** (re-export) |
-| Peer connection (WebSocket + TLS) | `chia-sdk-client::Peer` | **Reuse** |
-| Handshake flow | `chia-sdk-client::connect_peer()` | **Reuse** |
-| Rate limiting | `chia-sdk-client::RateLimiter` (Chia bound) + `DigRateLimiter` (DIG per-opcode bound) | **Reuse** the Chia table; the DIG table is dig-gossip's own |
-| TLS certificates | `chia-ssl` + `chia-sdk-client` TLS utils | **Reuse** |
-| DNS resolution | `chia-sdk-client::Network` | **Reuse** |
-| Ban/trust management | `chia-sdk-client::ClientState` | **Reuse** + extend with reputation |
+| Peer connection (WebSocket + TLS) | `dig_peer_protocol::DigLink` | **Reuse** |
+| Handshake flow | `chia-protocol::Handshake` over the raw WebSocket, then `DigLink` | **Reuse** the wire struct; the flow is dig-gossip's own (it must capture the SPKI DER) |
+| Rate limiting | `dig_peer_protocol::OpcodeRateLimiter` (Chia bound) + `DigRateLimiter` (DIG per-opcode bound) | **Reuse** the Chia table; the DIG table is dig-gossip's own |
+| TLS certificates | `chia-ssl` + the re-exported TLS utils | **Reuse** |
+| DNS resolution | the re-exported `Network` | **Reuse** |
+| Ban/trust management | the re-exported `ClientState` | **Reuse** + extend with reputation |
 | Serialization | `chia-traits::Streamable` | **Reuse** |
 | Address manager | Chia Python `address_manager.py` | **Port to Rust** (no crate exists) |
 | Discovery loop | Chia Python `node_discovery.py` | **Port to Rust** (no crate exists) |
 | Introducer peers | Chia Python `introducer_peers.py` | **Port to Rust** (no crate exists) |
-| Inbound connection listener | New | **Implement** (`Peer::from_websocket` exists) |
+| Inbound connection listener | New | **Implement** (`DigLink::from_server_websocket` exists) |
 | Relay fallback | `l2_driver_state_channel` | **Port/adapt** |
 | Introducer registration | `l2_driver_state_channel` | **Port/adapt** |
 | Plumtree structured gossip | New (based on Leitão et al., 2007) | **Implement** |
@@ -2388,7 +2425,7 @@ dig-gossip/
 │   ├── types/
 │   │   ├── mod.rs                     # Re-exports
 │   │   ├── peer.rs                    # PeerId (alias), PeerInfo (with get_group/get_key),
-│   │   │                              #   PeerConnection (wraps chia-sdk-client::Peer)
+│   │   │                              #   PeerConnection (wraps dig_peer_protocol::DigLink)
 │   │   ├── config.rs                  # GossipConfig, IntroducerConfig, RelayConfig
 │   │   ├── stats.rs                   # GossipStats, RelayStats
 │   │   ├── reputation.rs             # PeerReputation, PenaltyReason
@@ -2404,8 +2441,8 @@ dig-gossip/
 │   │
 │   ├── connection/
 │   │   ├── mod.rs
-│   │   └── listener.rs                # TcpListener + TLS accept + Peer::from_websocket()
-│   │                                  #   (chia-sdk-client::Peer handles the rest)
+│   │   └── listener.rs                # TcpListener + TLS accept + DigLink::from_server_websocket()
+│   │                                  #   (DigLink handles the rest)
 │   │
 │   ├── discovery/
 │   │   ├── mod.rs
@@ -2445,7 +2482,7 @@ dig-gossip/
 │       └── latency.rs                 # RTT tracker, peer scoring
 │
 └── tests/
-    ├── connection_tests.rs            # Handshake via connect_peer(), lifecycle
+    ├── connection_tests.rs            # Handshake + DigLink upgrade, lifecycle
     ├── discovery_tests.rs             # Address manager, AS diversity, introducer, DNS
     ├── plumtree_tests.rs              # Eager/lazy push, tree formation, self-healing
     ├── compact_block_tests.rs         # Encoding, decoding, mempool reconstruction
@@ -2468,24 +2505,25 @@ dig-gossip/
 // Re-exports from Chia crates (NOT reimplemented)
 // =========================================================================
 pub use chia_protocol::{
-    Bytes32, Handshake, Message, NodeType, ProtocolMessageTypes,
+    Bytes32, Handshake,
     NewPeak, NewTransaction, RequestTransaction, RespondTransaction,
     RequestBlock, RespondBlock, RejectBlock,
     RequestBlocks, RespondBlocks, RejectBlocks,
     NewUnfinishedBlock, RequestUnfinishedBlock, RespondUnfinishedBlock,
     RequestMempoolTransactions,
     RequestPeers, RespondPeers,
-    RequestPeersIntroducer, RespondPeersIntroducer,
     SpendBundle, FullBlock, TimestampedPeerInfo,
-    ChiaProtocolMessage,
 };
-pub use chia_sdk_client::{
-    Peer, PeerOptions, Client, ClientState, Network,
-    RateLimiter, RateLimits, RateLimit, V2_RATE_LIMITS,
+pub use dig_peer_protocol::{
+    Bytes, DigLink, DigMessage, LinkError, LinkOptions,
+    NodeType, ProtocolMessageTypes,
+    OpcodeRateLimiter, OpcodeRateLimits,
+    // Re-exported Chia surface
+    Client, ClientState, Network,
+    RateLimits, RateLimit, V2_RATE_LIMITS,
     ClientError, load_ssl_cert,
+    ChiaCertificate, Streamable,
 };
-pub use chia_ssl::ChiaCertificate;
-pub use chia_traits::Streamable;
 
 // =========================================================================
 // DIG-specific types (implemented in this crate)
@@ -2495,6 +2533,8 @@ pub use types::config::{GossipConfig, IntroducerConfig, RelayConfig};
 pub use types::stats::{GossipStats, RelayStats};
 pub use types::reputation::{PeerReputation, PenaltyReason};
 pub use types::dig_messages::DigMessageType;
+pub use discovery::introducer_register_wire::{RegisterPeer, RegisterAck};
+pub use discovery::introducer_wire::{RequestPeersIntroducer, RespondPeersIntroducer};
 
 pub use service::gossip_service::GossipService;
 pub use service::gossip_handle::GossipHandle;
@@ -2514,8 +2554,8 @@ pub use constants::*;
 ```toml
 [features]
 default = ["native-tls", "relay", "erlay", "compact-blocks", "dandelion"]
-native-tls = ["chia-sdk-client/native-tls"]    # native-tls outbound + inbound acceptor
-rustls = ["chia-sdk-client/rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"] # rustls outbound + inbound acceptor (#1371)
+native-tls = ["dig-peer-protocol/native-tls", "dep:native-tls", "dep:tokio-native-tls"]      # native-tls outbound + inbound acceptor
+rustls = ["dig-peer-protocol/rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile"] # rustls outbound + inbound acceptor (#1371)
 relay = []                                        # Relay fallback + NAT traversal support
 erlay = ["minisketch-rs"]                         # ERLAY-style transaction relay with set reconciliation
 compact-blocks = ["siphasher"]                    # Compact block relay (BIP 152 equivalent)
@@ -2527,11 +2567,16 @@ tor = ["arti-client", "tokio-socks"]             # Tor/SOCKS5 proxy transport (o
 
 ```toml
 [dependencies]
-# Chia crates (direct reuse)
+# The DIG peer wire — the single path to the Chia crates.
+dig-peer-protocol = { version = "0.4", default-features = false }
+
+# Chia crates named directly only because `chia_streamable_macro` reads Cargo.toml
+# for them and generates `chia_protocol::` paths at compile time. Code imports these
+# types through `dig-peer-protocol`, never from these entries.
 chia-protocol = "0.26"
-chia-sdk-client = { version = "0.28", features = ["native-tls"] }
-chia-ssl = "0.26"
 chia-traits = "0.26"
+chia-sha2 = "0.26"
+chia_streamable_macro = "0.26"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -2577,7 +2622,7 @@ minisketch-rs = "0.2"
 
 ### 11.2 Integration Tests
 
-- **connect_peer() integration**: connect two nodes using `chia-sdk-client::connect_peer()`, verify handshake with DIG `network_id`.
+- **Outbound connect integration**: connect two nodes through the outbound module, verify handshake with DIG `network_id`.
 - **Peer::request_infallible() for RequestPeers**: verify `RespondPeers` round-trip.
 - **Plumtree three-node gossip**: broadcast from A, B receives via eager, C receives via lazy→pull. Verify tree forms and self-heals.
 - **Plumtree tree optimization**: verify that after initial convergence, eager peers are low-latency and redundant paths are pruned.
@@ -2595,7 +2640,7 @@ minisketch-rs = "0.2"
 
 ### 11.3 Benchmark Tests
 
-- **Message throughput**: messages/second through `chia-sdk-client::Peer` (baseline from Chia crate).
+- **Message throughput**: messages/second through `DigLink`.
 - **Plumtree vs flood bandwidth**: measure total bytes transferred across 50-node network for 1000 messages. Target: Plumtree < 40% of naive flood.
 - **Compact block vs full block**: measure bytes and latency for block propagation across 10 hops. Target: compact block < 10% bandwidth of full block.
 - **ERLAY vs flood tx relay**: measure bytes per transaction across 50-connection node. Target: ERLAY < 20% of flood.

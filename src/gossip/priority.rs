@@ -1,4 +1,4 @@
-//! Message priority lanes and per-connection queues (**PRI-001** through **PRI-004**).
+//! DigMessage priority lanes and per-connection queues (**PRI-001** through **PRI-004**).
 //!
 //! # Requirements
 //!
@@ -6,7 +6,7 @@
 //! - **PRI-002** — PriorityOutbound: three VecDeque per connection
 //! - **PRI-003** — Drain order: critical → normal → one bulk
 //! - **PRI-004** — Starvation prevention: 1 bulk per PRIORITY_STARVATION_RATIO
-//! - **Master SPEC:** §8.4 (Message Priority Lanes)
+//! - **Master SPEC:** §8.4 (DigMessage Priority Lanes)
 //!
 //! # Design
 //!
@@ -16,11 +16,11 @@
 
 use std::collections::VecDeque;
 
-use dig_peer_protocol::{Message, ProtocolMessageTypes};
+use dig_peer_protocol::{DigMessage, ProtocolMessageTypes};
 
 use crate::constants::PRIORITY_STARVATION_RATIO;
 
-/// Message priority level (**PRI-001**).
+/// DigMessage priority level (**PRI-001**).
 ///
 /// SPEC §8.4: "Critical = always first. Normal = after critical. Bulk = last."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,13 +58,7 @@ impl MessagePriority {
             | RespondPeers
             | RequestMempoolTransactions
             | RequestPeersIntroducer
-            | RespondPeersIntroducer
-            // StoreMelted (opcode 221): a small, infrequent public broadcast — never
-            // consensus-critical, so it rides the bulk lane (#1316).
-            | StoreMelted
-            // HoldingsAnnounce (opcode 222): a small, periodic public discovery broadcast —
-            // never consensus-critical, so it rides the bulk lane (#1428).
-            | HoldingsAnnounce => Self::Bulk,
+            | RespondPeersIntroducer => Self::Bulk,
 
             // Default for any unclassified type
             _ => Self::Normal,
@@ -83,12 +77,12 @@ impl MessagePriority {
             // Plumtree control → Normal
             214..=217 => Self::Normal,
             // StoreMelted (opcode 221) → Bulk: small, infrequent public broadcast (#1316).
-            // Kept in agreement with `from_chia_type` (221 is a `ProtocolMessageTypes`
-            // variant) so both classification paths route store-melted to the bulk lane.
+            // This is the ONLY path that classifies it: upstream `ProtocolMessageTypes` is a
+            // closed enum with no `StoreMelted` variant (dig_ecosystem#2228).
             crate::service::store_melted::STORE_MELTED => Self::Bulk,
             // HoldingsAnnounce (opcode 222) → Bulk: small, periodic public discovery
-            // broadcast (#1428). Kept in agreement with `from_chia_type` (222 is a
-            // `ProtocolMessageTypes` variant) so both paths route holdings to the bulk lane.
+            // broadcast (#1428). This is the ONLY path that classifies it: upstream
+            // `ProtocolMessageTypes` has no `HoldingsAnnounce` variant (dig_ecosystem#2228).
             crate::service::holdings_announce::HOLDINGS_ANNOUNCE => Self::Bulk,
             // Default
             _ => Self::Normal,
@@ -101,9 +95,9 @@ impl MessagePriority {
 /// SPEC §8.4: "PriorityOutbound: three VecDeque (critical, normal, bulk)."
 #[derive(Debug, Default)]
 pub struct PriorityOutbound {
-    critical: VecDeque<Message>,
-    normal: VecDeque<Message>,
-    bulk: VecDeque<Message>,
+    critical: VecDeque<DigMessage>,
+    normal: VecDeque<DigMessage>,
+    bulk: VecDeque<DigMessage>,
     /// Counter for starvation prevention (PRI-004).
     high_priority_since_last_bulk: usize,
 }
@@ -114,7 +108,7 @@ impl PriorityOutbound {
     }
 
     /// Enqueue message into appropriate lane.
-    pub fn enqueue(&mut self, msg: Message, priority: MessagePriority) {
+    pub fn enqueue(&mut self, msg: DigMessage, priority: MessagePriority) {
         match priority {
             MessagePriority::Critical => self.critical.push_back(msg),
             MessagePriority::Normal => self.normal.push_back(msg),
@@ -126,7 +120,7 @@ impl PriorityOutbound {
     ///
     /// SPEC §8.4: "exhaust critical → exhaust normal → one bulk → check critical again."
     /// PRI-004: "1 bulk per PRIORITY_STARVATION_RATIO critical/normal messages."
-    pub fn drain_next(&mut self) -> Option<Message> {
+    pub fn drain_next(&mut self) -> Option<DigMessage> {
         // PRI-004: starvation prevention — force one bulk message periodically.
         if self.high_priority_since_last_bulk >= PRIORITY_STARVATION_RATIO {
             if let Some(msg) = self.bulk.pop_front() {

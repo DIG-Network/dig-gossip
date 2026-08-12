@@ -401,7 +401,7 @@ pub struct PeerInfo {
 
 // Full peer metadata for a live connection
 pub struct PeerConnection {
-    pub peer: Peer,               // chia-sdk-client handle
+    pub peer: DigLink,            // dig-peer-protocol peer link
     pub peer_id: PeerId,
     pub address: SocketAddr,
     pub is_outbound: bool,
@@ -519,7 +519,7 @@ Starvation prevention: one bulk message is allowed through per `PRIORITY_STARVAT
 
 ```rust
 pub enum GossipError {
-    ClientError(ClientError),            // chia-sdk-client transport error
+    ClientError(ClientError),            // transport error from the re-exported client
     ServiceNotStarted,                   // handle used before start() or after stop()
     AlreadyStarted,                      // start() called twice
     PeerBanned(PeerId),                  // connection rejected — peer is banned

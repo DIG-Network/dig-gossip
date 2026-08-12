@@ -18,9 +18,9 @@
 //! ## Relationship to the Chia bound
 //!
 //! This limiter never *replaces* Chia's; it only ever adds a restriction. The composed inbound
-//! gate ([`InboundRateLimiter`](super::inbound_limits::InboundRateLimiter)) applies
-//! [`RateLimiter::handle_message`](dig_peer_protocol::RateLimiter::handle_message) first and
-//! unconditionally, so a DIG opcode with no row is still bounded by Chia's `default_settings`.
+//! gate ([`InboundRateLimiter`](super::inbound_limits::InboundRateLimiter)) applies the Chia base
+//! bound first and unconditionally, so a DIG opcode with no row is still bounded by Chia's
+//! `default_settings`.
 //!
 //! ## Normative trace
 //!
@@ -149,7 +149,9 @@ mod tests {
 
     use std::{thread::sleep, time::Duration};
 
-    use dig_peer_protocol::{Bytes, Message, ProtocolMessageTypes, RateLimiter, V2_RATE_LIMITS};
+    use dig_peer_protocol::{
+        Bytes, DigMessage, OpcodeRateLimiter, OpcodeRateLimits, ProtocolMessageTypes, Streamable,
+    };
 
     use super::*;
 
@@ -186,14 +188,16 @@ mod tests {
     #[test]
     fn window_boundary_is_absolute_and_shared_with_the_chia_limiter() {
         const RESET: u64 = 2;
+        /// The `Handshake` row in Chia's published `V2_RATE_LIMITS`: five frames per window.
+        const HANDSHAKE_FREQ: u32 = 5;
 
-        let mut chia_limits = (*V2_RATE_LIMITS).clone();
-        chia_limits.other.insert(
-            ProtocolMessageTypes::Handshake,
-            RateLimit::new(1.0, 1_000_000.0, None),
-        );
-        let handshake = || Message {
-            msg_type: ProtocolMessageTypes::Handshake,
+        let handshake_opcode = *ProtocolMessageTypes::Handshake
+            .to_bytes()
+            .expect("ProtocolMessageTypes is a single-byte streamable enum")
+            .first()
+            .expect("its encoding is exactly one byte");
+        let handshake = || DigMessage {
+            msg_type: handshake_opcode,
             id: None,
             data: Bytes::new(vec![0u8; 10]),
         };
@@ -202,14 +206,16 @@ mod tests {
         let opening_period = current_period(RESET);
 
         // Constructed at the START of the window.
-        let mut chia = RateLimiter::new(true, RESET, 1.0, chia_limits);
+        let mut chia = OpcodeRateLimiter::new(RESET, 1.0, OpcodeRateLimits::default());
         // Constructed ~1 s LATER, in the SAME window — the stagger is the discriminator.
         sleep(Duration::from_secs(1));
         let mut dig = limiter_of(true, RESET, 1.0);
 
         // Exhaust both within this window.
-        assert!(chia.handle_message(&handshake()));
-        assert!(!chia.handle_message(&handshake()), "chia half exhausted");
+        for i in 0..HANDSHAKE_FREQ {
+            assert!(chia.allow(&handshake()), "chia frame {i} is within its row");
+        }
+        assert!(!chia.allow(&handshake()), "chia half exhausted");
         for _ in 0..FREQ as u32 {
             assert!(dig.check(221, 1));
         }
@@ -222,13 +228,13 @@ mod tests {
             opening_period,
             "test lost its race with the window boundary; the bounds below would be vacuous"
         );
-        assert!(!chia.handle_message(&handshake()));
+        assert!(!chia.allow(&handshake()));
         assert!(!dig.check(221, 1));
 
         // Cross the shared absolute boundary.
         wait_for_window_start(RESET);
         assert!(
-            chia.handle_message(&handshake()),
+            chia.allow(&handshake()),
             "chia tallies must clear on the absolute boundary"
         );
         assert!(

@@ -4,12 +4,16 @@
 //! **Outbound** connect uses `chia-sdk-client` TLS + WSS (CON-001) — see [`outbound`].
 //! **Related requirements:** `docs/requirements/domains/connection/`.
 
+/// The transport-vs-policy split a dial reports failures through ([`DialError`](dial_error::DialError)).
+pub mod dial_error;
+
 pub mod handshake;
 
 /// CON-004 keepalive + RTT sampling (application-level `RequestPeers` probe).
 pub mod keepalive;
 
 /// CON-005 — the DIG per-opcode inbound rate limiter, keyed by the raw wire byte.
+pub(crate) mod chia_opcodes;
 pub mod dig_rate_limiter;
 
 /// CON-005 inbound admission gate: Chia's `V2_RATE_LIMITS` bound composed with the DIG bound.

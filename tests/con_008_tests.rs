@@ -29,7 +29,6 @@ mod common;
 
 use dig_gossip::connection::handshake::{sanitize_software_version, validate_remote_handshake};
 use dig_gossip::Handshake;
-use dig_gossip::NodeType;
 use unicode_general_category::{get_general_category, GeneralCategory};
 
 /// Baseline remote [`Handshake`] for CON-008 policy tests: only `software_version` is malicious.
@@ -39,7 +38,7 @@ fn handshake_with_version(network_id: &str, software_version: String) -> Handsha
         protocol_version: "0.0.37".to_string(),
         software_version,
         server_port: 8444,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     }
 }

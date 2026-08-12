@@ -6,7 +6,7 @@
 //!
 //! `dig-gossip` handles peer discovery, connection management, and message routing
 //! between DIG full nodes. It accepts application-level payloads (blocks, transactions,
-//! attestations) as opaque `Message` bytes and delivers them to connected peers via
+//! attestations) as opaque `DigMessage` bytes and delivers them to connected peers via
 //! a Chia-compatible gossip protocol enhanced with Plumtree, ERLAY, priority lanes,
 //! compact blocks, Dandelion++ privacy, and relay fallback.
 //!
@@ -46,8 +46,8 @@
 //! | Direction | Type | Description |
 //! |-----------|------|-------------|
 //! | **In** | [`GossipConfig`] | All configuration (ports, TLS, discovery, relay) |
-//! | **In** | [`Message`] via [`GossipHandle::broadcast()`] | Payload to send to peers |
-//! | **Out** | `(PeerId, Message)` via [`GossipHandle::inbound_receiver()`] | Received payloads |
+//! | **In** | [`DigMessage`] via [`GossipHandle::broadcast()`] | Payload to send to peers |
+//! | **Out** | `(PeerId, DigMessage)` via [`GossipHandle::inbound_receiver()`] | Received payloads |
 //! | **Out** | [`GossipStats`] via [`GossipHandle::stats()`] | Network metrics |
 //!
 //! ## Feature Flags
@@ -165,18 +165,20 @@ pub use service::peer_pool::{
 pub use types::config::PeerPoolConfig;
 
 // -- Chia protocol types (re-exported, not reimplemented) --
+pub use chia_protocol::{
+    Bytes32, FullBlock, Handshake, NewPeak, NewTransaction, NewUnfinishedBlock, RejectBlock,
+    RejectBlocks, RequestBlock, RequestBlocks, RequestMempoolTransactions, RequestPeers,
+    RequestTransaction, RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers,
+    RespondTransaction, RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
+};
 pub use dig_peer_protocol::ChiaCertificate;
 pub use dig_peer_protocol::Streamable;
 pub use dig_peer_protocol::{
-    load_ssl_cert, Client, ClientError, ClientState, Network, Peer, PeerOptions, RateLimit,
-    RateLimiter, RateLimits, V2_RATE_LIMITS,
+    load_ssl_cert, Admission, Client, ClientError, ClientState, LinkOptions, Network,
+    OpcodeRateLimiter, OpcodeRateLimits, RateLimit, RateLimits, V2_RATE_LIMITS,
 };
 pub use dig_peer_protocol::{
-    Bytes, Bytes32, ChiaProtocolMessage, FullBlock, Handshake, Message, NewPeak, NewTransaction,
-    NewUnfinishedBlock, NodeType, ProtocolMessageTypes, RejectBlock, RejectBlocks, RequestBlock,
-    RequestBlocks, RequestMempoolTransactions, RequestPeers, RequestTransaction,
-    RequestUnfinishedBlock, RespondBlock, RespondBlocks, RespondPeers, RespondTransaction,
-    RespondUnfinishedBlock, SpendBundle, TimestampedPeerInfo,
+    Bytes, ChiaProtocolMessage, DigLink, DigMessage, LinkError, NodeType, ProtocolMessageTypes,
 };
 
 // -- Feature-gated public types --

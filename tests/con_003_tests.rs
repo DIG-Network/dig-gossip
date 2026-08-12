@@ -24,7 +24,7 @@ use dig_gossip::connection::handshake::{
     HandshakeValidationError, MAX_SOFTWARE_VERSION_BYTES, MIN_COMPATIBLE_PROTOCOL_VERSION,
 };
 use dig_gossip::Handshake;
-use dig_gossip::{NodeType, PeerId};
+use dig_gossip::PeerId;
 
 /// Build a valid baseline [`Handshake`] for mutation in individual tests.
 ///
@@ -37,7 +37,7 @@ fn sample_handshake_base(network_id: &str) -> Handshake {
         protocol_version: "0.0.37".to_string(),
         software_version: "dig-gossip/0.1.0".to_string(),
         server_port: 8444,
-        node_type: NodeType::FullNode,
+        node_type: chia_protocol::NodeType::FullNode,
         capabilities: vec![],
     }
 }

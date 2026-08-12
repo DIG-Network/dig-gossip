@@ -18,8 +18,8 @@ mod common;
 use std::net::SocketAddr;
 
 use dig_gossip::{
-    Bytes32, ChiaProtocolMessage, GossipHandle, GossipService, GossipStats, Message, NewPeak,
-    NodeType, RelayConfig, RelayStats, RequestPeers, Streamable,
+    Bytes32, DigMessage, GossipHandle, GossipService, GossipStats, NewPeak, NodeType, RelayConfig,
+    RelayStats, RequestPeers, Streamable,
 };
 
 /// Spin up a [`GossipService`] with harness defaults and return both the service (for
@@ -458,8 +458,8 @@ async fn test_stats_inject_increments_messages_received() {
     let (_s, h) = running_handle().await;
     let sender = Bytes32::from([9u8; 32]);
     let before = h.stats().await.messages_received;
-    let msg = Message {
-        msg_type: RequestPeers::msg_type(),
+    let msg = DigMessage {
+        msg_type: chia_protocol::ProtocolMessageTypes::RequestPeers as u8,
         id: None,
         data: RequestPeers::new().to_bytes().unwrap().into(),
     };

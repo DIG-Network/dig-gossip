@@ -1,4 +1,4 @@
-//! Outbound peer establishment via `chia-sdk-client` TLS + WebSocket + Chia handshake.
+//! Outbound peer establishment via `dig-peer-protocol` TLS + WebSocket + Chia handshake.
 //!
 //! ## SPEC traceability
 //!
@@ -15,53 +15,56 @@
 //! - **SPEC §1.5 #1** — handshake with capabilities via `connect_peer()`.
 //! - **SPEC §1.6 #1** — peer exchange on outbound connect: after connecting, send
 //!   `RequestPeers` to discover more peers (`node_discovery.py:135-136`).
-//! - **SPEC §1.4** — `Handshake`, `Message`, `NodeType` used directly from `chia-protocol`.
+//! - **SPEC §1.4** — `Handshake`, `DigMessage`, `NodeType` used directly from `chia-protocol`.
 //!
 //! **Normative:** [CON-001](../../../docs/requirements/domains/connection/specs/CON-001.md) /
 //! [NORMATIVE.md](../../../docs/requirements/domains/connection/NORMATIVE.md) — outbound MUST use
 //! `connect_peer()` semantics (TLS connector, `Handshake`, `FullNode` peer validation, DIG
 //! `network_id` as the Chia **string** field).
 //!
-//! ## Why this module exists (vs calling `dig_peer_protocol::connect_peer` directly)
+//! ## Why this module exists (vs calling [`DigLink::connect`](dig_peer_protocol::DigLink::connect) directly)
 //!
-//! Upstream [`dig_peer_protocol::connect_peer`](https://docs.rs/chia-sdk-client/latest/chia_sdk_client/fn.connect_peer.html)
-//! validates the handshake but **drops** the parsed [`Handshake`] and never exposes the remote TLS
-//! **SubjectPublicKeyInfo** bytes. DIG [`PeerConnection`](crate::types::peer::PeerConnection) and
+//! The one-call dial validates the handshake but **drops** the parsed [`Handshake`] and never exposes
+//! the remote TLS **SubjectPublicKeyInfo** bytes. DIG [`PeerConnection`](crate::types::peer::PeerConnection) and
 //! [`PeerId`](crate::types::peer::PeerId) (API-005) require:
 //!
 //! 1. Metadata from the responder’s [`Handshake`] (`protocol_version`, `software_version`, …).
 //! 2. `PeerId = SHA256(remote SPKI DER)` via [`crate::types::peer::peer_id_from_tls_spki_der`].
 //!
-//! We therefore mirror the small `connect.rs` flow from `chia-sdk-client` **after** capturing
-//! `remote_spki_der` from the pre-`Peer::from_websocket` [`WebSocketStream`] (see upstream
-//! [`chia-sdk-client/src/connect.rs`](https://github.com/Chia-Network/chia-wallet-sdk) — keep in sync
-//! when bumping `chia-sdk-client`).
+//! We therefore drive the dial ourselves and capture `remote_spki_der` from the
+//! [`WebSocketStream`] **before** handing it to [`DigLink::from_websocket`], which consumes it. The
+//! flow mirrors the upstream one-call dial step for step, so keep it in sync when bumping
+//! `dig-peer-protocol`.
 //!
 //! ## `network_id` typing
 //!
-//! [`crate::types::config::GossipConfig`] stores `network_id` as [`dig_peer_protocol::Bytes32`]. Chia’s
+//! [`crate::types::config::GossipConfig`] stores `network_id` as [`chia_protocol::Bytes32`]. Chia’s
 //! wire [`Handshake::network_id`](chia_protocol::Handshake) is a [`String`]; the conventional
-//! encoding is the **lowercase hex** of the 32 bytes (matches [`Bytes32`’s `Display`](dig_peer_protocol::Bytes32)).
+//! encoding is the **lowercase hex** of the 32 bytes (matches [`Bytes32`’s `Display`](chia_protocol::Bytes32)).
 #![allow(clippy::result_large_err)]
 // Upstream [`ClientError`] is wide; we propagate it verbatim per API-004 `GossipError::ClientError`.
 
+use crate::connection::chia_opcodes;
+use crate::connection::dial_error::{non_handshake_first_frame, DialError};
+use dig_peer_protocol::LinkError;
 use std::net::SocketAddr;
 
+use chia_protocol::Handshake;
 use dig_peer_protocol::ChiaCertificate;
+use dig_peer_protocol::DigMessage;
 use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Handshake, Message, NodeType, ProtocolMessageTypes};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use dig_peer_protocol::{ClientError, Peer, PeerOptions};
+use dig_peer_protocol::{ClientError, DigLink, LinkOptions};
 
 use crate::connection::handshake::{validate_remote_handshake, ADVERTISED_PROTOCOL_VERSION};
 
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 use dig_peer_protocol::Connector;
 
-/// Successful outbound dial: live [`Peer`], inbound wire channel, parsed remote handshake, SPKI DER.
+/// Successful outbound dial: live [`DigLink`], inbound wire channel, parsed remote handshake, SPKI DER.
 ///
 /// SPEC §5.1 step 4 — "Wrap in PeerConnection with gossip metadata." This struct carries
 /// the raw materials needed to build a [`crate::types::peer::PeerConnection`].
@@ -70,8 +73,8 @@ use dig_peer_protocol::Connector;
 /// `remote_spki_der` is the **SubjectPublicKeyInfo** raw bytes inside the peer’s leaf certificate
 /// (same slice API-005 tests take from `x509-parser`).
 pub struct OutboundConnectResult {
-    pub peer: Peer,
-    pub inbound_rx: mpsc::Receiver<Message>,
+    pub peer: DigLink,
+    pub inbound_rx: mpsc::Receiver<DigMessage>,
     pub their_handshake: Handshake,
     /// Raw SPKI DER bytes for [`crate::types::peer::peer_id_from_tls_spki_der`].
     pub remote_spki_der: Vec<u8>,
@@ -105,18 +108,18 @@ pub(crate) fn tls_connector_for_cert(cert: &ChiaCertificate) -> Result<Connector
 }
 
 /// Map configured genesis id to the Chia handshake string (`Display` = hex).
-pub(crate) fn network_id_handshake_string(network_id: dig_peer_protocol::Bytes32) -> String {
+pub(crate) fn network_id_handshake_string(network_id: chia_protocol::Bytes32) -> String {
     network_id.to_string()
 }
 
-/// Extract remote **SubjectPublicKeyInfo DER** before [`Peer::from_websocket`] consumes the stream.
+/// Extract remote **SubjectPublicKeyInfo DER** before [`DigLink::from_websocket`] consumes the stream.
 ///
 /// SPEC §5.3 — "Peer identity from mTLS: `PeerId = SHA256(remote_TLS_certificate_public_key)`."
 /// Because mTLS guarantees both sides present certificates, each side can derive the other's
 /// `PeerId` from the certificate exchanged during the TLS handshake. Matches Chia's
 /// `peer_node_id` derivation from certificate hash (`ws_connection.py:95`).
 ///
-/// **Rationale:** `Peer::from_websocket` splits the socket and spawns the reader; certificate
+/// **Rationale:** `DigLink::from_websocket` splits the socket and spawns the reader; certificate
 /// inspection must happen on the intact [`WebSocketStream`] returned from
 /// `connect_async_tls_with_config`.
 fn remote_spki_der_from_ws(
@@ -194,9 +197,9 @@ pub(crate) async fn connect_outbound_peer(
     network_id: String,
     connector: Connector,
     socket_addr: SocketAddr,
-    options: PeerOptions,
+    options: LinkOptions,
     software_version: String,
-) -> Result<OutboundConnectResult, ClientError> {
+) -> Result<OutboundConnectResult, DialError> {
     let uri = format!("wss://{socket_addr}/ws");
     // Bound the transport buffer on the dial side too (CON-001 / §5.2) so a hostile server
     // cannot make tungstenite buffer up to its 64 MiB default before an app cap applies —
@@ -207,10 +210,11 @@ pub(crate) async fn connect_outbound_peer(
         false,
         Some(connector),
     )
-    .await?;
+    .await
+    .map_err(|e| DialError::Link(LinkError::from(e)))?;
 
     let remote_spki_der = remote_spki_der_from_ws(&ws)?;
-    let (peer, mut receiver) = Peer::from_websocket(ws, options)?;
+    let (peer, mut receiver) = DigLink::from_websocket(ws, options).map_err(DialError::Link)?;
 
     // SPEC §5.1 step 3 — "Sends chia-protocol::Handshake with DIG network_id."
     // SPEC §1.5 #1 — "connect_peer() sends chia-protocol::Handshake with capabilities list."
@@ -222,37 +226,39 @@ pub(crate) async fn connect_outbound_peer(
         // the listener replies with, so a peer learns the same build from us either way.
         software_version,
         server_port: 0,
-        node_type: NodeType::Wallet,
+        node_type: chia_protocol::NodeType::Wallet,
         capabilities: vec![
             (1, "1".to_string()), // SPEC §1.5 #1 — BASE protocol capability
             (2, "1".to_string()), // BLOCK_HEADERS capability
             (3, "1".to_string()), // RATE_LIMITS_V2 capability
         ],
     })
-    .await?;
+    .await
+    .map_err(DialError::Link)?;
 
+    // Policy, not transport: the link opened and the peer closed it without ever completing
+    // the handshake, so re-dialling the same address will meet the same peer behaviour.
     let Some(message) = receiver.recv().await else {
-        return Err(ClientError::MissingHandshake);
+        return Err(DialError::Client(ClientError::MissingHandshake));
     };
 
-    if message.msg_type != ProtocolMessageTypes::Handshake {
-        return Err(ClientError::InvalidResponse(
-            vec![ProtocolMessageTypes::Handshake],
-            message.msg_type,
-        ));
+    // Policy, not transport: the peer was reached and answered with something other than a
+    // `Handshake`, so re-dialling the same address meets the same behaviour (`dial_error` docs).
+    if message.msg_type != chia_opcodes::HANDSHAKE {
+        return Err(non_handshake_first_frame(message.msg_type));
     }
 
-    let handshake = Handshake::from_bytes(&message.data)?;
+    let handshake =
+        Handshake::from_bytes(&message.data).map_err(|e| DialError::Link(LinkError::from(e)))?;
 
-    if handshake.node_type != NodeType::FullNode {
-        return Err(ClientError::WrongNodeType(
-            NodeType::FullNode,
+    if handshake.node_type != chia_protocol::NodeType::FullNode {
+        return Err(DialError::Client(ClientError::WrongNodeType(
+            chia_protocol::NodeType::FullNode,
             handshake.node_type,
-        ));
+        )));
     }
 
-    let remote_software_version_sanitized =
-        validate_remote_handshake(&handshake, &network_id).map_err(ClientError::from)?;
+    let remote_software_version_sanitized = validate_remote_handshake(&handshake, &network_id)?;
 
     Ok(OutboundConnectResult {
         peer,

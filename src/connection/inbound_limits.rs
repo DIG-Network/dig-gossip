@@ -1,4 +1,4 @@
-//! CON-005 — per-connection **inbound** rate limits on top of [`V2_RATE_LIMITS`](dig_peer_protocol::V2_RATE_LIMITS).
+//! CON-005 — per-connection **inbound** rate limits on top of Chia's `V2_RATE_LIMITS`.
 //!
 //! ## Normative trace
 //!
@@ -9,9 +9,9 @@
 //! ## Outbound vs inbound
 //!
 //! Outbound sends go through [`dig_peer_protocol::Peer::send_raw`] which already applies
-//! [`RateLimiter`] with `incoming = false` (CON-005 acceptance: *no custom outbound implementation*).
+//! [`OpcodeRateLimiter`] with no inbound flag (CON-005 acceptance: *no custom outbound implementation*).
 //! Inbound frames are delivered on the per-connection `mpsc` from [`Peer::from_websocket`]; **DIG**
-//! enforces [`RateLimiter::handle_message`] here **before** forwarding to the broadcast hub.
+//! enforces [`OpcodeRateLimiter::allow`] here **before** forwarding to the broadcast hub.
 //!
 //! ## DIG wire types (the `dig_extension_rate_limits_map` table)
 //!
@@ -19,9 +19,9 @@
 //! [`ProtocolMessageTypes`] variants in `chia-protocol` 0.26, so they cannot appear in
 //! [`dig_peer_protocol::RateLimits`] `tx` / `other` maps. But the **220-band** opcodes —
 //! `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720) — ARE `ProtocolMessageTypes`
-//! variants and DO arrive on the live wire as Chia [`Message`] values. Either way their bound is a
+//! variants and DO arrive on the live wire as Chia [`DigMessage`] values. Either way their bound is a
 //! DIG bound, keyed by the raw opcode byte in [`dig_extension_rate_limits_map`] and enforced by
-//! [`DigRateLimiter`] — which [`RateLimiter::handle_message`] knows nothing about.
+//! [`DigRateLimiter`] — which [`OpcodeRateLimiter::allow`] knows nothing about.
 //!
 //! [`InboundRateLimiter`] closes that gap: the live forwarders admit frames through it (not through
 //! `handle_message` directly), and for 220-band frames it additionally requires the
@@ -35,7 +35,7 @@
 
 use std::collections::HashMap;
 
-use dig_peer_protocol::{Message, ProtocolMessageTypes, RateLimit, RateLimiter, V2_RATE_LIMITS};
+use dig_peer_protocol::{DigMessage, OpcodeRateLimiter, OpcodeRateLimits, RateLimit};
 
 use super::dig_rate_limiter::DigRateLimiter;
 use crate::types::dig_messages::DigMessageType;
@@ -50,8 +50,8 @@ const RESET_SECONDS: u64 = 60;
 /// The first opcode of the DIG 220..=255 wire band.
 ///
 /// Opcodes in this band (e.g. `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720)) ARE
-/// `chia_protocol::ProtocolMessageTypes` variants — so they arrive as real Chia [`Message`] values —
-/// but their bound is a DIG bound that [`RateLimiter::handle_message`] never reads. The live
+/// `chia_protocol::ProtocolMessageTypes` variants — so they arrive as real Chia [`DigMessage`] values —
+/// but their bound is a DIG bound that [`OpcodeRateLimiter::allow`] never reads. The live
 /// ingress gate therefore has to consult [`DigRateLimiter`] for them explicitly; see
 /// [`InboundRateLimiter::allows`].
 const DIG_WIRE_BAND_START: u8 = 220;
@@ -64,23 +64,35 @@ const DIG_WIRE_BAND_START: u8 = 220;
 /// checks, and no way for a call site to consult one and forget the other.
 #[derive(Debug, Clone)]
 pub struct InboundRateLimiter {
-    /// Chia's bound, keyed by [`ProtocolMessageTypes`]: `default_settings` / `tx` / `other`.
-    chia: RateLimiter,
+    /// Chia's bound, keyed by the raw wire byte: `default_settings` / `tx` / `other`.
+    ///
+    /// [`OpcodeRateLimiter`] carries no table of its own — it re-keys Chia's `V2_RATE_LIMITS`
+    /// from `ProtocolMessageTypes` onto the wire byte, so every Chia opcode keeps exactly the
+    /// bound Chia gives it while a DIG opcode (which has no enum variant) remains expressible.
+    chia: OpcodeRateLimiter,
     /// DIG's bound, keyed by the raw opcode byte: [`dig_extension_rate_limits_map`].
     dig: DigRateLimiter,
 }
 
 impl InboundRateLimiter {
-    /// Builds the gate for one inbound connection — `incoming = true`, a [`RESET_SECONDS`] window,
-    /// every bound scaled by
-    /// [`rate_limit_factor`](crate::types::config::GossipConfig::peer_options).
+    /// Builds the gate for one inbound connection — a [`RESET_SECONDS`] window, every bound scaled
+    /// by [`rate_limit_factor`](crate::types::config::GossipConfig::peer_options).
+    ///
+    /// Only the DIG half is inbound-shaped today: [`DigRateLimiter`] takes `incoming = true`, so a
+    /// frame it refuses still charges its counter and a peer cannot free quota by being refused.
+    /// [`OpcodeRateLimiter`] as of `dig-peer-protocol` 0.5 exposes no such flag, so the Chia half
+    /// charges only frames it admits — a peer flooding past the Chia bound is refused each time but
+    /// does not ratchet itself further into the window.
+    ///
+    /// TODO(dig_ecosystem#2228): restore the inbound ratchet on the Chia half once
+    /// `dig-peer-protocol` 0.6.0 lands `Direction::Inbound`; `OpcodeRateLimits`' fields are private,
+    /// so there is no local substitute and this cannot be fixed from inside `dig-gossip`.
     pub fn new(rate_limit_factor: f64) -> Self {
         Self {
-            chia: RateLimiter::new(
-                true,
+            chia: OpcodeRateLimiter::new(
                 RESET_SECONDS,
                 rate_limit_factor,
-                (*V2_RATE_LIMITS).clone(),
+                OpcodeRateLimits::default(),
             ),
             dig: DigRateLimiter::new(
                 true,
@@ -93,26 +105,27 @@ impl InboundRateLimiter {
 
     /// Whether `msg` is admitted. A frame passes only if EVERY applicable check passes.
     ///
-    /// 1. [`RateLimiter::handle_message`] — the Chia bound — always, and first, so its counters
-    ///    advance for every frame regardless of opcode.
+    /// 1. [`OpcodeRateLimiter::allow`] — the Chia bound — always, and first, so it is consulted for
+    ///    every frame regardless of opcode.
     /// 2. For frames in the DIG wire band (opcode `>= DIG_WIRE_BAND_START`), ALSO
     ///    [`DigRateLimiter::check`] on the raw opcode.
     ///
-    /// **Why both for the 220 band:** 221/222 ARE Chia `Message` variants, but `handle_message` has
-    /// no `tx`/`other` row for them, so it falls through to the loose `default_settings` (100
-    /// frames/min, 1 MiB) and their deliberate [`dig_extension_rate_limits_map`] rows (#1316,
-    /// #1720) would never bind on the live wire. Requiring the DIG pass in addition is what makes
+    /// **Why both for the 220 band:** the Chia table has no `tx`/`other` row for 220-222, so they
+    /// fall through to the loose `default_settings` (100 frames/min, 1 MiB) and their deliberate
+    /// [`dig_extension_rate_limits_map`] rows (#1316, #1720) would never bind on the live wire. Requiring the DIG pass in addition is what makes
     /// those rows actually enforced. Frames below the band are decided by `handle_message` alone.
     ///
     /// The DIG half can only ever ADD a restriction: it is consulted after the Chia bound has
     /// already been applied, and an opcode with no row fails open.
-    pub fn allows(&mut self, msg: &Message) -> bool {
-        // Always apply the Chia base bound first (and unconditionally, so its counters advance).
-        if !self.chia.handle_message(msg) {
+    pub fn allows(&mut self, msg: &DigMessage) -> bool {
+        // Always consult the Chia base bound first, whatever the opcode, so no frame reaches the
+        // DIG half ungated. Note this charges only ADMITTED frames — see `new` and
+        // TODO(dig_ecosystem#2228) for the missing inbound ratchet.
+        if !self.chia.allow(msg) {
             return false;
         }
 
-        let opcode = msg.msg_type as u8;
+        let opcode = msg.msg_type;
         if opcode >= DIG_WIRE_BAND_START {
             // DIG 220-band frame: its real bound is the DIG row, so require that pass too.
             self.dig.check(opcode, msg.data.len() as u32)
@@ -134,9 +147,9 @@ impl InboundRateLimiter {
 /// enum to prove it). It is the single source of truth for the SET of flood opcodes the #1626/#1796
 /// penalty exemption applies to (the exemption itself is further narrowed to RATE violations — see
 /// [`rejected_frame_incurs_penalty`]).
-pub(crate) fn is_public_flood_opcode(msg_type: ProtocolMessageTypes) -> bool {
+pub(crate) fn is_public_flood_opcode(msg_type: u8) -> bool {
     matches!(
-        msg_type as u8,
+        msg_type,
         crate::service::store_melted::STORE_MELTED
             | crate::service::holdings_announce::HOLDINGS_ANNOUNCE
     )
@@ -162,7 +175,7 @@ pub(crate) fn is_public_flood_opcode(msg_type: ProtocolMessageTypes) -> bool {
 /// Dropping an over-cap (rate) flood frame alone is graceful: the receiver's seen-set, Plumtree
 /// eager/lazy redundancy, and the periodic re-announce all recover the message without the delivering
 /// peer being punished. The exemption is thus opcode + violation-kind scoped, not opcode-only.
-pub(crate) fn rejected_frame_incurs_penalty(msg: &Message) -> bool {
+pub(crate) fn rejected_frame_incurs_penalty(msg: &DigMessage) -> bool {
     if is_public_flood_opcode(msg.msg_type) {
         // Flood opcode: exempt for an over-cap RATE rejection, penalised for a SIZE violation.
         exceeds_dig_wire_max_size(msg)
@@ -176,9 +189,9 @@ pub(crate) fn rejected_frame_incurs_penalty(msg: &Message) -> bool {
 /// rather than a rate/frequency one. The row is the SINGLE SOURCE OF TRUTH for the bound (never a
 /// hardcoded literal); an opcode with no row cannot exceed a bound it doesn't have, so returns
 /// `false` (unreachable for 221/222 — the completeness guard pins their rows).
-fn exceeds_dig_wire_max_size(msg: &Message) -> bool {
+fn exceeds_dig_wire_max_size(msg: &DigMessage) -> bool {
     dig_extension_rate_limits_map()
-        .get(&(msg.msg_type as u8))
+        .get(&msg.msg_type)
         .map(|row| (msg.data.len() as f64) > row.max_size)
         .unwrap_or(false)
 }
@@ -294,19 +307,29 @@ mod tests {
     //! `default_settings` and these tests go RED (proven by reverting the branch). The external
     //! mirror in `tests/con_005_tests.rs` cannot detect that regression and is only a secondary check.
 
-    use dig_peer_protocol::{Bytes, ProtocolMessageTypes, Streamable};
+    use dig_peer_protocol::{Bytes, ProtocolMessageTypes, Streamable, ALL_DIG_OPCODES};
 
     use super::*;
+
+    /// Chia's `Handshake` wire opcode, derived from the enum rather than hard-coded so the contrast
+    /// fixture below tracks upstream if the discriminant ever moves.
+    fn handshake_opcode() -> u8 {
+        *ProtocolMessageTypes::Handshake
+            .to_bytes()
+            .expect("ProtocolMessageTypes is a single-byte streamable enum")
+            .first()
+            .expect("its encoding is exactly one byte")
+    }
 
     /// #1760 D — completeness guard for the DIG 220-band rate-limit rows.
     ///
     /// [`DigRateLimiter::check`] **fails OPEN**: an opcode in the 220 band with no
     /// [`dig_extension_rate_limits_map`] row silently falls through to the loose Chia
     /// `default_settings` (100/min, 1 MiB) instead of a deliberate bound (the class of gap #1720
-    /// closed for 221/222). This test enumerates every ≥[`DIG_WIRE_BAND_START`]
-    /// [`ProtocolMessageTypes`] variant that actually exists (probed via the wire discriminant, so
-    /// it can never go stale against a hand-copied list) and asserts each is CLASSIFIED — either it
-    /// carries a dedicated rate-limit row, or it is a documented member of
+    /// closed for 221/222). This test enumerates every ≥[`DIG_WIRE_BAND_START`] opcode DIG has
+    /// actually assigned — taken from `dig_peer_protocol::ALL_DIG_OPCODES`, the canonical
+    /// namespace list, so it can never go stale against a hand-copied literal — and asserts each is
+    /// CLASSIFIED: either it carries a dedicated rate-limit row, or it is a documented member of
     /// [`BASE_BOUND_ONLY_BAND_OPCODES`]. A newly-added 220-band opcode that is neither fails this
     /// test, forcing a deliberate rate-limit decision rather than a silent fail-open default.
     #[test]
@@ -319,12 +342,15 @@ mod tests {
         const BASE_BOUND_ONLY_BAND_OPCODES: &[u8] = &[crate::service::dig_message::DIG_MESSAGE];
 
         let map = dig_extension_rate_limits_map();
-        for opcode in DIG_WIRE_BAND_START..=u8::MAX {
-            // Probe whether this opcode is a real `ProtocolMessageTypes` variant via its wire
-            // discriminant — the authoritative source, so the guard tracks the enum, not a literal.
-            if ProtocolMessageTypes::from_bytes(&[opcode]).is_err() {
-                continue;
-            }
+        let band: Vec<u8> = ALL_DIG_OPCODES
+            .into_iter()
+            .filter(|opcode| *opcode >= DIG_WIRE_BAND_START)
+            .collect();
+        assert!(
+            !band.is_empty(),
+            "the assigned 220-band opcode set must be non-empty, or this guard checks nothing"
+        );
+        for opcode in band {
             let has_row = map.contains_key(&opcode);
             let base_bound_only = BASE_BOUND_ONLY_BAND_OPCODES.contains(&opcode);
             assert!(
@@ -342,8 +368,8 @@ mod tests {
     /// this admits the 21st via the 100/min default, so the test pins that branch to production.
     #[test]
     fn real_gate_bounds_holdings_announce_222() {
-        let announce_frame = || Message {
-            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+        let announce_frame = || DigMessage {
+            msg_type: crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
             id: None,
             data: Bytes::new(vec![0u8; 1024]), // well under the 128 KiB max_size
         };
@@ -376,23 +402,37 @@ mod tests {
     }
 
     /// #1626 — the public-flood exemption set is EXACTLY `StoreMelted` (221) and `HoldingsAnnounce`
-    /// (222), enumerated over the real wire enum so it can never drift against the canonical
-    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping or a hand-typed
-    /// list.
+    /// (222), enumerated over the WHOLE opcode space so the classification can never silently widen
+    /// away from the canonical
+    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping.
+    ///
+    /// Every one of the 256 opcodes is asked directly. There is deliberately no decode filter: 221
+    /// and 222 have no `ProtocolMessageTypes` variant, so filtering on a successful decode would
+    /// skip exactly the two opcodes this test is named after and leave it asserting the empty set.
     #[test]
     fn public_flood_opcode_set_is_exactly_221_and_222() {
+        let mut flood = Vec::new();
         for opcode in 0u8..=u8::MAX {
-            let Ok(msg_type) = ProtocolMessageTypes::from_bytes(&[opcode]) else {
-                continue;
-            };
             let expected = opcode == crate::service::store_melted::STORE_MELTED
                 || opcode == crate::service::holdings_announce::HOLDINGS_ANNOUNCE;
             assert_eq!(
-                is_public_flood_opcode(msg_type),
+                is_public_flood_opcode(opcode),
                 expected,
                 "opcode {opcode} public-flood classification"
             );
+            if is_public_flood_opcode(opcode) {
+                flood.push(opcode);
+            }
         }
+        // Belt and braces against a future refactor that makes the loop body vacuous: the set is
+        // named, in full, not merely agreed with opcode by opcode.
+        assert_eq!(
+            flood,
+            vec![
+                crate::service::store_melted::STORE_MELTED,
+                crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+            ]
+        );
     }
 
     /// #1626 — a 222 (HoldingsAnnounce) frame the REAL gate rejects for exceeding the per-connection
@@ -403,8 +443,8 @@ mod tests {
     /// frame, so the final assertion (`!incurs_penalty`) failed and the delivering peer was charged.
     #[test]
     fn over_cap_holdings_announce_222_is_dropped_but_not_penalised() {
-        let frame = |seed: u32| Message {
-            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+        let frame = |seed: u32| DigMessage {
+            msg_type: crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
             id: None,
             data: Bytes::new({
                 // Distinct payloads (well under the 128 KiB cap) so each is a real, non-duplicate frame.
@@ -436,8 +476,8 @@ mod tests {
     /// exempt from the penalty. Covers 221 identically to 222 (the false-attribution bug is the same).
     #[test]
     fn over_cap_store_melted_221_is_dropped_but_not_penalised() {
-        let frame = |seed: u32| Message {
-            msg_type: ProtocolMessageTypes::StoreMelted,
+        let frame = |seed: u32| DigMessage {
+            msg_type: crate::service::store_melted::STORE_MELTED,
             id: None,
             data: Bytes::new({
                 let mut v = vec![0u8; 164];
@@ -468,8 +508,8 @@ mod tests {
     /// penalty. Proves the exemption is opcode-scoped, not a blanket disable of rate-limit attribution.
     #[test]
     fn over_cap_non_flood_opcode_is_still_penalised() {
-        let frame = || Message {
-            msg_type: ProtocolMessageTypes::Handshake,
+        let frame = || DigMessage {
+            msg_type: handshake_opcode(),
             id: None,
             data: Bytes::new(vec![0u8; 16]),
         };
@@ -498,8 +538,8 @@ mod tests {
     /// WHY, so an oversized flood frame escaped attribution.
     #[test]
     fn oversized_holdings_announce_222_is_penalised() {
-        let over_size = Message {
-            msg_type: ProtocolMessageTypes::HoldingsAnnounce,
+        let over_size = DigMessage {
+            msg_type: crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
             id: None,
             data: Bytes::new(vec![
                 0u8;
@@ -524,8 +564,8 @@ mod tests {
     /// RED before #1796: opcode-only exemption let it escape the penalty.
     #[test]
     fn oversized_store_melted_221_is_penalised() {
-        let over_size = Message {
-            msg_type: ProtocolMessageTypes::StoreMelted,
+        let over_size = DigMessage {
+            msg_type: crate::service::store_melted::STORE_MELTED,
             id: None,
             data: Bytes::new(vec![0u8; crate::service::store_melted::ENCODED_LEN + 1]),
         };
@@ -559,8 +599,8 @@ mod tests {
     /// (the DIG row) and rejects the 11th, driven through the REAL [`InboundRateLimiter::allows`].
     #[test]
     fn real_gate_bounds_store_melted_221() {
-        let melted_frame = || Message {
-            msg_type: ProtocolMessageTypes::StoreMelted,
+        let melted_frame = || DigMessage {
+            msg_type: crate::service::store_melted::STORE_MELTED,
             id: None,
             data: Bytes::new(vec![0u8; 164]), // fixed StoreMeltedAnnounce ENCODED_LEN
         };

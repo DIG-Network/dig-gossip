@@ -77,13 +77,13 @@ async fn test_full_lifecycle() {
 #[cfg(feature = "native-tls")]
 #[tokio::test]
 async fn test_broadcast_no_peers() {
-    use dig_gossip::{GossipService, Message, ProtocolMessageTypes};
+    use dig_gossip::{DigMessage, GossipService, ProtocolMessageTypes};
 
     let service = GossipService::new(lifecycle_config()).unwrap();
     let handle = service.start().await.unwrap();
 
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::NewPeak,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::NewPeak as u8,
         id: None,
         data: vec![1, 2, 3].into(),
     };

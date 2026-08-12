@@ -41,9 +41,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use dig_gossip::{
-    Bytes32, ChiaProtocolMessage, GossipError, GossipHandle, GossipService, IntroducerConfig,
-    Message, NewPeak, NodeType, ProtocolMessageTypes, RelayConfig, RequestPeers, RespondBlock,
-    RespondPeers, Streamable,
+    Bytes32, ChiaProtocolMessage, DigMessage, GossipError, GossipHandle, GossipService,
+    IntroducerConfig, NewPeak, NodeType, ProtocolMessageTypes, RelayConfig, RequestPeers,
+    RespondBlock, RespondPeers, Streamable,
 };
 
 /// Build a minimal [`NewPeak`] message suitable for broadcast tests.
@@ -111,8 +111,8 @@ async fn test_broadcast_returns_peer_count() {
     h.__connect_stub_peer_with_direction(c, NodeType::FullNode, true)
         .await
         .unwrap();
-    let dummy = Message {
-        msg_type: ProtocolMessageTypes::RequestPeers,
+    let dummy = DigMessage {
+        msg_type: ProtocolMessageTypes::RequestPeers as u8,
         id: None,
         data: RequestPeers::new().to_bytes().unwrap().into(),
     };
@@ -145,8 +145,8 @@ async fn test_broadcast_with_exclude() {
     h.__connect_stub_peer_with_direction(c, NodeType::FullNode, true)
         .await
         .unwrap();
-    let dummy = Message {
-        msg_type: ProtocolMessageTypes::RequestPeers,
+    let dummy = DigMessage {
+        msg_type: ProtocolMessageTypes::RequestPeers as u8,
         id: None,
         data: RequestPeers::new().to_bytes().unwrap().into(),
     };
@@ -255,7 +255,7 @@ async fn test_request_timeout() {
 /// **Row:** `test_inbound_receiver` — subscribe on broadcast hub, inject synthetic tuple, receive it.
 ///
 /// **Precondition:** Subscribe to the handle's inbound broadcast channel via
-/// `inbound_receiver()`. Then inject a synthetic `(PeerId, Message)` tuple via the
+/// `inbound_receiver()`. Then inject a synthetic `(PeerId, DigMessage)` tuple via the
 /// test-only `__inject_inbound_for_tests` hook.
 /// **Assertion:** The subscription receives the exact `(sender, msg)` tuple within 2 seconds.
 /// **Why sufficient:** This proves the SPEC §3.3 subscription/broadcast hub works: external
@@ -267,8 +267,8 @@ async fn test_inbound_receiver() {
     let (_s, h) = running_handle().await;
     let mut rx = h.inbound_receiver().expect("subscribe");
     let sender = Bytes32::from([9u8; 32]);
-    let msg = Message {
-        msg_type: ProtocolMessageTypes::NewPeak,
+    let msg = DigMessage {
+        msg_type: ProtocolMessageTypes::NewPeak as u8,
         id: None,
         data: sample_new_peak().to_bytes().unwrap().into(),
     };
@@ -280,7 +280,7 @@ async fn test_inbound_receiver() {
         .expect("recv");
     // The received tuple must carry the original sender id and message type.
     assert_eq!(got.0, sender);
-    assert_eq!(got.1.msg_type, ProtocolMessageTypes::NewPeak);
+    assert_eq!(got.1.msg_type, ProtocolMessageTypes::NewPeak as u8);
 }
 
 /// **Row:** `test_connected_peers` — `connected_peers()` returns an empty vec when no live

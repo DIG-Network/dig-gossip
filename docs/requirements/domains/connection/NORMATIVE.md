@@ -6,15 +6,15 @@
 
 ## Requirements
 
-### CON-001: Outbound Connection via connect_peer()
+### CON-001: Outbound Connection
 
-Outbound connections MUST use `chia-sdk-client::connect_peer()`. TLS MUST be loaded via `load_ssl_cert()` or generated via `ChiaCertificate::generate()`. A TLS connector MUST be created. The `Handshake` MUST include the DIG `network_id`. The resulting `Peer` MUST be wrapped in `PeerConnection` with gossip metadata. `RequestPeers` MUST be sent after a successful outbound connection.
+Outbound connections MUST use the outbound connect flow (handshake over the raw WebSocket, then `DigLink`). TLS MUST be loaded via `load_ssl_cert()` or generated via `ChiaCertificate::generate()`. A TLS connector MUST be created. The `Handshake` MUST include the DIG `network_id`. The resulting `DigLink` MUST be wrapped in `PeerConnection` with gossip metadata. `RequestPeers` MUST be sent after a successful outbound connection.
 
 **Spec reference:** SPEC Section 5.1 (Outbound Connection)
 
 ### CON-002: Inbound Connection Listener
 
-Inbound connections MUST be accepted via `TcpListener`, TLS handshake, `tokio_tungstenite::accept_async()`, and `Peer::from_websocket()`. The server MUST receive and validate the inbound `Handshake`, send a `Handshake` response, wrap in `PeerConnection`, add the peer to the address manager "new" table, and relay peer info to other connected peers.
+Inbound connections MUST be accepted via `TcpListener`, TLS handshake, `tokio_tungstenite::accept_async()`, and `DigLink::from_server_websocket()`. The server MUST receive and validate the inbound `Handshake`, send a `Handshake` response, wrap in `PeerConnection`, add the peer to the address manager "new" table, and relay peer info to other connected peers.
 
 **Spec reference:** SPEC Section 5.2 (Inbound Connection)
 
@@ -34,7 +34,7 @@ A `Ping` message MUST be sent at `PING_INTERVAL_SECS` (30-second) intervals. If 
 
 ### CON-005: Per-Connection Rate Limiting
 
-Inbound connections MUST each have a separate `InboundRateLimiter` instance, composing a `chia-sdk-client::RateLimiter` initialized with `V2_RATE_LIMITS` with dig-gossip's own `DigRateLimiter` over the DIG extension table. DIG extension message types (200+ range) MUST be bounded by that table, keyed by the raw opcode byte. Outbound rate limiting is handled internally by `Peer::send_raw()`.
+Inbound connections MUST each have a separate `InboundRateLimiter` instance, composing a `dig_peer_protocol::OpcodeRateLimiter` over Chia's `V2_RATE_LIMITS` rows with dig-gossip's own `DigRateLimiter` over the DIG extension table. DIG extension message types (200+ range) MUST be bounded by that table, keyed by the raw opcode byte. Outbound rate limiting is handled internally by `DigLink`'s send path.
 
 **Spec reference:** SPEC Section 5.3 (Rate Limiting)
 
@@ -58,6 +58,6 @@ The `software_version` field from the `Handshake` MUST have Unicode Cc (control)
 
 ### CON-009: Mandatory Mutual TLS (mTLS) via chia-ssl on All Peer Connections
 
-ALL peer-to-peer connections (both inbound and outbound) MUST use mutual TLS (mTLS) where both sides present `chia-ssl` certificates. TLS certificates MUST be managed exclusively via the `chia-ssl` crate (`ChiaCertificate::generate()` for new nodes, `load_ssl_cert()` for existing). Outbound connections MUST use `create_native_tls_connector()` or `create_rustls_connector()` from `chia-sdk-client`, which include the node's own certificate as a client cert for mutual authentication. Inbound connections MUST use a TLS acceptor configured with `verify_mode = CERT_REQUIRED` (matching Chia's [`server.py:67`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/server.py#L67)) so the connecting peer MUST present its certificate. Connections where the peer does not present a certificate MUST be rejected. Unencrypted WebSocket connections (plain `ws://`) MUST be rejected. Server-only TLS (where only the listener has a cert) MUST NOT be accepted for P2P — both sides MUST present certificates. Peer identity (`PeerId`) MUST be derived from SHA256 of the remote peer's TLS certificate public key, extracted during the mTLS handshake. Relay connections are exempt from mTLS (they use standard `wss://` server-only TLS).
+ALL peer-to-peer connections (both inbound and outbound) MUST use mutual TLS (mTLS) where both sides present `chia-ssl` certificates. TLS certificates MUST be managed exclusively via the `chia-ssl` crate (`ChiaCertificate::generate()` for new nodes, `load_ssl_cert()` for existing). Outbound connections MUST use `create_native_tls_connector()` or `create_rustls_connector()` from `dig-peer-protocol`, which include the node's own certificate as a client cert for mutual authentication. Inbound connections MUST use a TLS acceptor configured with `verify_mode = CERT_REQUIRED` (matching Chia's [`server.py:67`](https://github.com/Chia-Network/chia-blockchain/blob/6e7a4954edccd8ab83fcacf938cfc42ddfcad7f2/chia/server/server.py#L67)) so the connecting peer MUST present its certificate. Connections where the peer does not present a certificate MUST be rejected. Unencrypted WebSocket connections (plain `ws://`) MUST be rejected. Server-only TLS (where only the listener has a cert) MUST NOT be accepted for P2P — both sides MUST present certificates. Peer identity (`PeerId`) MUST be derived from SHA256 of the remote peer's TLS certificate public key, extracted during the mTLS handshake. Relay connections are exempt from mTLS (they use standard `wss://` server-only TLS).
 
 **Spec reference:** SPEC Section 5.3 (Mandatory Mutual TLS), Section 1.2, Section 1.3 Design Decision 4, Section 1.5 Behavior 3, Section 2.2 (PeerId from TLS key)

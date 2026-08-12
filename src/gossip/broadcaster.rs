@@ -58,34 +58,47 @@ pub enum BroadcastStrategy {
 /// - NewTransaction → ERLAY (if feature enabled, else Plumtree)
 /// - RespondPeers, RespondTransaction → Unicast (not broadcast)
 pub fn classify_broadcast(
-    msg_type: ProtocolMessageTypes,
+    msg_type: u8,
     #[allow(unused_variables)] erlay_enabled: bool,
 ) -> BroadcastStrategy {
+    // The DIG band is matched first, on the raw byte. Its opcodes have no
+    // `ProtocolMessageTypes` variant to match against -- that gap is exactly what the
+    // vendored chia-protocol fork used to fill (dig_ecosystem#2228).
+    match msg_type {
+        // `StoreMelted` (221, #1316) and `HoldingsAnnounce` (222, #1428) are PUBLIC
+        // all-peers floods: they disseminate like the other announce broadcasts,
+        // terminating via the receiver's seen_set.
+        crate::service::store_melted::STORE_MELTED
+        | crate::service::holdings_announce::HOLDINGS_ANNOUNCE => {
+            return BroadcastStrategy::Plumtree
+        }
+        // A `DigMessage` (220) is a 1:1 directed frame (WU6), never broadcast.
+        crate::service::dig_message::DIG_MESSAGE => return BroadcastStrategy::Unicast,
+        _ => {}
+    }
+
+    // Anything else is a Chia opcode; an unrecognised byte gets the safe default below.
+    let Ok(msg_type) = <ProtocolMessageTypes as chia_traits::Streamable>::from_bytes(&[msg_type])
+    else {
+        return BroadcastStrategy::Plumtree;
+    };
+
     use ProtocolMessageTypes::*;
     match msg_type {
         // ERLAY: NewTransaction uses low-fanout flooding + reconciliation
         #[cfg(feature = "erlay")]
         NewTransaction if erlay_enabled => BroadcastStrategy::Erlay,
 
-        // Plumtree: gossip messages use eager/lazy push. `StoreMelted` (opcode 221) is a
-        // PUBLIC all-peers flood (store-melt propagation, #1316) — it disseminates like the
-        // other announce broadcasts, terminating via the receiver's seen_set + the dig-node
-        // "only rebroadcast on a real holding→deleted transition" guard (#3).
-        NewPeak
-        | NewTransaction
-        | NewUnfinishedBlock
-        | RespondBlock
-        | RespondUnfinishedBlock
-        | StoreMelted
-        // `HoldingsAnnounce` (opcode 222) is a PUBLIC all-peers flood (holdings discovery,
-        // #1428) — it disseminates like the other announce broadcasts, deduped via the
-        // receiver's seen_set on the announcement bytes (a later `seq` supersedes).
-        | HoldingsAnnounce => BroadcastStrategy::Plumtree,
+        // Plumtree: gossip messages use eager/lazy push.
+        NewPeak | NewTransaction | NewUnfinishedBlock | RespondBlock | RespondUnfinishedBlock => {
+            BroadcastStrategy::Plumtree
+        }
 
         // Unicast: response messages + directed dig-message envelopes are never
         // broadcast — a `DigMessage` (opcode 220) is a 1:1 directed frame (WU6).
-        RespondPeers | RespondTransaction | RespondBlocks | RejectBlock | RejectBlocks
-        | DigMessage => BroadcastStrategy::Unicast,
+        RespondPeers | RespondTransaction | RespondBlocks | RejectBlock | RejectBlocks => {
+            BroadcastStrategy::Unicast
+        }
 
         // Default: Plumtree for anything else
         _ => BroadcastStrategy::Plumtree,

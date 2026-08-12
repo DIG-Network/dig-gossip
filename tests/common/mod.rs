@@ -16,9 +16,9 @@
 //!   `dig_gossip` API plus this module. Helpers intentionally live under `tests/common/` (not
 //!   `#[cfg(test)]` in `src/`) so they stay available to **integration** tests — library unit
 //!   tests cannot share `tests/common` without duplication (Cargo limitation).
-//! - **Mock [`Peer`](chia_sdk_client::Peer):** `chia-sdk-client` exposes peers only after a
-//!   WebSocket exists (`Peer::connect`, `Peer::from_websocket`). For [`mock_peer_connection`]
-//!   we open a **plain** `ws://` loopback pair (no TLS) so [`Peer::from_websocket`] can hash a
+//! - **Mock [`DigLink`](dig_peer_protocol::DigLink):** The transport type is `DigLink` from the `dig_peer_protocol`
+//!   crate, obtained after a WebSocket connection exists. For [`mock_peer_connection`]
+//!   we open a **plain** `ws://` loopback pair (no TLS) so [`DigLink::from_websocket`] can hash a
 //!   socket address for peer id plumbing. This is **not** a production handshake path (CON-001
 //!   uses `wss://` + mutual TLS); it exists solely to obtain a well-formed [`PeerConnection`]
 //!   for structure tests until CON-* lands.
@@ -35,8 +35,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dig_gossip::{
-    Bytes32, ChiaCertificate, GossipConfig, GossipHandle, GossipService, Network, NodeType, Peer,
-    PeerConnection, PeerId, PeerOptions, PeerReputation,
+    Bytes32, ChiaCertificate, DigLink, GossipConfig, GossipHandle, GossipService, LinkOptions,
+    Network, PeerConnection, PeerId, PeerReputation,
 };
 use rand::Rng;
 use tokio::net::TcpListener;
@@ -89,11 +89,11 @@ pub async fn mock_peer_connection(is_outbound: bool) -> PeerConnection {
 
     let server = async {
         let (tcp, _) = listener.accept().await.expect("accept mock websocket tcp");
-        // `Peer::from_websocket` is typed for `MaybeTlsStream<TcpStream>` (same as `connect_async`).
+        // `DigLink::from_websocket` is typed for `MaybeTlsStream<TcpStream>` (same as `connect_async`).
         let ws = accept_async(MaybeTlsStream::Plain(tcp))
             .await
             .expect("websocket accept");
-        Peer::from_websocket(ws, PeerOptions::default()).expect("server Peer::from_websocket")
+        DigLink::from_websocket(ws, LinkOptions::default()).expect("server DigLink::from_websocket")
     };
 
     let client = async {
@@ -101,7 +101,7 @@ pub async fn mock_peer_connection(is_outbound: bool) -> PeerConnection {
         let (ws, _) = connect_async(url.as_str())
             .await
             .expect("client websocket connect");
-        Peer::from_websocket(ws, PeerOptions::default()).expect("client Peer::from_websocket")
+        DigLink::from_websocket(ws, LinkOptions::default()).expect("client DigLink::from_websocket")
     };
 
     let (server_res, client_res) = tokio::join!(server, client);
@@ -123,7 +123,7 @@ pub async fn mock_peer_connection(is_outbound: bool) -> PeerConnection {
         peer_id: random_peer_id(),
         address,
         is_outbound,
-        node_type: NodeType::FullNode,
+        node_type: dig_gossip::NodeType::FullNode,
         protocol_version: "0.0.35".to_string(),
         software_version: "dig-gossip/0.1.0".to_string(),
         peer_server_port: address.port(),
@@ -162,7 +162,7 @@ pub fn test_network() -> Network {
 /// [`GossipConfig`] tuned for local integration tests (localhost, small limits, paths under `temp_dir`).
 ///
 /// **STR-005 alignment:** `listen_addr` uses port `0` for OS assignment; `target_outbound_count`
-/// and `max_connections` match the STR-005 example (`2` / `10`). [`PeerOptions`] uses defaults
+/// and `max_connections` match the STR-005 example (`2` / `10`). [`LinkOptions`] uses defaults
 /// from `chia-sdk-client`.
 /// The software build every test harness node advertises (#2215).
 ///
@@ -191,7 +191,7 @@ pub fn test_gossip_config(temp_dir: &Path) -> GossipConfig {
         gossip_fanout: 3,
         max_seen_messages: 1000,
         peers_file_path: temp_dir.join("peers.dat"),
-        peer_options: PeerOptions::default(),
+        peer_options: LinkOptions::default(),
         #[cfg(feature = "dandelion")]
         dandelion: None,
         peer_id_rotation: None,

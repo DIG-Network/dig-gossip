@@ -145,7 +145,7 @@ fn test_generate_certs_valid() {
 
 /// **Acceptance:** [`common::connected_test_pair`] composes harness pieces and returns distinct bind addresses.
 ///
-/// SPEC §11.2 — integration tests: connect two nodes using connect_peer(), verify handshake.
+/// SPEC §11.2 — integration tests: establish outbound connection via TLS + handshake, verify connection state.
 ///
 /// **Deferred detail:** “each handle reports one connected peer” needs API-002 + CON-001; see
 /// `common` module docs and the ignored tests below.

@@ -10,7 +10,8 @@ pub mod introducer_client;
 pub mod introducer_peers;
 /// DIG introducer **registration** wire types (**218** / **219**) — DSC-005.
 ///
-/// Depends on the vendored [`chia_protocol::ProtocolMessageTypes`] extension (see `vendor/chia-protocol`).
+/// Declares [`RegisterPeer`] and [`RegisterAck`] wire bodies (opcodes 218/219) that travel as
+/// raw `msg_type` bytes in [`dig_peer_protocol::DigMessage`], re-exported from `dig-peer-protocol`.
 pub mod introducer_register_wire;
 /// Introducer wire structs for protocol IDs **63** / **64** (DSC-004).
 ///

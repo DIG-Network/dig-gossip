@@ -17,7 +17,7 @@
 //!
 //! `PeerConnection` intentionally **does not** implement [`Clone`]: it owns an
 //! [`tokio::sync::mpsc::Receiver`] for inbound wire messages (SPEC 2.4), which is not clonable.
-//! Upstream [`dig_peer_protocol::Peer`] is cloneable (`Arc` inside), but duplicating a connection’s
+//! Upstream [`dig_peer_protocol::DigLink`] is cloneable (`Arc` inside), but duplicating a connection’s
 //! receiver would violate single-consumer semantics.
 
 use std::fmt;
@@ -27,9 +27,9 @@ use crate::constants::{
     BUCKET_SIZE, HORIZON_DAYS, MAX_FAILURES, MAX_RETRIES, MIN_FAIL_DAYS,
     NEW_BUCKETS_PER_SOURCE_GROUP, NEW_BUCKET_COUNT, TRIED_BUCKETS_PER_GROUP, TRIED_BUCKET_COUNT,
 };
-use dig_peer_protocol::Peer;
-use dig_peer_protocol::Streamable;
-use dig_peer_protocol::{Bytes32, Message, NodeType};
+use chia_protocol::Bytes32;
+use dig_peer_protocol::DigLink;
+use dig_peer_protocol::{DigMessage, NodeType};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
@@ -155,7 +155,7 @@ pub struct ExtendedPeerInfo {
     pub peer_info: PeerInfo,
     /// Last time this row was updated (Unix seconds); staleness / horizon logic (DSC-001).
     pub timestamp: u64,
-    /// Peer that gossiped this address — drives **source-group** buckets in the new table.
+    /// DigLink that gossiped this address — drives **source-group** buckets in the new table.
     pub src: PeerInfo,
     /// Index in the random-order vector for O(1) uniform selection; [`None`] until inserted.
     pub random_pos: Option<usize>,
@@ -275,16 +275,16 @@ pub fn metric_unix_timestamp_secs() -> u64 {
         .as_secs()
 }
 
-/// Serialized on-wire length of a [`Message`] (header + body) — **CON-006** requires byte counters
+/// Serialized on-wire length of a [`DigMessage`] (header + body) — **CON-006** requires byte counters
 /// to reflect wire size, not in-memory struct size.
 ///
 /// **See:** [`CON-006.md`](../../../docs/requirements/domains/connection/specs/CON-006.md) —
 /// “`bytes_read`/`bytes_written` should count the serialized wire size”.
-#[allow(clippy::result_large_err)] // mirrors `encode_message` / Chia `Streamable` error surface
-pub fn message_wire_len(msg: &Message) -> Result<u64, dig_peer_protocol::ClientError> {
-    msg.to_bytes()
-        .map(|b| b.len() as u64)
-        .map_err(dig_peer_protocol::ClientError::Streamable)
+#[must_use]
+pub fn message_wire_len(msg: &DigMessage) -> u64 {
+    // `DigMessage::to_bytes` is infallible -- `msg_type` is already a raw byte and `data` is
+    // already serialized -- so this no longer has an error case to propagate.
+    msg.to_bytes().len() as u64
 }
 
 /// Per-connection byte/message counters shared by [`LiveSlot`](crate::service::state::LiveSlot)
@@ -351,12 +351,12 @@ pub fn aggregate_peer_connection_io(peers: &[PeerConnection]) -> (u64, u64, u64,
 
 /// Active connection with gossip bookkeeping.
 ///
-/// Wraps [`Peer`] (TLS WebSocket I/O) with DIG-only metadata. Field layout matches
+/// Wraps [`DigLink`] (TLS WebSocket I/O) with DIG-only metadata. Field layout matches
 /// [`SPEC.md`](../../../docs/resources/SPEC.md) §2.4; behavior (handshake, metrics, …) is filled by
 /// connection-domain requirements (CON-*, API-005).
 pub struct PeerConnection {
     /// Underlying Chia light-wallet-protocol peer handle.
-    pub peer: Peer,
+    pub peer: DigLink,
     /// Unique peer identifier (TLS cert hash / Chia rules).
     pub peer_id: PeerId,
     /// Remote socket address.
@@ -367,9 +367,9 @@ pub struct PeerConnection {
     pub node_type: NodeType,
     /// Peer protocol version string.
     pub protocol_version: String,
-    /// Peer software version string (Cc/Cf stripped per CON-003 / CON-008 — Chia `ws_connection.py`).
+    /// DigLink software version string (Cc/Cf stripped per CON-003 / CON-008 — Chia `ws_connection.py`).
     pub software_version: String,
-    /// Peer-advertised server port from handshake.
+    /// DigLink-advertised server port from handshake.
     pub peer_server_port: u16,
     /// Capability tuples `(code, name)` from handshake.
     pub capabilities: Vec<(u16, String)>,
@@ -387,8 +387,8 @@ pub struct PeerConnection {
     pub last_message_time: u64,
     /// Reputation snapshot (API-006).
     pub reputation: PeerReputation,
-    /// Inbound wire messages for this connection (`connect_peer` / `Peer::from_websocket`).
-    pub inbound_rx: mpsc::Receiver<Message>,
+    /// Inbound wire messages for this connection (`connect_peer` / `DigLink::from_websocket`).
+    pub inbound_rx: mpsc::Receiver<DigMessage>,
 }
 
 impl fmt::Debug for PeerConnection {
@@ -410,7 +410,7 @@ impl fmt::Debug for PeerConnection {
             .field("messages_received", &self.messages_received)
             .field("last_message_time", &self.last_message_time)
             .field("reputation", &self.reputation)
-            .field("inbound_rx", &"<mpsc::Receiver<Message>>")
+            .field("inbound_rx", &"<mpsc::Receiver<DigMessage>>")
             .finish()
     }
 }

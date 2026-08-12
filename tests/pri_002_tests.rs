@@ -6,11 +6,11 @@
 //! - **Master SPEC:** `docs/resources/SPEC.md` SS8.4
 
 use dig_gossip::gossip::priority::{MessagePriority, PriorityOutbound};
-use dig_gossip::{Message, ProtocolMessageTypes};
+use dig_gossip::{DigMessage, ProtocolMessageTypes};
 
-fn make_msg(msg_type: ProtocolMessageTypes) -> Message {
-    Message {
-        msg_type,
+fn make_msg(msg_type: ProtocolMessageTypes) -> DigMessage {
+    DigMessage {
+        msg_type: msg_type as u8,
         id: None,
         data: vec![].into(),
     }
