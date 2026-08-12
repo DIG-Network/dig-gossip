@@ -1394,6 +1394,21 @@ Outbound connection:
    ├─ 6. Send RequestPeers for discovery (node_discovery.py:135-136)
    └─ 7. Spawn per-connection message loop task
 
+Step 7 includes the CON-004 keepalive. Every `PING_INTERVAL_SECS` the loop sends a `RequestPeers`
+probe **with no correlation id** and waits up to `PEER_TIMEOUT_SECS` for the peer's `RespondPeers`
+on the application inbound stream.
+
+The probe MUST NOT be correlated. Both peers allocate correlation ids from a counter starting at
+zero and both keepalive loops start at handshake on the same interval, so two correlated probes can
+carry the same id — and because a link matches an inbound frame on correlation id before forwarding
+it, each side's waiter would receive the peer's **request** rather than a response. The peer's
+request would never reach the auto-reply path, neither side would record a success, and both would
+disconnect at the staleness check while logging a timeout that names the wrong cause.
+
+The design fails loose: an alive-but-silent peer is kept, and a round whose reply cannot be observed
+at all (the inbound stream is absent while the service starts or stops) is skipped without charging
+the staleness window.
+
 Relay fallback (when direct P2P fails):
    │
    ├─ 1. Connect to relay via WebSocket

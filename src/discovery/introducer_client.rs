@@ -275,7 +275,6 @@ impl IntroducerClient {
             )),
         }
     }
-
 }
 
 /// Load node TLS material for introducer dials — thin wrapper so call sites share [`load_ssl_cert`]

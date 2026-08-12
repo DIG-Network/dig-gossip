@@ -16,7 +16,7 @@
 //!   several probe intervals**, never a log line.
 //! - **The collision must be forced, not hoped for.** An outbound dial burns correlation id 0 on
 //!   `RequestPeers` (DSC-007) before its keepalive starts, leaving the two counters permanently
-//!   offset by one. [`align_correlation_counters`] burns the matching id on the *inbound* side so
+//!   offset by one. [`connect_and_align`] burns the matching id on the *inbound* side so
 //!   both loops probe from the same id — the state that a mutual dial, or any application
 //!   `request()` on one side, reaches on its own in production.
 //! - **Real `tokio::time`.** This is real loopback I/O; a paused clock would not exercise it.
@@ -59,7 +59,11 @@ async fn service(dir: &tempfile::TempDir) -> (GossipService, GossipHandle) {
 /// The dialer burns id 0 on its DSC-007 `RequestPeers`; issuing one application request from the
 /// accepting side burns its id 0 too. Without this the counters stay offset and the collision — the
 /// whole subject of this file — never occurs.
-async fn connect_and_align(a: &GossipHandle, b: &GossipHandle, b_addr: std::net::SocketAddr) -> (PeerId, PeerId) {
+async fn connect_and_align(
+    a: &GossipHandle,
+    b: &GossipHandle,
+    b_addr: std::net::SocketAddr,
+) -> (PeerId, PeerId) {
     let b_on_a = a.connect_to(b_addr).await.expect("A dials B");
 
     // The inbound slot lands as `negotiate_inbound_over_ws` finishes; poll rather than guess, and
@@ -113,7 +117,11 @@ async fn colliding_correlation_ids_do_not_tear_the_link_down() {
         1,
         "the surviving link must be the ORIGINAL one — a reconnect would also leave a peer present"
     );
-    assert_eq!(h_b.stats().await.total_connections, 1, "same, from B's side");
+    assert_eq!(
+        h_b.stats().await.total_connections,
+        1,
+        "same, from B's side"
+    );
 
     // The probes must have been observed, not merely survived: a build that stopped probing
     // altogether would also pass the assertions above.
