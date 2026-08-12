@@ -202,6 +202,18 @@ pub enum GossipError {
     #[error("duplicate connection to peer {0}")]
     DuplicateConnection(PeerId),
 
+    /// The peer answered a dial with an opcode outside `ProtocolMessageTypes`, so no typed
+    /// [`ClientError`](dig_peer_protocol::ClientError) can name it.
+    ///
+    /// **When:** the first frame after connect is neither a `Handshake` nor any other Chia-band
+    /// message — a DIG-band opcode, or garbage.
+    /// **Caller action:** Treat as **policy**, not transport: the peer was reached and rejected on
+    /// content, so re-dialling the same address meets the same behaviour.
+    /// **Produced by:** [`GossipHandle::connect_to`](crate::service::gossip_handle::GossipHandle)
+    /// and the DSC-004 introducer dials.
+    #[error("expected a Handshake, found unknown opcode {0}")]
+    UnknownHandshakeOpcode(u8),
+
     /// The target address resolved to our own listen address (self-dial guard).
     ///
     /// **When:** `connect_to` detects that the target matches

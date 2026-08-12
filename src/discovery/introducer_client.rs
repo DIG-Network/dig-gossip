@@ -23,12 +23,18 @@
 //!   We wrap the async block in [`tokio::time::timeout`]; on expiry we return
 //!   [`GossipError::IntroducerError`](crate::error::GossipError::IntroducerError) with a stable substring
 //!   so tests can distinguish timeout from transport failures.
-//! - **TLS feature gate:** Without `native-tls` / `rustls`, [`DigLink::connect_full_uri`] does not exist;
-//!   [`IntroducerClient::query_peers`] returns [`GossipError::ClientError`](crate::error::GossipError::ClientError)
-//!   (`UnsupportedTls`) so `--no-default-features` builds remain coherent.
+//! - **TLS feature gate:** [`DigLink::connect_full_uri`] exists only with `native-tls` or `rustls`,
+//!   so the dials below are gated on one of them being enabled.
+//!
+//!   A build with NEITHER backend **does not compile today** — `dig_peer_protocol::{Client,
+//!   ClientState}` are imported unconditionally in `service::state`, `service::gossip_service` and
+//!   `lib.rs`, and no CI job builds without a TLS backend. This module used to carry
+//!   `UnsupportedTls` stubs and a claim that `--no-default-features` builds "remain coherent"; both
+//!   are gone, because the stubs served only that claim and the claim was false
+//!   (dig_ecosystem#2225 tracks making such a build work, or removing the possibility).
 
 use crate::connection::chia_opcodes;
-use crate::connection::dial_error::DialError;
+use crate::connection::dial_error::{non_handshake_first_frame, DialError};
 use crate::types::dig_messages::DigMessageType;
 use dig_peer_protocol::LinkError;
 use std::time::Duration;
@@ -125,11 +131,10 @@ impl IntroducerClient {
                 return Err(DialError::Client(ClientError::MissingHandshake));
             };
 
+            // Policy, not transport: the peer was reached and answered with something other
+            // than a `Handshake`, so re-dialling meets the same behaviour (`dial_error` docs).
             if message.msg_type != chia_opcodes::HANDSHAKE {
-                return Err(DialError::Link(LinkError::InvalidResponse(
-                    vec![chia_opcodes::HANDSHAKE],
-                    message.msg_type,
-                )));
+                return Err(non_handshake_first_frame(message.msg_type));
             }
 
             let handshake = Handshake::from_bytes(&message.data)
@@ -214,11 +219,10 @@ impl IntroducerClient {
                 return Err(DialError::Client(ClientError::MissingHandshake));
             };
 
+            // Policy, not transport: the peer was reached and answered with something other
+            // than a `Handshake`, so re-dialling meets the same behaviour (`dial_error` docs).
             if message.msg_type != chia_opcodes::HANDSHAKE {
-                return Err(DialError::Link(LinkError::InvalidResponse(
-                    vec![chia_opcodes::HANDSHAKE],
-                    message.msg_type,
-                )));
+                return Err(non_handshake_first_frame(message.msg_type));
             }
 
             let handshake = Handshake::from_bytes(&message.data)
@@ -272,34 +276,6 @@ impl IntroducerClient {
         }
     }
 
-    /// TLS-disabled builds cannot dial introducers — fail fast with the same error shape other
-    /// transports use when TLS is unavailable.
-    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
-    pub async fn register_with_introducer(
-        _wss_uri: &str,
-        _local_certificate: &ChiaCertificate,
-        _network_id: Bytes32,
-        _peer_options: LinkOptions,
-        _operation_timeout: Duration,
-        _registration: &PeerRegistration,
-        _software_version: &str,
-    ) -> Result<RegisterAck, GossipError> {
-        Err(ClientError::UnsupportedTls.into())
-    }
-
-    /// TLS-disabled builds cannot dial introducers — fail fast with the same error shape other
-    /// transports use when TLS is unavailable.
-    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
-    pub async fn query_peers(
-        _wss_uri: &str,
-        _local_certificate: &ChiaCertificate,
-        _network_id: Bytes32,
-        _peer_options: LinkOptions,
-        _operation_timeout: Duration,
-        _software_version: &str,
-    ) -> Result<Vec<TimestampedPeerInfo>, GossipError> {
-        Err(ClientError::UnsupportedTls.into())
-    }
 }
 
 /// Load node TLS material for introducer dials — thin wrapper so call sites share [`load_ssl_cert`]

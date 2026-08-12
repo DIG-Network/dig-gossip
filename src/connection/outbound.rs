@@ -45,7 +45,7 @@
 // Upstream [`ClientError`] is wide; we propagate it verbatim per API-004 `GossipError::ClientError`.
 
 use crate::connection::chia_opcodes;
-use crate::connection::dial_error::DialError;
+use crate::connection::dial_error::{non_handshake_first_frame, DialError};
 use dig_peer_protocol::LinkError;
 use std::net::SocketAddr;
 
@@ -242,11 +242,10 @@ pub(crate) async fn connect_outbound_peer(
         return Err(DialError::Client(ClientError::MissingHandshake));
     };
 
+    // Policy, not transport: the peer was reached and answered with something other than a
+    // `Handshake`, so re-dialling the same address meets the same behaviour (`dial_error` docs).
     if message.msg_type != chia_opcodes::HANDSHAKE {
-        return Err(DialError::Link(LinkError::InvalidResponse(
-            vec![chia_opcodes::HANDSHAKE],
-            message.msg_type,
-        )));
+        return Err(non_handshake_first_frame(message.msg_type));
     }
 
     let handshake =
