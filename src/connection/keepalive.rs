@@ -289,6 +289,11 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u
             // Fail open: the broadcast is only absent while the service is starting or stopping.
             // A probe we cannot observe is not evidence the peer is dead, and the only action this
             // loop can take is to disconnect — so skip the round and leave the peer connected.
+            //
+            // The staleness window must be reset too, not merely the probe skipped: charging an
+            // unmeasurable interval against it would tear the link down a few rounds later anyway,
+            // which is the very outcome this branch exists to prevent.
+            last_success = std::time::Instant::now();
             tracing::debug!(
                 target: "dig_gossip::keepalive",
                 %peer_id,
