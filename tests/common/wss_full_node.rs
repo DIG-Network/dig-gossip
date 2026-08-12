@@ -169,6 +169,190 @@ pub async fn spawn_one_shot_full_node(
     (addr, jh)
 }
 
+/// A single anomalous frame a peer may inject after the handshake (dig_ecosystem#2391).
+///
+/// Each variant exercises one of the three kill-switches [`dig_peer_protocol::DigLink`]'s inbound
+/// loop deliberately removed. They are modelled as data rather than as three harnesses so one
+/// server implementation proves all three, differing only in the bytes it emits.
+#[derive(Debug, Clone, Copy)]
+pub enum HostileFrame {
+    /// A well-formed `RespondPeers` carrying a correlation id nobody is waiting on.
+    ///
+    /// This is not only an attack: ids are chosen independently by each side, so a peer's own
+    /// *request* id collides with one of ours routinely. The previous transport returned
+    /// `UnexpectedMessage` here, which ended the reader and dropped the connection.
+    UnmatchedCorrelationId,
+
+    /// A frame whose opcode this build has no meaning for.
+    ///
+    /// Opcode 223 is the next unallocated slot in the 220-255 DIG free band (this build knows
+    /// 220 `DigMessage`, 221 `StoreMelted`, 222 `HoldingsAnnounce`), so it is exactly what a peer
+    /// running a newer dig-node emits — the realistic case, not a synthetic one. The previous
+    /// transport decoded through a closed enum, so this was a fatal decode error.
+    UnknownOpcode,
+
+    /// A frame whose declared body length exceeds the bytes present, so it cannot decode at all.
+    ///
+    /// Distinct from [`Self::UnknownOpcode`]: since #63 the opcode is a raw `u8` and no opcode is
+    /// undecodable, so this is what now reaches the `from_bytes_owned` → `None` path. Websocket
+    /// frames are self-delimiting, so this must cost exactly this frame.
+    MalformedFrame,
+}
+
+/// The unallocated DIG free-band opcode used by [`HostileFrame::UnknownOpcode`].
+const UNALLOCATED_DIG_OPCODE: u8 = 223;
+
+impl HostileFrame {
+    /// The exact wire bytes this frame puts on the socket.
+    ///
+    /// Encoded by hand rather than through [`DigMessage::to_bytes`] because
+    /// [`HostileFrame::MalformedFrame`] is by definition not expressible as a `DigMessage` — a
+    /// correct encoder cannot emit it. The layout is `DigMessage`'s: `u8` opcode, `u8` id-present
+    /// flag, the big-endian `u16` id when present, then a big-endian `u32` length-prefixed body.
+    fn to_wire_bytes(self) -> Vec<u8> {
+        match self {
+            Self::UnmatchedCorrelationId => {
+                let body = RespondPeers::new(vec![])
+                    .to_bytes()
+                    .expect("encode RespondPeers");
+                let mut out = vec![ProtocolMessageTypes::RespondPeers as u8, 1];
+                // 0xBEEF is far outside the small ids a fresh link allocates, so it cannot
+                // accidentally match a real outstanding request.
+                out.extend_from_slice(&0xBEEF_u16.to_be_bytes());
+                out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                out.extend_from_slice(&body);
+                out
+            }
+            Self::UnknownOpcode => {
+                let body = b"a body this build has no meaning for".to_vec();
+                let mut out = vec![UNALLOCATED_DIG_OPCODE, 0];
+                out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                out.extend_from_slice(&body);
+                out
+            }
+            Self::MalformedFrame => {
+                // Declares a 4 KiB body and supplies two bytes of it.
+                let mut out = vec![ProtocolMessageTypes::RespondPeers as u8, 0];
+                out.extend_from_slice(&4096_u32.to_be_bytes());
+                out.extend_from_slice(&[0xAA, 0xBB]);
+                out
+            }
+        }
+    }
+}
+
+/// How the one-shot hostile node behaves after replying to the client's `Handshake`.
+#[derive(Debug, Clone, Copy)]
+pub enum PostHandshakeBehaviour {
+    /// Inject `frame`, then answer the client's `RequestPeers` normally.
+    Inject(HostileFrame),
+    /// Close the websocket immediately — the **negative control**.
+    ///
+    /// This is what a torn-down link looks like from the client. It exists so the survival
+    /// assertion in the #2391 tests can be shown to fail when the link really does die: without
+    /// it, those tests could pass for any reason at all and nobody would know.
+    TearDown,
+}
+
+/// Handshake, apply `behaviour`, then answer `RequestPeers` normally.
+///
+/// The `RequestPeers` exchange **after** the hostile frame is the whole point: it is the control
+/// that distinguishes "the link tolerated the frame" from "the link died quietly". A test that
+/// only asserted the frame was accepted would pass against a torn-down link.
+///
+/// It is also what makes delivery observable. The stream is ordered, so the client cannot have
+/// read the `RespondPeers` that completes its dial without first having read — and survived — the
+/// hostile frame sent ahead of it.
+async fn serve_one_hostile_client(
+    mut ws: Ws,
+    network_id: &str,
+    behaviour: PostHandshakeBehaviour,
+    peer_list: Vec<TimestampedPeerInfo>,
+) -> Result<(), String> {
+    let first = next_chia_message(&mut ws).await?;
+    if first.msg_type != (ProtocolMessageTypes::Handshake as u8) {
+        return Err(format!("expected Handshake, got {:?}", first.msg_type));
+    }
+    let hs = Handshake::from_bytes(&first.data).map_err(|e| e.to_string())?;
+    if hs.network_id != network_id {
+        return Err(format!("network_id mismatch: client {}", hs.network_id));
+    }
+
+    let reply_hs = Handshake {
+        network_id: network_id.to_string(),
+        protocol_version: "0.0.37".to_string(),
+        software_version: "dig-gossip-test-fullnode/0".to_string(),
+        server_port: 0,
+        node_type: chia_protocol::NodeType::FullNode,
+        capabilities: vec![],
+    };
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::Handshake as u8),
+        id: None,
+        data: reply_hs.to_bytes().map_err(|e| e.to_string())?.into(),
+    };
+    ws.send(WsMsg::Binary(out.to_bytes()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let hostile = match behaviour {
+        PostHandshakeBehaviour::TearDown => {
+            ws.close(None).await.map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        PostHandshakeBehaviour::Inject(frame) => frame,
+    };
+
+    let wire = hostile.to_wire_bytes();
+    let injected = wire.len();
+    ws.send(WsMsg::Binary(wire))
+        .await
+        .map_err(|e| e.to_string())?;
+    ws.flush().await.map_err(|e| e.to_string())?;
+
+    let second = next_chia_message(&mut ws).await?;
+    if second.msg_type != (ProtocolMessageTypes::RequestPeers as u8) {
+        return Err(format!("expected RequestPeers, got {:?}", second.msg_type));
+    }
+    let resp = RespondPeers::new(peer_list);
+    let out = DigMessage {
+        msg_type: (ProtocolMessageTypes::RespondPeers as u8),
+        id: second.id,
+        data: resp.to_bytes().map_err(|e| e.to_string())?.into(),
+    };
+    ws.send(WsMsg::Binary(out.to_bytes()))
+        .await
+        .map_err(|e| e.to_string())?;
+    println!("[hostile-node] injected {injected} bytes of {hostile:?} before RespondPeers");
+    Ok(())
+}
+
+/// Bind `127.0.0.1:0` and serve one client the [`serve_one_hostile_client`] sequence.
+pub async fn spawn_one_shot_hostile_full_node(
+    cert: ChiaCertificate,
+    network_id: String,
+    behaviour: PostHandshakeBehaviour,
+    peer_list: Vec<TimestampedPeerInfo>,
+) -> (SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind hostile wss test listener");
+    let addr = listener.local_addr().expect("local_addr");
+    let jh = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let identity = Identity::from_pkcs8(cert.cert_pem.as_bytes(), cert.key_pem.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let acceptor = TlsAcceptor::builder(identity)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let acceptor = TokioTlsAcceptor::from(acceptor);
+        let tls = acceptor.accept(tcp).await.map_err(|e| e.to_string())?;
+        let ws = accept_async(tls).await.map_err(|e| e.to_string())?;
+        serve_one_hostile_client(ws, &network_id, behaviour, peer_list).await
+    });
+    (addr, jh)
+}
+
 /// One-shot **introducer** acceptor for DSC-004: handshake, then `RequestPeersIntroducer` → `RespondPeersIntroducer`.
 ///
 /// * `client_expected_network_id` — must match the client’s outbound [`Handshake::network_id`].
