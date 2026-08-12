@@ -225,9 +225,13 @@ async fn test_register_introducer_connect_fail() {
         common::TEST_SOFTWARE_VERSION,
     )
     .await
-    .expect_err("connect should fail");
+    .expect_err("nothing listens on :7");
     match err {
-        GossipError::ClientError(_) | GossipError::IntroducerError(_) => {}
+        // The dial is DigLink's now, so a refused TCP connect surfaces as LinkError.
+        // ClientError is retained for handshake-POLICY failures, which is a different
+        // failure than never reaching the wire (dig_ecosystem#2228).
+        GossipError::LinkError(_) | GossipError::ClientError(_) | GossipError::IoError(_) => {}
+        GossipError::IntroducerError(msg) if msg.contains("timed out") => {}
         other => panic!("unexpected error: {other:?}"),
     }
 }

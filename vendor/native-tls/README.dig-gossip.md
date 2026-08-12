@@ -25,6 +25,29 @@ The patch block is marked **dig-gossip vendor patch**. See the comment at that s
 `chia_ca.crt` is copied from the matching `chia-ssl` release (the Chia Network's vendored CA
 bundle).
 
+## Why upstream cannot replace this
+
+`native-tls` is dig-gossip's **default** feature, and `connection::listener::native_tls_acceptor` is
+compiled under `all(feature = "native-tls", not(feature = "rustls"))` — so a stock `cargo build` runs
+through this patched acceptor. Upstream's `TlsAcceptorBuilder` exposes only `min_protocol_version`,
+`max_protocol_version`, `accept_alpn` and `build`; it offers no way to request or require a client
+certificate.
+
+Dropping the patch would therefore **not fail to compile**. It would silently accept inbound peers
+presenting **no client certificate at all**, defeating CON-009 mTLS. That is why this is the one fork
+that survived dig_ecosystem#2228 — the `chia-protocol` and `chia-sdk-client` forks existed for a
+runtime decode that `dig_peer_protocol::DigLink` now handles, and both were deleted, but no equivalent
+exists for requiring a client certificate.
+
+The same property is why the crates.io publish stays blocked: `cargo publish` strips
+`[patch.crates-io]`, so a published dig-gossip would build against upstream `native-tls` and lose the
+requirement with nothing red anywhere (dig_ecosystem#2647).
+
+Only a consumer that opts out reaches a different path: dig-node takes dig-gossip with
+`default-features = false, features = ["rustls", "relay"]` and uses the rustls inbound acceptor, which
+requests and captures the client certificate directly. That is the one configuration in which this
+patch is not load-bearing.
+
 ## Platform scope
 
 OpenSSL backend is used on Linux/Android; macOS (SecureTransport) and Windows (SChannel) paths are
