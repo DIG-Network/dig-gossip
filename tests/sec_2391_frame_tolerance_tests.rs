@@ -143,7 +143,8 @@ async fn torn_down_link_fails_the_survival_assertion() {
 /// exercising nothing. This pins the fixtures to the decoder itself.
 #[test]
 fn hostile_fixtures_still_have_the_property_they_are_named_for() {
-    use dig_gossip::{DigMessage, Streamable, DIG_MESSAGE, HOLDINGS_ANNOUNCE, STORE_MELTED};
+    use dig_gossip::{DigMessage, Streamable};
+    use dig_peer_protocol::ALL_DIG_OPCODES;
 
     let malformed = HostileFrame::MalformedFrame.to_wire_bytes();
     assert!(
@@ -153,10 +154,7 @@ fn hostile_fixtures_still_have_the_property_they_are_named_for() {
 
     let unknown = DigMessage::from_bytes(&HostileFrame::UnknownOpcode.to_wire_bytes())
         .expect("the UnknownOpcode fixture must be a well-formed frame with an unusable opcode");
-    let known_dig_opcode = matches!(
-        unknown.msg_type,
-        DIG_MESSAGE | STORE_MELTED | HOLDINGS_ANNOUNCE
-    );
+    let known_dig_opcode = ALL_DIG_OPCODES.contains(&unknown.msg_type);
     let known_chia_opcode =
         dig_gossip::ProtocolMessageTypes::from_bytes(&[unknown.msg_type]).is_ok();
     assert!(
