@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.23.0] - 2026-08-12
+
+### Features
+- **deps:** Delete the vendored chia-protocol and chia-sdk-client forks (#63)
+
 ## [0.22.2] - 2026-08-10
 
 ### Chores
