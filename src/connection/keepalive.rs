@@ -122,6 +122,19 @@ fn unix_secs() -> u64 {
         .as_secs()
 }
 
+/// Send one liveness probe to `peer`, **uncorrelated** (#2767).
+///
+/// [`DigLink::send`] frames the body with `id: None`. That is the load-bearing property, not the
+/// choice of `RequestPeers`: both peers allocate correlation ids from a counter that starts at
+/// zero, and both keepalive loops start at handshake on a shared interval, so two *correlated*
+/// probes can carry the same id. Each link matches inbound frames on correlation id before
+/// forwarding, so each side's waiter would receive the peer's **request** — the peer's request
+/// would never reach the forwarder, its auto-reply would never fire, and both sides would tear the
+/// link down. An `id: None` frame skips the id-match arm entirely.
+async fn send_probe(peer: &DigLink) -> Result<(), dig_peer_protocol::LinkError> {
+    peer.send(RequestPeers::new()).await
+}
+
 /// Subscribe to the service-wide inbound broadcast, or `None` while it is uninitialised.
 ///
 /// The sender exists only between [`GossipService::start`](crate::service::GossipService::start)
@@ -289,13 +302,7 @@ async fn keepalive_loop(state: Arc<ServiceState>, peer_id: PeerId, generation: u
         // the observed reply includes serialization, network, and deserialization — giving a
         // realistic end-to-end RTT sample.
         let start = std::time::Instant::now();
-        // #2767: the probe is UNCORRELATED (`DigLink::send`, `id: None`). Both peers allocate
-        // correlation ids from a counter that starts at zero, and both keepalive loops start at
-        // handshake — so two correlated probes can carry the SAME id, and each link's inbound
-        // matcher then hands the peer's *request* to our own waiter. The peer's request never
-        // reaches the forwarder, its auto-reply never fires, and both sides tear the link down.
-        // An `id: None` frame skips the id-match arm entirely, so the lockstep cannot exist.
-        if let Err(e) = peer.send(RequestPeers::new()).await {
+        if let Err(e) = send_probe(&peer).await {
             tracing::warn!(
                 target: "dig_gossip::keepalive",
                 %peer_id,
@@ -443,5 +450,139 @@ async fn disconnect_after_keepalive_failure(
     // (timed ban + Chia IP ban) even though the slot is already removed.
     if triggered {
         state.execute_dig_timed_ban(peer_id, remote_ip, now).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! #2767 — the probe must not park a correlation waiter.
+    //!
+    //! The mechanism test runs over a **real loopback WebSocket pair**, because the defect lives in
+    //! [`DigLink`]'s inbound matcher: a symmetric in-memory double could not express a stolen frame.
+
+    use super::*;
+    use dig_peer_protocol::{LinkOptions, Streamable};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream};
+
+    /// Both halves of a live loopback link, each with its application inbound receiver.
+    async fn link_pair() -> (
+        (DigLink, tokio::sync::mpsc::Receiver<DigMessage>),
+        (DigLink, tokio::sync::mpsc::Receiver<DigMessage>),
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+
+        let server = async {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let ws = accept_async(MaybeTlsStream::Plain(tcp))
+                .await
+                .expect("ws accept");
+            DigLink::from_websocket(ws, LinkOptions::default()).expect("server link")
+        };
+        let client = async {
+            let url = format!("ws://127.0.0.1:{}/", addr.port());
+            let (ws, _) = connect_async(url.as_str()).await.expect("ws connect");
+            DigLink::from_websocket(ws, LinkOptions::default()).expect("client link")
+        };
+        tokio::join!(server, client)
+    }
+
+    /// **#2767 mechanism.** The peer has an outstanding correlated waiter at id 0 — exactly the
+    /// state a simultaneously-started keepalive loop is in. A correlated probe would carry id 0
+    /// too, be swallowed by that waiter, and never reach the peer's application; the auto-reply
+    /// that keeps the link alive would therefore never fire. The uncorrelated probe must arrive.
+    ///
+    /// The peer's own probe is a real `request_raw` rather than a hand-rolled frame so the waiter
+    /// is registered by the same code path production uses.
+    #[tokio::test]
+    async fn probe_reaches_the_peer_application_despite_an_outstanding_correlated_waiter() {
+        let ((a, _a_rx), (b, mut b_rx)) = link_pair().await;
+
+        // The peer starts ITS probe first, parking a waiter at correlation id 0.
+        let b_probe = tokio::spawn(async move { b.request_raw(RequestPeers::new()).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        send_probe(&a).await.expect("probe sends");
+
+        let seen = tokio::time::timeout(Duration::from_secs(2), b_rx.recv())
+            .await
+            .expect("the peer's application must observe the probe within 2s")
+            .expect("inbound channel open");
+        assert_eq!(
+            seen.msg_type,
+            chia_opcodes::REQUEST_PEERS,
+            "the probe must reach the peer's application, not its correlation waiter"
+        );
+        assert!(
+            seen.id.is_none(),
+            "the probe must be uncorrelated so no waiter can claim it"
+        );
+        assert!(
+            RequestPeers::from_bytes(&seen.data).is_ok(),
+            "the probe body must still be a RequestPeers the peer can auto-reply to"
+        );
+        b_probe.abort();
+    }
+
+    fn respond_peers_frame() -> DigMessage {
+        DigMessage::new(
+            chia_opcodes::RESPOND_PEERS,
+            None,
+            chia_protocol::RespondPeers::new(vec![])
+                .to_bytes()
+                .expect("encode")
+                .into(),
+        )
+    }
+
+    fn other_frame() -> DigMessage {
+        DigMessage::new(chia_opcodes::REQUEST_PEERS, None, Vec::new().into())
+    }
+
+    /// A reply from a DIFFERENT peer must not be read as this peer's liveness. The control frame
+    /// arrives afterwards so the test would fail — not hang — if the peer filter were dropped.
+    #[tokio::test]
+    async fn a_reply_from_another_peer_is_not_this_peer_s_liveness() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let me = PeerId::from([1u8; 32]);
+        let them = PeerId::from([2u8; 32]);
+
+        tx.send((them, respond_peers_frame())).expect("send");
+        tx.send((me, other_frame())).expect("send");
+        drop(tx);
+
+        assert!(
+            !await_respond_peers(&mut rx, me).await,
+            "only a RespondPeers from THIS peer counts; the stream then closed"
+        );
+    }
+
+    /// `Lagged` means the connection carried more traffic than this receiver drained — evidence of
+    /// life, not of death. The wait must continue and still see the reply queued behind it.
+    #[tokio::test]
+    async fn lag_is_liveness_neutral_and_the_wait_continues() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(2);
+        let me = PeerId::from([7u8; 32]);
+
+        // Overflow the buffer so the next `recv` yields `Lagged`, then queue the real reply.
+        for _ in 0..4 {
+            tx.send((me, other_frame())).expect("send");
+        }
+        tx.send((me, respond_peers_frame())).expect("send");
+
+        assert!(
+            await_respond_peers(&mut rx, me).await,
+            "a lagged receiver must keep waiting and still observe the reply"
+        );
+    }
+
+    /// A closed broadcast is service shutdown, not a peer failure — the caller breaks the loop
+    /// rather than tearing the peer down.
+    #[tokio::test]
+    async fn a_closed_broadcast_reports_shutdown_rather_than_liveness() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        drop(tx);
+        assert!(!await_respond_peers(&mut rx, PeerId::from([9u8; 32])).await);
     }
 }
