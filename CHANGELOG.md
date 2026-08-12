@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.23.1] - 2026-08-12
+
+### Testing
+- **sec-2391:** Prove one anomalous frame cannot tear down a peer link (#64)
+
 ## [0.23.0] - 2026-08-12
 
 ### Features
