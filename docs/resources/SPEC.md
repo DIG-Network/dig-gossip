@@ -36,7 +36,7 @@ The design is derived from Chia's production networking stack, primarily consume
 
 **`dig-peer-protocol`** ([crates.io](https://crates.io/crates/dig-peer-protocol)) — the sole owner of the peer link, and the path through which the client, TLS and DIG-extension surfaces are consumed:
 - **DIG peer link** — `DigLink` (WebSocket peer link with `send_message()`, `send_protocol_message()`, `request_infallible()`, `request_fallible()`, `from_websocket()`, `from_server_websocket()`), `LinkOptions`, `LinkError`.
-- **DIG wire envelope** — `DigMessage` (a `msg_type: u8` / `id: Option<u16>` / `data: Bytes` envelope, layout-identical to Chia's `Message` but with the discriminant left as a raw byte), `DigMessageType`, `Bytes`, and the opcode constants (`DIG_BAND_START`, `DIG_MESSAGE`, `HOLDINGS_ANNOUNCE`, `STORE_MELTED`, `ALL_DIG_OPCODES`, `is_dig_opcode`).
+- **DIG wire envelope** — `DigMessage` (a `msg_type: u8` / `id: Option<u16>` / `data: Bytes` envelope, layout-identical to Chia's `Message` but with the discriminant left as a raw byte), `DigMessageType`, `Bytes`, and the opcode constants (`DIG_BAND_START`, `DIG_MESSAGE`, `HOLDINGS_ANNOUNCE`, `STORE_MELTED`, `PROFILE_ROOT_ANNOUNCE`, `PROFILE_BODY_REQUEST`, `PROFILE_BODY`, `ALL_DIG_OPCODES`, `is_dig_opcode`).
 - **Introducer wire types** — `RegisterPeer`, `RegisterAck`, `RequestPeersIntroducer`, `RespondPeersIntroducer`.
 - **Opcode-keyed rate limiting** — `OpcodeRateLimiter`, `OpcodeRateLimits`, `Admission`.
 - **Re-exported Chia surface** — `ProtocolMessageTypes`, `ChiaProtocolMessage`, `TimestampedPeerInfo`, `Streamable`, `ChiaCertificate`, `NodeType`, `Network`, `Client`/`ClientState`, `Connector`, `RateLimit`, `load_ssl_cert`, `create_native_tls_connector`/`create_rustls_connector`, `ClientError`.
@@ -502,8 +502,9 @@ pub enum DigMessageType {
 
 The `200..=219` band is the **consensus** band (`DigMessageType` above, plus
 `RegisterPeer = 218` / `RegisterAck = 219`). The `220..=255` band is **free** for
-application protocols — directed (`DIG_MESSAGE = 220`) or broadcast
-(`STORE_MELTED = 221`, `HOLDINGS_ANNOUNCE = 222`).
+application protocols — directed (`DIG_MESSAGE = 220`, `PROFILE_BODY_REQUEST = 224`,
+`PROFILE_BODY = 225`) or broadcast (`STORE_MELTED = 221`, `HOLDINGS_ANNOUNCE = 222`,
+`PROFILE_ROOT_ANNOUNCE = 223`).
 
 #### 2.3.1 `DIG_MESSAGE = 220` — directed dig-message transport (WU6, epic #796)
 
@@ -725,6 +726,85 @@ fingerprint) under a fixed literal peer id + fixed changes, so CI fails on any d
 domain tag / `canonical_encode` / field order of this cross-repo wire contract. The
 SPKI→peer_id binding and the sign/verify behaviour (including the "sign with a foreign key,
 present the victim's SPKI" forgery rejection) are covered by behavioural tests.
+
+#### 2.3.5 `PROFILE_ROOT_ANNOUNCE = 223` / `PROFILE_BODY_REQUEST = 224` / `PROFILE_BODY = 225` — profile sync (#3014, epic #3008)
+
+A **dig-profile** is a DID singleton plus a dig-store whose contents are summarised by a
+sparse-merkle-tree **root**. Peers keep their view of a profile fresh with a three-message
+exchange carried on the ordinary gossip transport. `service::profile_sync` defines the wire;
+the canonical opcode values mirror `dig_peer_protocol::{PROFILE_ROOT_ANNOUNCE,
+PROFILE_BODY_REQUEST, PROFILE_BODY}`, which are the single definition.
+
+| Opcode | Shape | Body | Payload type |
+|---|---|---|---|
+| 223 `PROFILE_ROOT_ANNOUNCE` | public flood | `store_id[32] ‖ root[32]`, exactly `ENCODED_LEN` = 64 bytes | `ProfileRootRef` |
+| 224 `PROFILE_BODY_REQUEST` | directed | `store_id[32] ‖ root[32]`, exactly `ENCODED_LEN` = 64 bytes | `ProfileRootRef` |
+| 225 `PROFILE_BODY` | directed | `store_id[32] ‖ root[32] ‖ len[4, big-endian] ‖ body[len]` | `ProfileBody` |
+
+- **Dissemination.** `classify_broadcast(223) = Plumtree` (eager/lazy flood): a profile root is
+  public data addressed to everyone. `classify_broadcast(224) = classify_broadcast(225) =
+  Unicast`: a body is sent to the one peer that asked for it, never flooded. The exchange is
+  correlated by the `(store_id, root)` pair the 225 answer echoes, not by `DigMessage.id`, so
+  every frame carries `id = None`. Priority follows the shape: `MessagePriority::from_dig_type(223)
+  = Bulk` (a periodic public flood), while 224 and 225 take the `Normal` default so a body request
+  a user is waiting on never queues behind bulk flood traffic.
+- **223 is deliberately UNSIGNED, and a receiver MUST NOT reject it for lacking a signature.**
+  The authority for a profile root is the **on-chain** root, never the announcing peer: a
+  receiver compares any announced root against chain before trusting it. A forged announce
+  therefore costs an attacker at most one wasted `PROFILE_BODY_REQUEST` whose answer then fails
+  that compare, while requiring a signature would add a verification to the highest-volume
+  broadcast in the band and buy no additional guarantee. A receiver that demanded one would
+  silently drop the entire protocol, since no honest sender produces one. No code path in this
+  crate consults a signature for 223, and none may be added.
+- **dig-gossip NEVER parses a profile body.** `ProfileBody::body` is **opaque bytes** here —
+  exactly the discipline `DIG_MESSAGE = 220` already follows. This crate validates only the
+  FRAME: both hashes present, the declared `len` agreeing with the bytes actually carried (in
+  BOTH directions — a short read and trailing garbage are both refusals), and the whole frame
+  within `MAX_PROFILE_BODY_FRAME_BYTES`. Every semantic check — rehashing the body against
+  `root`, comparing that root against chain, canonicality, and any bound inside the body —
+  belongs to dig-node. A decoder here would put a parser for untrusted peer input in the
+  transport layer and duplicate a check that must exist downstream anyway.
+- **Frame bounds.** `ProfileRootRef::decode` accepts a slice ONLY at exactly `ENCODED_LEN` = 64:
+  a truncated or padded 223/224 frame is refused, never reinterpreted. `ProfileBody::decode`
+  refuses any frame over **`MAX_PROFILE_BODY_FRAME_BYTES` = 1 MiB**, and `frame_profile_body`
+  refuses to BUILD one, so this crate never emits a frame the receiving gate would drop. The
+  cap is taken from the protocol's own ceiling: it is exactly the `max_size` of Chia's
+  `default_settings` row, which the inbound gate applies to every frame before the DIG row is
+  consulted, and it sits far below `DigMessage::MAX_MESSAGE_SIZE` (16 MiB).
+  `MAX_PROFILE_BODY_BYTES` = `MAX_PROFILE_BODY_FRAME_BYTES − 68` is the largest body that fits.
+- **Inbound rate limits (CON-005) — load-bearing, not hygiene.** `DigRateLimiter::check` **fails
+  OPEN** for a 220-band opcode with no row, so an opcode added without one is bounded only by the
+  loose `default_settings` (100 frames/min, 1 MiB) — and 223 is a *broadcast* any internet host
+  may originate. All three opcodes therefore carry a DELIBERATE row, each `max_size` referencing
+  the enforced constant above rather than a literal, so the two cannot drift:
+  223 `frequency = 20`/min, `max_size = ENCODED_LEN` (64);
+  224 `frequency = 60`/min, `max_size = ENCODED_LEN` (64);
+  225 `frequency = 60`/min, `max_size = MAX_PROFILE_BODY_FRAME_BYTES` (1 MiB).
+  Because each decoder enforces the same bound the row declares, every frame this crate accepts
+  is provably within its limiter cap and is never hard-dropped.
+- **Penalty attribution (#1626/#1796).** 223 joins `STORE_MELTED` and `HOLDINGS_ANNOUNCE` in the
+  public-flood set: an over-cap **rate** rejection of a 223 is EXEMPT from the reputation penalty
+  (on a multi-hop flood the delivering connection is a forwarder, not the origin), while an
+  oversized 223 IS penalised (no honest relayer emits a frame larger than the enforced bound).
+  224 and 225 are directed, so neither exemption applies to them.
+
+**Public API (`dig_gossip::service::profile_sync`).**
+
+| Item | Behaviour |
+|------|---------|
+| `PROFILE_ROOT_ANNOUNCE` / `PROFILE_BODY_REQUEST` / `PROFILE_BODY` | The canonical opcodes 223 / 224 / 225. |
+| `ENCODED_LEN` | Exact wire length (64) of a `ProfileRootRef` — the 223 and 224 payload. |
+| `MAX_PROFILE_BODY_FRAME_BYTES` / `MAX_PROFILE_BODY_BYTES` | The enforced 225 frame cap (1 MiB) and the largest body that fits it. Cross-repo: dig-node MUST match. |
+| `ProfileRootRef { store_id, root }` + `::{encode,decode}` | The fixed 64-byte `store_id ‖ root` payload. `decode` refuses any other length. |
+| `ProfileBody { store_id, root, body }` + `::{encode,decode,encoded_len,fits_frame_cap}` | The 225 payload. `decode` refuses a truncated frame, a declared/actual length disagreement in either direction, and an over-cap frame. |
+| `frame_profile_root_announce(&ProfileRootRef) -> DigMessage` | Build the outbound opcode-223 broadcast frame (`id = None`). |
+| `frame_profile_body_request(&ProfileRootRef) -> DigMessage` | Build the outbound opcode-224 directed frame (`id = None`). |
+| `frame_profile_body(&ProfileBody) -> Option<DigMessage>` | Build the outbound opcode-225 directed frame; `None` when it would exceed the frame cap. |
+| `profile_root_announce_payload` / `profile_body_request_payload` / `profile_body_payload` | Inbound routing: lift + decode a frame of that exact opcode (else `None`). |
+| `is_profile_root_announce` / `is_profile_body_request` / `is_profile_body` | Recognise opcodes 223 / 224 / 225. |
+| `GossipHandle::send_frame(peer_id, DigMessage)` | Send an already-framed message to ONE peer — the directed counterpart of `broadcast`, used for 224/225. |
+| `GossipHandle::live_peer_ids() -> Vec<PeerId>` | The peers a directed frame can actually reach (live transport only, stub rows excluded). |
+
 
 ### 2.4 PeerConnection (DIG extension of `dig_peer_protocol::DigLink`)
 
