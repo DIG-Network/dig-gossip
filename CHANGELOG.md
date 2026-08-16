@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.24.0] - 2026-08-16
+
+### Features
+- **profile-sync:** Carry profile root-announce / body-request / body frames (223/224/225) (#65)
+
 ## [0.23.1] - 2026-08-12
 
 ### Testing
