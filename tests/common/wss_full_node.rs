@@ -185,8 +185,9 @@ pub enum HostileFrame {
 
     /// A frame whose opcode this build has no meaning for.
     ///
-    /// Opcode 223 is the next unallocated slot in the 220-255 DIG free band (this build knows
-    /// 220 `DigMessage`, 221 `StoreMelted`, 222 `HoldingsAnnounce`), so it is exactly what a peer
+    /// Opcode 226 is the next unallocated slot in the 220-255 DIG free band (this build knows
+    /// 220 `DigMessage`, 221 `StoreMelted`, 222 `HoldingsAnnounce`, and 223/224/225 profile-sync),
+    /// so it is exactly what a peer
     /// running a newer dig-node emits — the realistic case, not a synthetic one. The previous
     /// transport decoded through a closed enum, so this was a fatal decode error.
     UnknownOpcode,
@@ -200,7 +201,12 @@ pub enum HostileFrame {
 }
 
 /// The unallocated DIG free-band opcode used by [`HostileFrame::UnknownOpcode`].
-const UNALLOCATED_DIG_OPCODE: u8 = 223;
+///
+/// Moved 223 -> 226 when dig_ecosystem#3014 allocated 223/224/225 to profile sync. The
+/// `hostile_fixtures_still_have_the_property_they_are_named_for` guard is what caught it: this
+/// value MUST stay unallocated in both the DIG and Chia namespaces, or the tolerance tests above
+/// go vacuous while staying green.
+const UNALLOCATED_DIG_OPCODE: u8 = 226;
 
 impl HostileFrame {
     /// The exact wire bytes this frame puts on the socket.

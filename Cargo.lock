@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "dig-gossip"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "arti-client",
  "bincode 1.3.3",
@@ -1542,9 +1542,9 @@ dependencies = [
 
 [[package]]
 name = "dig-peer-protocol"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05ae7bfaf7d9535ef214ba53b019be888560d410b7472b3ad76a0ef07b62654b"
+checksum = "74638139daa4f8932be56a29897ad88a4582676f8bcefe931393df399b3cf8f9"
 dependencies = [
  "chia-protocol",
  "chia-sdk-client",

@@ -69,11 +69,19 @@ pub fn classify_broadcast(
         // all-peers floods: they disseminate like the other announce broadcasts,
         // terminating via the receiver's seen_set.
         crate::service::store_melted::STORE_MELTED
-        | crate::service::holdings_announce::HOLDINGS_ANNOUNCE => {
+        | crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+        // `ProfileRootAnnounce` (223, #3014) is likewise a public all-peers flood: it announces a
+        // profile-SMT root to everyone. It is unsigned by design — its authority is the on-chain
+        // root, which the receiver compares against — so it needs no signature to disseminate.
+        | crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE => {
             return BroadcastStrategy::Plumtree
         }
-        // A `DigMessage` (220) is a 1:1 directed frame (WU6), never broadcast.
-        crate::service::dig_message::DIG_MESSAGE => return BroadcastStrategy::Unicast,
+        // A `DigMessage` (220) is a 1:1 directed frame (WU6), never broadcast. The profile-body
+        // request/response pair (224/225, #3014) is likewise directed: a body is sent to the one
+        // peer that asked for it, never flooded.
+        crate::service::dig_message::DIG_MESSAGE
+        | crate::service::profile_sync::PROFILE_BODY_REQUEST
+        | crate::service::profile_sync::PROFILE_BODY => return BroadcastStrategy::Unicast,
         _ => {}
     }
 

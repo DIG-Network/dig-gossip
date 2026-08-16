@@ -138,7 +138,7 @@ impl InboundRateLimiter {
 
 /// Whether `msg_type` is a **public-flood** broadcast opcode: a message any internet host may
 /// originate and that disseminates to EVERY peer via Plumtree — `StoreMelted` = 221 (#1316) and
-/// `HoldingsAnnounce` = 222 (#1428).
+/// `HoldingsAnnounce` = 222 (#1428) and `ProfileRootAnnounce` = 223 (#3014).
 ///
 /// This is keyed by the very opcode constants the [`dig_extension_rate_limits_map`] rows use, and it
 /// is kept in lockstep with the canonical public-flood grouping in
@@ -152,6 +152,7 @@ pub(crate) fn is_public_flood_opcode(msg_type: u8) -> bool {
         msg_type,
         crate::service::store_melted::STORE_MELTED
             | crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+            | crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE
     )
 }
 
@@ -164,7 +165,7 @@ pub(crate) fn is_public_flood_opcode(msg_type: u8) -> bool {
 /// KIND of violation (#1796):
 ///
 /// - A **non-flood** opcode is always penalised on rejection (unchanged).
-/// - A **public-flood** opcode (221/222) is penalised ONLY when the frame is a SIZE/format violation
+/// - A **public-flood** opcode (221/222/223) is penalised ONLY when the frame is a SIZE/format violation
 ///   (`exceeds_dig_wire_max_size`). An over-cap RATE/frequency rejection of a legit-sized flood stays
 ///   EXEMPT: on a multi-hop public flood the delivering connection is a **forwarder, not the origin**,
 ///   so charging it for redistributing another host's over-cap flood would ban honest relayers by
@@ -188,7 +189,7 @@ pub(crate) fn rejected_frame_incurs_penalty(msg: &DigMessage) -> bool {
 /// [`dig_extension_rate_limits_map`] row declares — i.e. the rejection is a SIZE/format violation
 /// rather than a rate/frequency one. The row is the SINGLE SOURCE OF TRUTH for the bound (never a
 /// hardcoded literal); an opcode with no row cannot exceed a bound it doesn't have, so returns
-/// `false` (unreachable for 221/222 — the completeness guard pins their rows).
+/// `false` (unreachable for 221/222/223 — the completeness guard pins their rows).
 fn exceeds_dig_wire_max_size(msg: &DigMessage) -> bool {
     dig_extension_rate_limits_map()
         .get(&msg.msg_type)
@@ -284,6 +285,43 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
         RateLimit::new(
             20.0,
             crate::service::holdings_announce::MAX_ANNOUNCE_FRAME_BYTES as f64,
+            None,
+        ),
+    );
+    // #3014 — the three profile-sync opcodes (223/224/225, epic #3008). Each needs its OWN row:
+    // `DigRateLimiter::check` fails OPEN for a band opcode with no row, so an opcode added without
+    // one is bounded only by the loose `default_settings` — and 223 is a *broadcast* any internet
+    // host may originate. Every `max_size` below references the enforced constant in
+    // `service::profile_sync` (never a bare literal), so the limiter bound and the bound the decoder
+    // actually enforces cannot drift apart.
+    //
+    // - 223 `PROFILE_ROOT_ANNOUNCE`: a fixed 64-byte public flood, so `max_size` is exactly
+    //   `profile_sync::ENCODED_LEN` — `ProfileRootRef::decode` accepts nothing else, so every legit
+    //   announce is provably within the cap and never hard-dropped. `freq` 20/min matches the 222
+    //   holdings anchor: a profile root changes on user action, so steady state is minutes apart,
+    //   while 20/min still absorbs a burst of edits and caps a hostile connection 5x below the
+    //   100/min default. It is unsigned, so admitting one costs the receiver no verification — the
+    //   cost it bounds is the wasted `PROFILE_BODY_REQUEST` a forged announce can provoke.
+    // - 224 `PROFILE_BODY_REQUEST`: the same fixed 64 bytes, directed. `freq` 60/min — a request is
+    //   cheap for the receiver to answer only in aggregate, and one per second per connection is
+    //   ample for a peer catching up across several stores.
+    // - 225 `PROFILE_BODY`: `max_size` = `MAX_PROFILE_BODY_FRAME_BYTES` (1 MiB), the bound both
+    //   `ProfileBody::decode` and `frame_profile_body` enforce. `freq` 60/min pairs with the 224
+    //   row: a body arrives only in answer to a request this peer sent, so the request cap is the
+    //   real limiter and this one bounds an unsolicited flood of 1 MiB frames.
+    m.insert(
+        crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE,
+        RateLimit::new(20.0, crate::service::profile_sync::ENCODED_LEN as f64, None),
+    );
+    m.insert(
+        crate::service::profile_sync::PROFILE_BODY_REQUEST,
+        RateLimit::new(60.0, crate::service::profile_sync::ENCODED_LEN as f64, None),
+    );
+    m.insert(
+        crate::service::profile_sync::PROFILE_BODY,
+        RateLimit::new(
+            60.0,
+            crate::service::profile_sync::MAX_PROFILE_BODY_FRAME_BYTES as f64,
             None,
         ),
     );
@@ -401,20 +439,115 @@ mod tests {
         );
     }
 
-    /// #1626 — the public-flood exemption set is EXACTLY `StoreMelted` (221) and `HoldingsAnnounce`
-    /// (222), enumerated over the WHOLE opcode space so the classification can never silently widen
+    /// #3014 — each profile-sync opcode's `max_size` equals the frame bound
+    /// `service::profile_sync` actually ENFORCES, so a frame its decoder accepts is provably
+    /// within the limiter cap and is never hard-dropped. The rows reference those constants, so
+    /// this pins the tie rather than restating a literal.
+    #[test]
+    fn profile_sync_rows_tie_to_the_enforced_frame_bounds() {
+        use crate::service::profile_sync::{
+            ENCODED_LEN, MAX_PROFILE_BODY_FRAME_BYTES, PROFILE_BODY, PROFILE_BODY_REQUEST,
+            PROFILE_ROOT_ANNOUNCE,
+        };
+        let limits = dig_extension_rate_limits_map();
+        let row = |opcode: u8| {
+            limits
+                .get(&opcode)
+                .unwrap_or_else(|| panic!("opcode {opcode} has a DIG rate-limit row"))
+        };
+        assert_eq!(row(PROFILE_ROOT_ANNOUNCE).max_size, ENCODED_LEN as f64);
+        assert_eq!(row(PROFILE_BODY_REQUEST).max_size, ENCODED_LEN as f64);
+        assert_eq!(
+            row(PROFILE_BODY).max_size,
+            MAX_PROFILE_BODY_FRAME_BYTES as f64
+        );
+    }
+
+    /// The 223 row binds on the LIVE gate, not merely in the table: a 64-byte announce flood is
+    /// admitted 20 times (the row's frequency) and refused on the 21st. Without the row, 223 falls
+    /// through to the 100/min `default_settings` and the 21st is admitted — which is exactly the
+    /// fail-open this row exists to close, and what makes this test load-bearing.
+    #[test]
+    fn real_gate_bounds_profile_root_announce_223() {
+        let announce = || DigMessage {
+            msg_type: crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE,
+            id: None,
+            data: Bytes::new(vec![0u8; crate::service::profile_sync::ENCODED_LEN]),
+        };
+        let mut gate = InboundRateLimiter::new(1.0);
+        for i in 0..20 {
+            assert!(
+                gate.allows(&announce()),
+                "announce {i} within the 20/min cap must pass the REAL gate"
+            );
+        }
+        assert!(
+            !gate.allows(&announce()),
+            "the 21st 223 announce must be rejected by the REAL InboundRateLimiter::allows"
+        );
+    }
+
+    /// An oversized 223 is refused on SIZE by the live gate, well inside the frequency budget —
+    /// so the refusal is attributable to `max_size` and not to the flood cap above.
+    #[test]
+    fn real_gate_refuses_an_oversized_profile_root_announce() {
+        let mut gate = InboundRateLimiter::new(1.0);
+        let oversized = DigMessage {
+            msg_type: crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE,
+            id: None,
+            data: Bytes::new(vec![0u8; crate::service::profile_sync::ENCODED_LEN + 1]),
+        };
+        assert!(!gate.allows(&oversized));
+        assert!(
+            rejected_frame_incurs_penalty(&oversized),
+            "an oversized flood frame is origin-attributable and IS penalised (#1796)"
+        );
+    }
+
+    /// A 223 rejected for RATE is exempt from the reputation penalty (#1626): on a multi-hop
+    /// public flood the delivering connection is a forwarder, not the origin.
+    #[test]
+    fn rate_rejected_profile_root_announce_is_penalty_exempt() {
+        let legit = DigMessage {
+            msg_type: crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE,
+            id: None,
+            data: Bytes::new(vec![0u8; crate::service::profile_sync::ENCODED_LEN]),
+        };
+        assert!(!rejected_frame_incurs_penalty(&legit));
+    }
+
+    /// The DIRECTED profile opcodes (224/225) are NOT floods, so an over-cap rejection of one IS
+    /// penalised — the forwarder-not-origin excuse does not apply to a 1:1 frame.
+    #[test]
+    fn directed_profile_opcodes_are_not_flood_exempt() {
+        for opcode in [
+            crate::service::profile_sync::PROFILE_BODY_REQUEST,
+            crate::service::profile_sync::PROFILE_BODY,
+        ] {
+            assert!(!is_public_flood_opcode(opcode));
+            assert!(rejected_frame_incurs_penalty(&DigMessage {
+                msg_type: opcode,
+                id: None,
+                data: Bytes::new(vec![0u8; 8]),
+            }));
+        }
+    }
+
+    /// #1626 — the public-flood exemption set is EXACTLY `StoreMelted` (221), `HoldingsAnnounce`
+    /// (222) and `ProfileRootAnnounce` (223, #3014), enumerated over the WHOLE opcode space so the classification can never silently widen
     /// away from the canonical
     /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping.
     ///
-    /// Every one of the 256 opcodes is asked directly. There is deliberately no decode filter: 221
-    /// and 222 have no `ProtocolMessageTypes` variant, so filtering on a successful decode would
-    /// skip exactly the two opcodes this test is named after and leave it asserting the empty set.
+    /// Every one of the 256 opcodes is asked directly. There is deliberately no decode filter: the
+    /// DIG band has no `ProtocolMessageTypes` variants, so filtering on a successful decode would
+    /// skip exactly the opcodes this test is named after and leave it asserting the empty set.
     #[test]
-    fn public_flood_opcode_set_is_exactly_221_and_222() {
+    fn public_flood_opcode_set_is_exactly_221_222_and_223() {
         let mut flood = Vec::new();
         for opcode in 0u8..=u8::MAX {
             let expected = opcode == crate::service::store_melted::STORE_MELTED
-                || opcode == crate::service::holdings_announce::HOLDINGS_ANNOUNCE;
+                || opcode == crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+                || opcode == crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE;
             assert_eq!(
                 is_public_flood_opcode(opcode),
                 expected,
@@ -430,7 +563,8 @@ mod tests {
             flood,
             vec![
                 crate::service::store_melted::STORE_MELTED,
-                crate::service::holdings_announce::HOLDINGS_ANNOUNCE
+                crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
+                crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE
             ]
         );
     }

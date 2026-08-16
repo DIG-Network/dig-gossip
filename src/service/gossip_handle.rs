@@ -448,6 +448,54 @@ impl GossipHandle {
         Ok(())
     }
 
+    /// Send an already-framed [`DigMessage`] to ONE peer.
+    ///
+    /// The directed counterpart of [`broadcast`](Self::broadcast), for opcodes whose payload a
+    /// caller has framed itself — the profile-sync request/response pair (224/225,
+    /// [`crate::service::profile_sync`]) is the first user. The frame is carried verbatim: this
+    /// crate is the transport and never inspects a directed payload.
+    ///
+    /// Use [`send_dig`](Self::send_dig) for a consensus-band ([`DigMessageType`]) opcode, whose
+    /// routing strategy must be checked, and [`send_dig_message`](Self::send_dig_message) for an
+    /// opcode-220 envelope.
+    ///
+    /// # Errors
+    ///
+    /// - [`GossipError::ServiceNotStarted`] — service not running.
+    /// - [`GossipError::PeerBanned`] — the target peer is banned.
+    /// - [`GossipError::PeerNotConnected`] — unknown `peer_id`.
+    /// - [`GossipError::ClientError`] — WebSocket send failure.
+    pub async fn send_frame(&self, peer_id: PeerId, msg: DigMessage) -> Result<(), GossipError> {
+        self.send_directed_message(peer_id, msg).await
+    }
+
+    /// The [`PeerId`]s of every peer this node currently holds a LIVE transport to — the set a
+    /// directed frame ([`send_frame`](Self::send_frame)) can actually reach.
+    ///
+    /// Excludes test-only stub rows, which have no transport, so a caller choosing a peer to ask
+    /// for a profile body (opcode 224) never picks one whose send is guaranteed to fail. Order is
+    /// unspecified and the snapshot is immediately stale — a peer may drop between this call and
+    /// the send, which the send's own [`GossipError::PeerNotConnected`] reports.
+    #[must_use]
+    pub fn live_peer_ids(&self) -> Vec<PeerId> {
+        self.inner
+            .peers
+            .lock()
+            .map(|guard| {
+                guard
+                    .iter()
+                    .filter(|(_, slot)| {
+                        matches!(
+                            slot,
+                            super::state::PeerSlot::Live(_) | super::state::PeerSlot::Nat(_)
+                        )
+                    })
+                    .map(|(peer_id, _)| *peer_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     // ------------------------------------------------------------------
     // dig-message directed seam (opcode 220 — WU6, epic #796, Wave A)
     // ------------------------------------------------------------------

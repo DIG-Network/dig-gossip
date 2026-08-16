@@ -84,6 +84,12 @@ impl MessagePriority {
             // broadcast (#1428). This is the ONLY path that classifies it: upstream
             // `ProtocolMessageTypes` has no `HoldingsAnnounce` variant (dig_ecosystem#2228).
             crate::service::holdings_announce::HOLDINGS_ANNOUNCE => Self::Bulk,
+            // ProfileRootAnnounce (opcode 223) → Bulk: a fixed 64-byte public broadcast that
+            // changes only on user action (#3014). Like 221/222 this raw-opcode path is the ONLY
+            // one that can classify it — upstream `ProtocolMessageTypes` has no variant for the
+            // DIG band. The DIRECTED profile opcodes (224/225) take the `Normal` default: a body
+            // request is a user waiting on an answer, so it must not queue behind bulk floods.
+            crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE => Self::Bulk,
             // Default
             _ => Self::Normal,
         }

@@ -14,4 +14,5 @@ pub mod gossip_handle;
 pub mod gossip_service;
 pub mod holdings_announce;
 pub mod peer_pool;
+pub mod profile_sync;
 pub mod store_melted;
