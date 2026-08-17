@@ -2123,9 +2123,9 @@ pub struct PlumtreeState {
 **Broadcast algorithm (eager push + lazy push):**
 
 ```
-broadcast(message: Message, origin: Option<PeerId>):
+fan_out(message: Message, origin: Option<PeerId>, source: Local | Forwarded):
   1. hash = SHA256(message.msg_type || message.data)
-  2. if seen_set.contains(hash) → return 0 (already seen)
+  2. if source == Forwarded and seen_set.contains(hash) → return 0 (already seen)
   3. seen_set.insert(hash)
   4. Deliver to local inbound channel (application layer)
   5. For each peer in eager_peers (excluding origin):
@@ -2133,8 +2133,24 @@ broadcast(message: Message, origin: Option<PeerId>):
   6. For each peer in lazy_peers (excluding origin):
        peer.send_raw(LazyAnnounce { hash, msg_type })  // Hash-only
   7. If relay connected: relay.broadcast(message, exclude_list)
-  8. Return count sent
+  8. Return the number of peers actually sent to
 ```
+
+**Message origin (normative).** The seen set suppresses a message the node has already
+disseminated. That is correct ONLY for a `Forwarded` message — one received from a peer and
+relayed onward, where a repeat is a loop. A `Local` message is produced by this node and describes
+its own state, so a periodic re-announce of unchanged state is byte-identical by design and MUST
+NOT be suppressed: the peers that need it are exactly those that were not connected when it was
+first announced. `broadcast()` disseminates `Forwarded` messages; `broadcast_local()`
+disseminates `Local` ones. Both MUST insert the hash (step 3), so a `Local` message echoed back by
+a peer and offered to `broadcast()` is still suppressed and the epidemic still terminates.
+
+**Return value (normative).** The value returned is a DELIVERY count: a peer is counted only when
+this call placed the frame on that peer's transport. A connected peer with no wired transport for
+this fan-out — a `dig-nat` mux peer, or a Plumtree-lazy peer while step 6's `LazyAnnounce` producer
+is unimplemented — MUST NOT be counted, and is instead reported by
+`GossipHandle::unreachable_peer_count()`. A count that includes peers sent nothing is
+indistinguishable from a healthy broadcast and hides exactly the failures it should surface.
 
 **Lock scope (audit #179 LOW finding 5 — normative, optimization-class):** the classification
 step (building the eager/lazy peer lists in step 5/6 above, which requires locking both the peer
