@@ -115,6 +115,42 @@ fn deferred_dispatch_error(strategy: RoutingStrategy, msg_type: DigMessageType) 
     }
 }
 
+/// Who produced the message a fan-out is disseminating — the ONLY thing that decides whether the
+/// seen set may suppress it (dig_ecosystem#3061).
+///
+/// The seen set answers "have I put these exact bytes on the wire before?". For a
+/// [`Forwarded`](MessageOrigin::Forwarded) message that is the right question: re-forwarding is a
+/// loop, and suppressing it is what keeps gossip from becoming a storm. For a
+/// [`Local`](MessageOrigin::Local) one it is the wrong question — a re-announce of unchanged state is
+/// byte-identical by design, and the peers that need it are precisely the ones that were not
+/// connected when it was first said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageOrigin {
+    /// This node produced the message; a repeat is intentional and is never suppressed.
+    Local,
+    /// The message arrived from a peer and is being relayed onward; a repeat is a loop.
+    Forwarded,
+}
+
+/// Connected peers a fan-out could NOT deliver to, split by reason.
+///
+/// Kept separate from the delivery count so neither can be mistaken for the other: the count a
+/// broadcast returns is what went on a wire, and these are the peers that heard nothing despite
+/// being connected (dig_ecosystem#3062 / #3063).
+#[derive(Debug, Default, Clone, Copy)]
+struct UnreachablePeers {
+    /// `dig-nat` mux peers — no gossip frame codec / receive loop exists over that transport here.
+    nat: usize,
+    /// Plumtree-lazy peers — SPEC §8.1's hash-only `LazyAnnounce` is not yet produced.
+    lazy: usize,
+}
+
+impl UnreachablePeers {
+    fn total(self) -> usize {
+        self.nat + self.lazy
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GossipHandle — the user-facing façade
 // ---------------------------------------------------------------------------
@@ -221,11 +257,22 @@ impl GossipHandle {
     // Messaging — broadcast / send / request
     // ------------------------------------------------------------------
 
-    /// Broadcast a wire [`DigMessage`] to every connected peer (optionally excluding one).
+    /// Forward a wire [`DigMessage`] to every reachable peer (optionally excluding one).
     ///
-    /// Returns the number of peers that **would** receive the message. With zero connected
-    /// peers the return value is `Ok(0)` — this is explicitly **not** an error (API-002
-    /// implementation notes: "broadcast with zero connected peers should return `Ok(0)`").
+    /// This is the **forwarding** path: a message that arrived from a peer and is being relayed
+    /// onward. It is seen-set deduplicated — a message this node has already broadcast or forwarded
+    /// is dropped with `Ok(0)`, which is what stops a gossip loop becoming a broadcast storm.
+    ///
+    /// **Use [`broadcast_local`](Self::broadcast_local) for a message this node ORIGINATES**, such
+    /// as a periodic re-announce of unchanged state. A locally-originated message is byte-identical
+    /// on every repeat, so the dedup here would suppress it forever and a late-joining peer could
+    /// never learn it (dig_ecosystem#3061).
+    ///
+    /// Returns the number of peers the message was **actually sent to** (dig_ecosystem#3063) — see
+    /// [`unreachable_peer_count`](Self::unreachable_peer_count) for the connected-but-unreachable
+    /// remainder. With zero connected peers the return value is `Ok(0)` — this is explicitly **not**
+    /// an error (API-002 implementation notes: "broadcast with zero connected peers should return
+    /// `Ok(0)`").
     ///
     /// # Wire behaviour (CON-001+ / CON-006)
     ///
@@ -252,11 +299,49 @@ impl GossipHandle {
         message: DigMessage,
         exclude: Option<PeerId>,
     ) -> Result<usize, GossipError> {
+        self.fan_out(message, exclude, MessageOrigin::Forwarded)
+            .await
+    }
+
+    /// Broadcast a message this node **originates** — never suppressed by the seen set.
+    ///
+    /// A locally-originated announcement describes this node's own state (the profile root behind
+    /// opcode 223, a holdings announce), so a repeat of unchanged state is byte-identical to its
+    /// predecessor. Deduplicating on the message bytes cannot tell *"I already told these peers"*
+    /// from *"I must tell the peers who were not here then"*, so the seen set — correct as a loop
+    /// suppressor for FORWARDED gossip — silently made every re-announce a no-op for the life of the
+    /// process (dig_ecosystem#3061). Measured live: a startup announce made at zero peers poisoned
+    /// the entry, and no peer that connected afterwards could ever learn the root.
+    ///
+    /// The hash is still RECORDED, so the same message arriving back from a peer and offered to the
+    /// forwarding [`broadcast`](Self::broadcast) is still dropped. Only this node's own repeat is
+    /// exempt, and only because this node is the authority on when to say it again — periodic
+    /// re-announce rate is the caller's decision, not the dedup's.
+    ///
+    /// Returns the number of peers actually sent to; errors are [`broadcast`](Self::broadcast)'s.
+    pub async fn broadcast_local(
+        &self,
+        message: DigMessage,
+        exclude: Option<PeerId>,
+    ) -> Result<usize, GossipError> {
+        self.fan_out(message, exclude, MessageOrigin::Local).await
+    }
+
+    /// The shared fan-out both broadcast paths run; `origin` decides only whether an already-seen
+    /// message is suppressed (see [`MessageOrigin`]).
+    async fn fan_out(
+        &self,
+        message: DigMessage,
+        exclude: Option<PeerId>,
+        origin: MessageOrigin,
+    ) -> Result<usize, GossipError> {
         self.require_running()?;
         let wire_len = message_wire_len(&message);
 
         // -- INT-001: Plumtree dedup via seen set --
-        // SPEC §8.1 step 2: "if seen_set.contains(hash) → return 0"
+        // SPEC §8.1 step 2: "if seen_set.contains(hash) → return 0" — for a FORWARDED message. A
+        // locally-originated one records the hash (arming the loop guard against its own echo) but is
+        // never suppressed by it (#3061).
         let msg_hash =
             crate::gossip::seen_set::SeenSet::compute_hash(message.msg_type, &message.data);
         {
@@ -265,7 +350,7 @@ impl GossipHandle {
                 .seen_messages
                 .lock()
                 .map_err(|_| GossipError::ChannelClosed)?;
-            if seen.contains(&msg_hash) {
+            if origin == MessageOrigin::Forwarded && seen.contains(&msg_hash) {
                 return Ok(0); // already seen — dedup
             }
             seen.put(msg_hash, ());
@@ -284,10 +369,10 @@ impl GossipHandle {
         // -- INT-001: Route through Plumtree eager/lazy sets (SPEC §8.1) --
         // Eager peers get full message. Lazy peers get hash-only (LazyAnnounce).
         // Stubs (test-only) always get counted as delivered.
-        let (stub_deliveries, eager_jobs, lazy_pids): (
+        let (stub_deliveries, eager_jobs, unreachable): (
             usize,
             Vec<(DigLink, PeerId, u64)>,
-            Vec<PeerId>,
+            UnreachablePeers,
         ) = {
             let peers = self
                 .inner
@@ -302,7 +387,7 @@ impl GossipHandle {
 
             let mut stub_n = 0usize;
             let mut eager = Vec::new();
-            let mut lazy = Vec::new();
+            let mut unreachable = UnreachablePeers::default();
 
             for (pid, slot) in peers.iter() {
                 if exclude.as_ref() == Some(pid) {
@@ -316,18 +401,23 @@ impl GossipHandle {
                             // Eager: full message (SPEC §8.1 step 5)
                             eager.push((l.peer.clone(), *pid, wire_len));
                         } else {
-                            // Lazy: hash-only announcement (SPEC §8.1 step 6)
-                            lazy.push(*pid);
+                            // Lazy: SPEC §8.1 step 6 prescribes a hash-only LazyAnnounce, which this
+                            // crate does not yet put on the wire — so a lazy peer receives NOTHING
+                            // and is counted as unreachable, never as delivered (#3063).
+                            unreachable.lazy += 1;
                         }
                     }
                     // POOL-*: a `dig-nat`-dialed pool member has a multiplexed transport but its
                     // gossip message loop over that mux lands with the dig-node integration phase, so
-                    // `broadcast` (the WebSocket-`DigLink` fan-out) does not push to it yet. It still
-                    // COUNTS as a connected peer everywhere else (peer_count / stats / pool).
-                    PeerSlot::Nat(_) => {}
+                    // `broadcast` (the WebSocket-`DigLink` fan-out) cannot push to it: there is no
+                    // frame codec or receive loop over the mux in this crate to push INTO. It still
+                    // COUNTS as a connected peer everywhere else (peer_count / stats / pool), which is
+                    // exactly why the fan-out must report it as unreachable rather than delivered
+                    // (#3062 / #3063).
+                    PeerSlot::Nat(_) => unreachable.nat += 1,
                 }
             }
-            (stub_n, eager, lazy)
+            (stub_n, eager, unreachable)
         };
 
         // Count stubs as delivered (test compatibility)
@@ -347,13 +437,21 @@ impl GossipHandle {
             record_live_peer_outbound_bytes(&self.inner, *pid, *wl);
         }
 
-        // INT-001: Lazy push — for now, lazy peers don't get anything
-        // (LazyAnnounce wire sending will be added when the full Plumtree
-        // message dispatch is integrated). The count still reflects delivery.
-        // TODO(INT-001): Send LazyAnnounce { hash, msg_type } to lazy peers.
-        let _lazy_count = lazy_pids.len();
+        // A peer this fan-out could not reach is a silence the caller must be able to see: it looks
+        // identical to a healthy broadcast in the delivery count alone (#3062 kept #3063 invisible
+        // and vice versa). Warn rather than stay quiet, so a live node reporting "announced to 1
+        // peer" also says which peers heard nothing.
+        if unreachable.total() > 0 {
+            tracing::warn!(
+                delivered = stub_deliveries + eager_jobs.len(),
+                unreachable_nat = unreachable.nat,
+                unreachable_lazy = unreachable.lazy,
+                msg_type = message.msg_type,
+                "gossip broadcast could not reach every connected peer"
+            );
+        }
 
-        Ok(stub_deliveries + eager_jobs.len() + lazy_pids.len())
+        Ok(stub_deliveries + eager_jobs.len())
     }
 
     /// Type-safe broadcast: serialize `body` via [`Streamable`] then delegate to [`Self::broadcast`].
@@ -783,6 +881,34 @@ impl GossipHandle {
     pub async fn connected_peers(&self) -> Vec<PeerConnection> {
         let _ = self.require_running();
         Vec::new()
+    }
+
+    /// How many connected peers a [`broadcast`](Self::broadcast) currently CANNOT reach.
+    ///
+    /// A caller comparing this against [`peer_count`](Self::peer_count) and the value a broadcast
+    /// returns can tell three states apart that a delivery count alone conflates: nobody is
+    /// connected, everybody was reached, and peers are connected but silent. The last one is the
+    /// live configuration that hid dig_ecosystem#3061/#3062 — a node reporting a successful announce
+    /// while the only peer that could act on it received nothing.
+    ///
+    /// Counts `dig-nat` mux peers (no gossip transport wired over the mux in this crate) and
+    /// Plumtree-lazy peers (no `LazyAnnounce` producer yet). Returns 0 if the peer map is poisoned.
+    #[must_use]
+    pub fn unreachable_peer_count(&self) -> usize {
+        let Ok(peers) = self.inner.peers.lock() else {
+            return 0;
+        };
+        let Ok(plumtree) = self.inner.plumtree.lock() else {
+            return 0;
+        };
+        peers
+            .iter()
+            .filter(|(pid, slot)| match slot {
+                PeerSlot::Nat(_) => true,
+                PeerSlot::Live(_) => !plumtree.is_eager(pid),
+                PeerSlot::Stub(_) => false,
+            })
+            .count()
     }
 
     pub async fn peer_count(&self) -> usize {
