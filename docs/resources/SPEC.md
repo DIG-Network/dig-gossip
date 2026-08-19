@@ -1585,8 +1585,11 @@ merely because `peers.contains_key(peer_id)`.
 Instead the freshly-authenticated inbound session is admitted and **supersedes** the incumbent slot:
 `negotiate_inbound_over_ws` inserts the new `LiveSlot` over the existing key (`HashMap::insert`,
 newest-wins) and, after releasing the `peers` lock, MUST tear down the displaced slot — abort its
-keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). Rationale +
-invariants:
+keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). This
+teardown duty is the POOL's only for a slot the pool owns; a relayed slot registered by liveness
+handle through `adopt_relayed_inbound_handle` is exempt and its superseded session MUST be closed by
+the CALLER instead — see the supersede obligation in §5.2 (#1871), which is the sole exemption from
+the requirement stated here. Rationale + invariants:
 
 1. **Cert-gated displacement.** The `peer_id` at the guard is derived from the **completed, verified**
    mTLS handshake (`SHA-256` of the captured client-cert SPKI, §5.3). Only the holder of that identity's
