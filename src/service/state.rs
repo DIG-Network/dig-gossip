@@ -215,14 +215,37 @@ pub(crate) struct DigBanEntry {
 /// transport is wired by the dig-node integration phase. The slot exists so a `dig-nat`-dialed peer
 /// COUNTS as a connected pool member for `peer_count` / stats / dedup / churn from the moment it
 /// connects.
-pub(crate) struct NatSlot {
-    /// The verified, multiplexed connection (owns the yamux session for stream I/O).
+/// What a [`NatSlot`] holds of the peer's `dig-nat` transport.
+///
+/// The slot never SENDS over the transport — the gossip message loop for a `dig-nat` peer is wired in
+/// dig-node, not here — so the only thing it ever asks the transport is *"is this peer still up?"*,
+/// for the #1703 departed-peer reaper. That question has two honest answers depending on who owns the
+/// session, and this enum is that distinction.
+pub(crate) enum NatTransport {
+    /// The pool OWNS the connection. Dropping the slot drops the mux session's sole `cmd_tx`, so the
+    /// driver self-terminates and the transport closes with the slot (#1717).
+    Owned(Box<crate::nat::NatPeerConnection>),
+    /// The pool only OBSERVES liveness; the CALLER owns the session and keeps serving the peer on it
+    /// (#1871 — dig-node's relayed L7 serve loop needs `&mut PeerSession`, which is not `Clone`).
     ///
-    /// Retained so the dig-node integration phase can open gossip channels + range streams on it; the
-    /// gossip message loop over this mux is not wired in this crate yet, so the field is held-not-read
-    /// here (it keeps the connection — and thus the peer's pool membership — alive).
-    #[allow(dead_code)]
-    pub conn: crate::nat::NatPeerConnection,
+    /// Dropping this slot therefore does NOT tear the transport down: teardown is the owner's, which
+    /// is correct — the pool must not hang up on a peer another task is actively serving.
+    Observed(dig_nat::ClosedHandle),
+}
+
+impl NatTransport {
+    /// Whether the peer's multiplexed transport has closed — one atomic load either way, never awaits.
+    pub(crate) fn is_closed(&self) -> bool {
+        match self {
+            NatTransport::Owned(conn) => conn.is_transport_closed(),
+            NatTransport::Observed(closed) => closed.is_closed(),
+        }
+    }
+}
+
+pub(crate) struct NatSlot {
+    /// How this slot observes the peer's transport — see [`NatTransport`].
+    pub conn: NatTransport,
     /// Remote endpoint (peer, or relay for a relayed link).
     pub remote: SocketAddr,
     /// Direction — `true` when THIS node dialed the peer (the pool auto-dial and every manual
@@ -458,7 +481,7 @@ pub(crate) fn is_relayed(slot: &PeerSlot) -> bool {
 /// * [`PeerSlot::Stub`] — a test-only row with no transport; nothing to reap.
 fn slot_is_departed(slot: &PeerSlot) -> bool {
     match slot {
-        PeerSlot::Nat(n) => n.conn.is_transport_closed(),
+        PeerSlot::Nat(n) => n.conn.is_closed(),
         PeerSlot::Live(_) | PeerSlot::Stub(_) => false,
     }
 }
@@ -1620,7 +1643,7 @@ mod nat_slot_teardown_tests {
             session,
         };
         let slot = PeerSlot::Nat(NatSlot {
-            conn: crate::nat::NatPeerConnection::new(inner),
+            conn: NatTransport::Owned(Box::new(crate::nat::NatPeerConnection::new(inner))),
             remote,
             is_outbound: true,
             method: dig_nat::TraversalKind::Direct,
@@ -1699,7 +1722,7 @@ mod connected_pool_keys_tests {
             session: dig_nat::PeerSession::client(client_io),
         };
         let slot = PeerSlot::Nat(NatSlot {
-            conn: crate::nat::NatPeerConnection::new(inner),
+            conn: NatTransport::Owned(Box::new(crate::nat::NatPeerConnection::new(inner))),
             remote: relay_endpoint,
             is_outbound: true,
             method: dig_nat::TraversalKind::Relayed,

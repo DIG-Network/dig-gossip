@@ -1528,7 +1528,7 @@ impl GossipHandle {
             peers.insert(
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
-                    conn,
+                    conn: super::state::NatTransport::Owned(Box::new(conn)),
                     remote,
                     is_outbound: true,
                     method,
@@ -1647,11 +1647,75 @@ impl GossipHandle {
         &self,
         conn: crate::nat::NatPeerConnection,
     ) -> Result<PeerId, GossipError> {
-        self.require_running()?;
         let peer_id = conn.peer_id();
         let remote = conn.remote_addr();
         let method = conn.method();
+        self.adopt_relayed_inbound_inner(
+            peer_id,
+            remote,
+            method,
+            super::state::NatTransport::Owned(Box::new(conn)),
+        )
+        .await
+    }
 
+    /// Register an authenticated relayed circuit whose session the CALLER keeps (**#1871**) — the
+    /// same admission as [`Self::adopt_relayed_inbound`], taking a cheap liveness observer instead of
+    /// the connection.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::adopt_relayed_inbound`] takes the connection BY VALUE, and
+    /// [`PeerSession`](dig_nat::PeerSession) is not `Clone` — it owns the inbound-stream receiver. A
+    /// node that is SERVING the relayed peer (dig-node's L7 peer-RPC loop needs `&mut PeerSession`)
+    /// therefore cannot call it without giving the session up: it would buy the connection count and
+    /// stop answering the peer. Because that trade is unacceptable, the call was simply never made,
+    /// and a NAT'd peer — most people — formed zero COUNTED connections while being served fine.
+    ///
+    /// The pool never sends over a relayed slot's transport; the one thing it asks is whether the peer
+    /// is still up, for the #1703 departed-peer reaper. A
+    /// [`ClosedHandle`](dig_nat::ClosedHandle) answers exactly that, is `Clone`, and costs one atomic
+    /// load — so ownership stays with the server loop and the peer is both COUNTED and STILL SERVED.
+    ///
+    /// # Caller obligations
+    ///
+    /// * `peer_id` MUST come from the completed mTLS handshake (as in [`Self::adopt_relayed_inbound`] —
+    ///   the guarantee is the caller's, not the type's).
+    /// * `remote` is the RELAY endpoint the circuit arrived over, never a peer address; it is reported
+    ///   as the session address and is never dialed (the slot is [`TraversalKind::Relayed`]).
+    /// * `closed` MUST observe the session serving THIS peer
+    ///   ([`PeerSession::closed_handle`](dig_nat::PeerSession::closed_handle)). It is the slot's only
+    ///   departure signal: a handle for a different (or already-dead) session makes the peer reap
+    ///   immediately or never.
+    /// * Teardown stays the CALLER's. Unlike the by-value path, dropping this slot does not close the
+    ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving.
+    ///
+    /// Admission, budgets, supersede semantics and errors are identical to
+    /// [`Self::adopt_relayed_inbound`].
+    pub async fn adopt_relayed_inbound_handle(
+        &self,
+        peer_id: PeerId,
+        remote: std::net::SocketAddr,
+        closed: dig_nat::ClosedHandle,
+    ) -> Result<PeerId, GossipError> {
+        self.adopt_relayed_inbound_inner(
+            peer_id,
+            remote,
+            dig_nat::TraversalKind::Relayed,
+            super::state::NatTransport::Observed(closed),
+        )
+        .await
+    }
+
+    /// The ONE admission path shared by both relayed-inbound entry points, so the two can never drift.
+    async fn adopt_relayed_inbound_inner(
+        &self,
+        peer_id: PeerId,
+        remote: std::net::SocketAddr,
+        method: dig_nat::TraversalKind,
+        transport: super::state::NatTransport,
+    ) -> Result<PeerId, GossipError> {
+        self.require_running()?;
         if !matches!(method, dig_nat::TraversalKind::Relayed) {
             return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
                 format!("adopt_relayed_inbound: not a relayed circuit ({method:?})"),
@@ -1725,7 +1789,7 @@ impl GossipHandle {
             peers.insert(
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
-                    conn,
+                    conn: transport,
                     remote,
                     is_outbound: false,
                     method,
