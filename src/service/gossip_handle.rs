@@ -1680,7 +1680,9 @@ impl GossipHandle {
     /// # Caller obligations
     ///
     /// * `peer_id` MUST come from the completed mTLS handshake (as in [`Self::adopt_relayed_inbound`] —
-    ///   the guarantee is the caller's, not the type's).
+    ///   the guarantee is the caller's, not the type's). `dig-nat` reports it as a
+    ///   [`dig_nat::PeerId`]; the pool keys on the gossip [`PeerId`] (chia `Bytes32`) over the same 32
+    ///   bytes — convert with `PeerId::from(*nat_peer_id.as_bytes())`.
     /// * `remote` is the RELAY endpoint the circuit arrived over, never a peer address; it is reported
     ///   as the session address and is never dialed (the slot is [`TraversalKind::Relayed`]).
     /// * `closed` MUST observe the session serving THIS peer
