@@ -1718,6 +1718,12 @@ impl GossipHandle {
     ///   immediately or never.
     /// * Teardown stays the CALLER's. Unlike the by-value path, dropping this slot does not close the
     ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving.
+    /// * **Supersede is teardown too, and the pool cannot perform it.** A later circuit for the same
+    ///   `peer_id` displaces this slot newest-wins, and dropping an observer closes nothing — so the
+    ///   displaced session keeps running, un-counted and un-notified, unless the CALLER closes it. A
+    ///   caller that may adopt the same peer twice MUST therefore track the session it registered and
+    ///   close the previous one itself. The pool cannot do this for it: a `ClosedHandle` observes a
+    ///   session, it does not control one.
     ///
     /// Admission, budgets, supersede semantics and errors are identical to
     /// [`Self::adopt_relayed_inbound`].
@@ -1861,9 +1867,17 @@ impl GossipHandle {
         };
 
         // Newest-wins supersede. The admission above refuses a circuit that would displace a
-        // non-relayed slot, so anything displaced here is a `dig-nat` relayed slot: it owns no
-        // keepalive task and its transport closes when the slot drops. The #1691 ghost-keepalive
-        // teardown `adopt_nat_connection` performs therefore has nothing to do on this path.
+        // non-relayed slot, so anything displaced here is a `dig-nat` relayed slot, which owns no
+        // keepalive task — the #1691 ghost-keepalive teardown `adopt_nat_connection` performs has
+        // nothing to do on this path.
+        //
+        // What this drop does to the transport depends on which arm the displaced slot held, and for
+        // one of them it does NOTHING. An `Owned` slot drops the mux session's sole `cmd_tx` and the
+        // transport closes with it (#1717). An `Observed` slot holds only a `ClosedHandle` and is
+        // DEFINED not to tear down (#1871), so the displaced session survives this drop with its
+        // owner un-notified: the caller keeps serving a peer the pool no longer counts. See the
+        // supersede obligation on `adopt_relayed_inbound_handle` — closing it is the caller's,
+        // because the pool holds nothing that could.
         drop(superseded);
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).

@@ -2008,6 +2008,13 @@ is exactly what a `ClosedHandle` answers. Normatively:
 - Transport TEARDOWN follows OWNERSHIP. Dropping a slot registered by value closes the mux; dropping a
   slot registered by handle MUST NOT, because the caller still owns and serves the session — the pool
   MUST NOT hang up on a peer another task is serving.
+- **SUPERSEDE teardown is the CALLER's for a handle-registered slot.** The newest-wins rule of §5.2.3
+  displaces the incumbent slot, and for a by-handle slot that displacement closes NOTHING: the pool
+  holds a `ClosedHandle`, which observes a session and cannot control one. The displaced session
+  therefore keeps running, un-counted and with its owner un-notified. A caller that may register the
+  same `peer_id` more than once MUST track the session it registered and close the previous one
+  itself. This is the ONE point where §5.2.3's "the pool MUST tear down the displaced slot" does not
+  hold, and it follows from the same ownership rule as the bullet above rather than contradicting it.
 
 The registration is normatively:
 
