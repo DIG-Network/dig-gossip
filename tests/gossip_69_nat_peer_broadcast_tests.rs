@@ -232,3 +232,94 @@ async fn attaching_a_sink_to_an_unknown_peer_is_an_error() {
     );
     svc.stop().await.expect("stop");
 }
+
+/// **A TRANSIENTLY full sink must not permanently hide a healthy peer.**
+///
+/// `offer` is a `try_send` on a `Sender` the slot RETAINS, and a full-sink failure never clears it —
+/// so the next broadcast retries and the peer comes back the moment its owner drains. Nothing pinned
+/// that, and the nearest wrong implementation is one line: treat a failed `try_send` as the peer
+/// going away and drop (or `None`) the sink, which permanently silences a peer that was merely one
+/// message behind. Under that version step 4 below receives nothing.
+///
+/// The fixture varies ONE actor. The peer under test gets a capacity-**1** sink so a single
+/// un-drained message fills it exactly; a second NAT peer with room is the truthful control, so
+/// "the full peer was skipped" is distinguishable from "the broadcast reached nobody" — the shape a
+/// single-peer fixture cannot see. Each of the three broadcasts carries a DISTINCT payload, because
+/// asserting merely that something arrived after the drain is satisfied by the pre-fill message
+/// still sitting in the queue.
+#[tokio::test]
+async fn a_transiently_full_sink_does_not_permanently_hide_a_peer() {
+    let (svc, handle, _dir) = running_handle().await;
+
+    // The peer under test: adopted sink-less, then given a sink one message deep.
+    let (peer_id, none_rx, _session) = nat_peer(&handle, 0x81, false).await;
+    assert!(none_rx.is_none());
+    let (sink, mut rx) = NatBroadcastSink::new(1);
+    handle
+        .set_nat_broadcast_sink(peer_id, sink)
+        .expect("the peer holds a dig-nat slot");
+
+    // The control: room for every message in this test, so it must hear all three.
+    let (_control_id, control_rx, _control_session) = nat_peer(&handle, 0x82, true).await;
+    let mut control_rx = control_rx.expect("receiver");
+
+    // 1. Fill the sink. One message is its entire capacity, and nothing drains it.
+    assert_eq!(
+        handle
+            .broadcast_local(announce(0xB1), None)
+            .await
+            .expect("broadcast"),
+        2,
+        "both peers are reachable while the sink has room"
+    );
+
+    // 2. Broadcast into the now-full sink. The peer is reported unreachable, NOT delivered — this
+    //    is what proves the sink was genuinely full rather than the test asserting a no-op.
+    assert_eq!(
+        handle
+            .broadcast_local(announce(0xB2), None)
+            .await
+            .expect("broadcast"),
+        1,
+        "a full sink makes only that peer unreachable; the control still receives it"
+    );
+
+    // 3. The session owner catches up. Only the first message was ever queued.
+    let drained = received(&mut rx).expect("the first broadcast is still queued");
+    assert_eq!(drained.data.to_vec(), vec![0xB1u8; 64]);
+    assert!(
+        received(&mut rx).is_none(),
+        "the message offered to a full sink was never queued",
+    );
+
+    // 4. The peer is healthy again on the very next broadcast, with no re-attach and no re-adoption.
+    assert_eq!(
+        handle
+            .broadcast_local(announce(0xB3), None)
+            .await
+            .expect("broadcast"),
+        2,
+        "a drained peer is a delivery target again",
+    );
+    assert_eq!(
+        received(&mut rx)
+            .expect("the recovered peer must receive the next broadcast")
+            .data
+            .to_vec(),
+        vec![0xB3u8; 64],
+        "and receives the message broadcast AFTER the drain, not the backlog",
+    );
+
+    // The control heard every broadcast, so no step above passed by silencing the whole fan-out.
+    for expected in [0xB1u8, 0xB2, 0xB3] {
+        assert_eq!(
+            received(&mut control_rx)
+                .unwrap_or_else(|| panic!("control missed the {expected:#04x} broadcast"))
+                .data
+                .to_vec(),
+            vec![expected; 64],
+        );
+    }
+
+    svc.stop().await.expect("stop");
+}
