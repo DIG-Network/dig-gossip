@@ -240,7 +240,9 @@ pub use discovery::node_discovery::{
 #[doc(hidden)]
 pub use gossip::backpressure::BackpressureConfig;
 #[doc(hidden)]
-pub use service::state::{apply_inbound_rate_limit_violation, peer_id_for_addr, ServiceState};
+pub use service::state::{
+    apply_inbound_rate_limit_violation, peer_id_for_addr, NatBroadcastSink, ServiceState,
+};
 #[doc(hidden)]
 pub use types::config::DEFAULT_INTRODUCER_NETWORK_ID;
 #[doc(hidden)]

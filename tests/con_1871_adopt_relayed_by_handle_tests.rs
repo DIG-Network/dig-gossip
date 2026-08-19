@@ -173,6 +173,7 @@ async fn a_relayed_peer_adopted_by_handle_is_counted_and_still_served() {
             peer_id,
             accepted_relayed_remote(),
             responder.closed_handle(),
+            None,
         )
         .await
         .expect("an authenticated relayed circuit is adopted by handle");
@@ -215,6 +216,7 @@ async fn removing_the_pool_slot_does_not_hang_up_on_a_peer_the_caller_is_serving
             peer_id,
             accepted_relayed_remote(),
             responder.closed_handle(),
+            None,
         )
         .await
         .expect("adopted by handle");
@@ -248,6 +250,7 @@ async fn the_liveness_handle_keeps_a_live_peer_and_reaps_a_departed_one() {
             peer_id,
             accepted_relayed_remote(),
             responder.closed_handle(),
+            None,
         )
         .await
         .expect("adopted by handle");
@@ -297,6 +300,7 @@ async fn both_entry_points_share_one_admission_path() {
             peer_id,
             accepted_relayed_remote(),
             responder.closed_handle(),
+            None,
         )
         .await
         .expect("relayed circuit admitted");

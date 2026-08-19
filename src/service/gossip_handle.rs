@@ -369,9 +369,11 @@ impl GossipHandle {
         // -- INT-001: Route through Plumtree eager/lazy sets (SPEC §8.1) --
         // Eager peers get full message. Lazy peers get hash-only (LazyAnnounce).
         // Stubs (test-only) always get counted as delivered.
-        let (stub_deliveries, eager_jobs, unreachable): (
+        #[allow(clippy::type_complexity)]
+        let (stub_deliveries, eager_jobs, nat_jobs, mut unreachable): (
             usize,
             Vec<(DigLink, PeerId, u64)>,
+            Vec<(crate::NatBroadcastSink, PeerId)>,
             UnreachablePeers,
         ) = {
             let peers = self
@@ -387,6 +389,7 @@ impl GossipHandle {
 
             let mut stub_n = 0usize;
             let mut eager = Vec::new();
+            let mut nat_jobs = Vec::new();
             let mut unreachable = UnreachablePeers::default();
 
             for (pid, slot) in peers.iter() {
@@ -407,17 +410,19 @@ impl GossipHandle {
                             unreachable.lazy += 1;
                         }
                     }
-                    // POOL-*: a `dig-nat`-dialed pool member has a multiplexed transport but its
-                    // gossip message loop over that mux lands with the dig-node integration phase, so
-                    // `broadcast` (the WebSocket-`DigLink` fan-out) cannot push to it: there is no
-                    // frame codec or receive loop over the mux in this crate to push INTO. It still
-                    // COUNTS as a connected peer everywhere else (peer_count / stats / pool), which is
-                    // exactly why the fan-out must report it as unreachable rather than delivered
-                    // (#3062 / #3063).
-                    PeerSlot::Nat(_) => unreachable.nat += 1,
+                    // POOL-*: a `dig-nat` pool member has no `DigLink`, and this crate runs no frame
+                    // codec over the mux — so the ONLY way a broadcast reaches it is the sink its
+                    // session owner supplied (#69). Before that sink existed a relayed peer was
+                    // counted as connected and yet received no announcement at all, which silences a
+                    // NAT'd node outright. A peer with no sink is still reported unreachable rather
+                    // than delivered (#3062 / #3063 honesty).
+                    PeerSlot::Nat(n) => match &n.sink {
+                        Some(sink) => nat_jobs.push((sink.clone(), *pid)),
+                        None => unreachable.nat += 1,
+                    },
                 }
             }
-            (stub_n, eager, unreachable)
+            (stub_n, eager, nat_jobs, unreachable)
         };
 
         // Count stubs as delivered (test compatibility)
@@ -437,13 +442,33 @@ impl GossipHandle {
             record_live_peer_outbound_bytes(&self.inner, *pid, *wl);
         }
 
+        // #69: hand each `dig-nat` peer's broadcast to its session owner, outside the peer-map lock.
+        // `offer` never awaits, so a peer that has stopped draining slows nobody down — it is simply
+        // reported unreachable, exactly like a peer with no sink at all.
+        let mut nat_deliveries = 0usize;
+        for (sink, pid) in nat_jobs.iter() {
+            if sink.offer(message.clone()) {
+                nat_deliveries += 1;
+                record_live_peer_outbound_bytes(&self.inner, *pid, wire_len);
+            } else {
+                unreachable.nat += 1;
+            }
+        }
+        self.inner
+            .messages_sent
+            .fetch_add(nat_deliveries as u64, std::sync::atomic::Ordering::Relaxed);
+        self.inner.bytes_sent.fetch_add(
+            wire_len.saturating_mul(nat_deliveries as u64),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         // A peer this fan-out could not reach is a silence the caller must be able to see: it looks
         // identical to a healthy broadcast in the delivery count alone (#3062 kept #3063 invisible
         // and vice versa). Warn rather than stay quiet, so a live node reporting "announced to 1
         // peer" also says which peers heard nothing.
         if unreachable.total() > 0 {
             tracing::warn!(
-                delivered = stub_deliveries + eager_jobs.len(),
+                delivered = stub_deliveries + eager_jobs.len() + nat_deliveries,
                 unreachable_nat = unreachable.nat,
                 unreachable_lazy = unreachable.lazy,
                 msg_type = message.msg_type,
@@ -451,7 +476,7 @@ impl GossipHandle {
             );
         }
 
-        Ok(stub_deliveries + eager_jobs.len())
+        Ok(stub_deliveries + eager_jobs.len() + nat_deliveries)
     }
 
     /// Type-safe broadcast: serialize `body` via [`Streamable`] then delegate to [`Self::broadcast`].
@@ -1529,6 +1554,7 @@ impl GossipHandle {
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
                     conn: super::state::NatTransport::Owned(Box::new(conn)),
+                    sink: None,
                     remote,
                     is_outbound: true,
                     method,
@@ -1655,6 +1681,7 @@ impl GossipHandle {
             remote,
             method,
             super::state::NatTransport::Owned(Box::new(conn)),
+            None,
         )
         .await
     }
@@ -1699,14 +1726,46 @@ impl GossipHandle {
         peer_id: PeerId,
         remote: std::net::SocketAddr,
         closed: dig_nat::ClosedHandle,
+        sink: Option<crate::NatBroadcastSink>,
     ) -> Result<PeerId, GossipError> {
         self.adopt_relayed_inbound_inner(
             peer_id,
             remote,
             dig_nat::TraversalKind::Relayed,
             super::state::NatTransport::Observed(closed),
+            sink,
         )
         .await
+    }
+
+    /// Attach (or replace) the broadcast sink of an already-registered `dig-nat` peer (**#69**).
+    ///
+    /// The dialer path ([`Self::adopt_nat_connection`]) is a published signature that cannot grow a
+    /// parameter, and a caller may only begin serving a peer some time after adopting it. This is the
+    /// seam for both. Until a peer has a sink, this node's broadcasts cannot reach it and it is
+    /// reported unreachable rather than counted as delivered.
+    ///
+    /// # Errors
+    ///
+    /// [`GossipError::PeerNotConnected`] when `peer_id` holds no `dig-nat` slot — a WebSocket peer
+    /// already receives broadcasts over its `DigLink` and needs no sink.
+    pub fn set_nat_broadcast_sink(
+        &self,
+        peer_id: PeerId,
+        sink: crate::NatBroadcastSink,
+    ) -> Result<(), GossipError> {
+        let mut peers = self
+            .inner
+            .peers
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?;
+        match peers.get_mut(&peer_id) {
+            Some(PeerSlot::Nat(slot)) => {
+                slot.sink = Some(sink);
+                Ok(())
+            }
+            _ => Err(GossipError::PeerNotConnected(peer_id)),
+        }
     }
 
     /// The ONE admission path shared by both relayed-inbound entry points, so the two can never drift.
@@ -1716,6 +1775,7 @@ impl GossipHandle {
         remote: std::net::SocketAddr,
         method: dig_nat::TraversalKind,
         transport: super::state::NatTransport,
+        sink: Option<crate::NatBroadcastSink>,
     ) -> Result<PeerId, GossipError> {
         self.require_running()?;
         if !matches!(method, dig_nat::TraversalKind::Relayed) {
@@ -1792,6 +1852,7 @@ impl GossipHandle {
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
                     conn: transport,
+                    sink,
                     remote,
                     is_outbound: false,
                     method,
