@@ -2161,10 +2161,26 @@ first announced. `broadcast()` disseminates `Forwarded` messages; `broadcast_loc
 disseminates `Local` ones. Both MUST insert the hash (step 3), so a `Local` message echoed back by
 a peer and offered to `broadcast()` is still suppressed and the epidemic still terminates.
 
+**A `dig-nat` peer is a broadcast target (normative, #69).** A `dig-nat` pool member has no
+`DigLink` and this crate frames nothing over the mux, so the fan-out MUST NOT be the party that
+writes to it — but it MUST NOT skip the peer either. A peer excluded from the fan-out by its slot
+CLASS never hears an announcement at all, which silences every node that depends on a relay to
+receive them. The peer's session belongs to whoever serves it (see `adopt_relayed_inbound_handle`),
+so that owner supplies a `NatBroadcastSink`, drains it, and frames each message onto the peer's
+stream; the fan-out offers every non-excluded `dig-nat` peer its message through that sink.
+Normatively:
+
+- Offering MUST NOT block and MUST NOT await while the peer map is locked. A sink whose owner has
+  stopped draining, or is behind, yields an UNREACHABLE peer — never a stalled broadcast.
+- A `dig-nat` peer with NO sink is unreachable, exactly as before: nothing can write to it.
+- A sink MAY be attached after adoption (`set_nat_broadcast_sink`), because the dialer path adopts
+  before any serve loop exists. A peer is a delivery target from the moment its sink is attached.
+
 **Return value (normative).** The value returned is a DELIVERY count: a peer is counted only when
-this call placed the frame on that peer's transport. A connected peer with no wired transport for
-this fan-out — a `dig-nat` mux peer, or a Plumtree-lazy peer while step 6's `LazyAnnounce` producer
-is unimplemented — MUST NOT be counted, and is instead reported by
+this call placed the frame on that peer's transport — for a `dig-nat` peer, when the message was
+accepted by its sink. A connected peer this fan-out could not write to — a `dig-nat` peer with no
+sink or a sink that would not accept the message, or a Plumtree-lazy peer while step 6's
+`LazyAnnounce` producer is unimplemented — MUST NOT be counted, and is instead reported by
 `GossipHandle::unreachable_peer_count()`. A count that includes peers sent nothing is
 indistinguishable from a healthy broadcast and hides exactly the failures it should surface.
 
