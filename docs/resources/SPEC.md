@@ -1989,9 +1989,25 @@ path is introduced.
 **The RESPONDER half of a relayed circuit is a pool member too (#870/#1871).** A relay circuit has two
 ends. The dialer's end is adopted through `adopt_nat_connection`; the reservation HOLDER's end — the
 authenticated `PeerConnection` `dig_nat::RelayAcceptor::accept` returns for a circuit a peer opened
-through the relay — MUST be registered through `GossipHandle::adopt_relayed_inbound`. A node serving a
-peer over such a circuit and reporting `connected_peers = 0` is a defect: the pool is what every
-subsystem reads to answer "am I connected".
+through the relay — MUST be registered through `GossipHandle::adopt_relayed_inbound` or
+`GossipHandle::adopt_relayed_inbound_handle`. A node serving a peer over such a circuit and reporting
+`connected_peers = 0` is a defect: the pool is what every subsystem reads to answer "am I connected".
+
+**Registration MUST NOT cost the caller the session (#1871).** `adopt_relayed_inbound` takes the
+connection by value, and `dig_nat::PeerSession` is neither `Clone` nor splittable, so a node whose L7
+serve loop needs `&mut PeerSession` cannot use that entry point without ceasing to serve the peer —
+counted but no longer served, which is strictly worse than uncounted. `adopt_relayed_inbound_handle`
+therefore takes `(peer_id, remote, dig_nat::ClosedHandle)`: the pool never sends over a relayed slot's
+transport, and the ONE question it asks — whether the peer is still up, for the departed-peer reaper —
+is exactly what a `ClosedHandle` answers. Normatively:
+
+- Both entry points share ONE admission path; every rule below applies identically to each.
+- The `ClosedHandle` MUST observe the session serving that peer. It is the slot's only departure
+  signal, so a handle for another (or an already-dead) session makes the peer unreapable or reaps it
+  at once.
+- Transport TEARDOWN follows OWNERSHIP. Dropping a slot registered by value closes the mux; dropping a
+  slot registered by handle MUST NOT, because the caller still owns and serves the session — the pool
+  MUST NOT hang up on a peer another task is serving.
 
 The registration is normatively:
 
