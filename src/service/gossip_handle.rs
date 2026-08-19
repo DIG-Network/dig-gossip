@@ -369,9 +369,11 @@ impl GossipHandle {
         // -- INT-001: Route through Plumtree eager/lazy sets (SPEC §8.1) --
         // Eager peers get full message. Lazy peers get hash-only (LazyAnnounce).
         // Stubs (test-only) always get counted as delivered.
-        let (stub_deliveries, eager_jobs, unreachable): (
+        #[allow(clippy::type_complexity)]
+        let (stub_deliveries, eager_jobs, nat_jobs, mut unreachable): (
             usize,
             Vec<(DigLink, PeerId, u64)>,
+            Vec<(crate::NatBroadcastSink, PeerId)>,
             UnreachablePeers,
         ) = {
             let peers = self
@@ -387,6 +389,7 @@ impl GossipHandle {
 
             let mut stub_n = 0usize;
             let mut eager = Vec::new();
+            let mut nat_jobs = Vec::new();
             let mut unreachable = UnreachablePeers::default();
 
             for (pid, slot) in peers.iter() {
@@ -407,17 +410,19 @@ impl GossipHandle {
                             unreachable.lazy += 1;
                         }
                     }
-                    // POOL-*: a `dig-nat`-dialed pool member has a multiplexed transport but its
-                    // gossip message loop over that mux lands with the dig-node integration phase, so
-                    // `broadcast` (the WebSocket-`DigLink` fan-out) cannot push to it: there is no
-                    // frame codec or receive loop over the mux in this crate to push INTO. It still
-                    // COUNTS as a connected peer everywhere else (peer_count / stats / pool), which is
-                    // exactly why the fan-out must report it as unreachable rather than delivered
-                    // (#3062 / #3063).
-                    PeerSlot::Nat(_) => unreachable.nat += 1,
+                    // POOL-*: a `dig-nat` pool member has no `DigLink`, and this crate runs no frame
+                    // codec over the mux — so the ONLY way a broadcast reaches it is the sink its
+                    // session owner supplied (#69). Before that sink existed a relayed peer was
+                    // counted as connected and yet received no announcement at all, which silences a
+                    // NAT'd node outright. A peer with no sink is still reported unreachable rather
+                    // than delivered (#3062 / #3063 honesty).
+                    PeerSlot::Nat(n) => match &n.sink {
+                        Some(sink) => nat_jobs.push((sink.clone(), *pid)),
+                        None => unreachable.nat += 1,
+                    },
                 }
             }
-            (stub_n, eager, unreachable)
+            (stub_n, eager, nat_jobs, unreachable)
         };
 
         // Count stubs as delivered (test compatibility)
@@ -437,13 +442,33 @@ impl GossipHandle {
             record_live_peer_outbound_bytes(&self.inner, *pid, *wl);
         }
 
+        // #69: hand each `dig-nat` peer's broadcast to its session owner, outside the peer-map lock.
+        // `offer` never awaits, so a peer that has stopped draining slows nobody down — it is simply
+        // reported unreachable, exactly like a peer with no sink at all.
+        let mut nat_deliveries = 0usize;
+        for (sink, pid) in nat_jobs.iter() {
+            if sink.offer(message.clone()) {
+                nat_deliveries += 1;
+                record_live_peer_outbound_bytes(&self.inner, *pid, wire_len);
+            } else {
+                unreachable.nat += 1;
+            }
+        }
+        self.inner
+            .messages_sent
+            .fetch_add(nat_deliveries as u64, std::sync::atomic::Ordering::Relaxed);
+        self.inner.bytes_sent.fetch_add(
+            wire_len.saturating_mul(nat_deliveries as u64),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         // A peer this fan-out could not reach is a silence the caller must be able to see: it looks
         // identical to a healthy broadcast in the delivery count alone (#3062 kept #3063 invisible
         // and vice versa). Warn rather than stay quiet, so a live node reporting "announced to 1
         // peer" also says which peers heard nothing.
         if unreachable.total() > 0 {
             tracing::warn!(
-                delivered = stub_deliveries + eager_jobs.len(),
+                delivered = stub_deliveries + eager_jobs.len() + nat_deliveries,
                 unreachable_nat = unreachable.nat,
                 unreachable_lazy = unreachable.lazy,
                 msg_type = message.msg_type,
@@ -451,7 +476,7 @@ impl GossipHandle {
             );
         }
 
-        Ok(stub_deliveries + eager_jobs.len())
+        Ok(stub_deliveries + eager_jobs.len() + nat_deliveries)
     }
 
     /// Type-safe broadcast: serialize `body` via [`Streamable`] then delegate to [`Self::broadcast`].
@@ -1528,7 +1553,8 @@ impl GossipHandle {
             peers.insert(
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
-                    conn,
+                    conn: super::state::NatTransport::Owned(Box::new(conn)),
+                    sink: None,
                     remote,
                     is_outbound: true,
                     method,
@@ -1647,11 +1673,117 @@ impl GossipHandle {
         &self,
         conn: crate::nat::NatPeerConnection,
     ) -> Result<PeerId, GossipError> {
-        self.require_running()?;
         let peer_id = conn.peer_id();
         let remote = conn.remote_addr();
         let method = conn.method();
+        self.adopt_relayed_inbound_inner(
+            peer_id,
+            remote,
+            method,
+            super::state::NatTransport::Owned(Box::new(conn)),
+            None,
+        )
+        .await
+    }
 
+    /// Register an authenticated relayed circuit whose session the CALLER keeps (**#1871**) — the
+    /// same admission as [`Self::adopt_relayed_inbound`], taking a cheap liveness observer instead of
+    /// the connection.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::adopt_relayed_inbound`] takes the connection BY VALUE, and
+    /// [`PeerSession`](dig_nat::PeerSession) is not `Clone` — it owns the inbound-stream receiver. A
+    /// node that is SERVING the relayed peer (dig-node's L7 peer-RPC loop needs `&mut PeerSession`)
+    /// therefore cannot call it without giving the session up: it would buy the connection count and
+    /// stop answering the peer. Because that trade is unacceptable, the call was simply never made,
+    /// and a NAT'd peer — most people — formed zero COUNTED connections while being served fine.
+    ///
+    /// The pool never sends over a relayed slot's transport; the one thing it asks is whether the peer
+    /// is still up, for the #1703 departed-peer reaper. A
+    /// [`ClosedHandle`](dig_nat::ClosedHandle) answers exactly that, is `Clone`, and costs one atomic
+    /// load — so ownership stays with the server loop and the peer is both COUNTED and STILL SERVED.
+    ///
+    /// # Caller obligations
+    ///
+    /// * `peer_id` MUST come from the completed mTLS handshake (as in [`Self::adopt_relayed_inbound`] —
+    ///   the guarantee is the caller's, not the type's). `dig-nat` reports it as a
+    ///   [`dig_nat::PeerId`]; the pool keys on the gossip [`PeerId`] (chia `Bytes32`) over the same 32
+    ///   bytes — convert with `PeerId::from(*nat_peer_id.as_bytes())`.
+    /// * `remote` is the RELAY endpoint the circuit arrived over, never a peer address; it is reported
+    ///   as the session address and is never dialed (the slot is [`TraversalKind::Relayed`]).
+    /// * `closed` MUST observe the session serving THIS peer
+    ///   ([`PeerSession::closed_handle`](dig_nat::PeerSession::closed_handle)). It is the slot's only
+    ///   departure signal: a handle for a different (or already-dead) session makes the peer reap
+    ///   immediately or never.
+    /// * Teardown stays the CALLER's. Unlike the by-value path, dropping this slot does not close the
+    ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving.
+    /// * **Supersede is teardown too, and the pool cannot perform it.** A later circuit for the same
+    ///   `peer_id` displaces this slot newest-wins, and dropping an observer closes nothing — so the
+    ///   displaced session keeps running, un-counted and un-notified, unless the CALLER closes it. A
+    ///   caller that may adopt the same peer twice MUST therefore track the session it registered and
+    ///   close the previous one itself. The pool cannot do this for it: a `ClosedHandle` observes a
+    ///   session, it does not control one.
+    ///
+    /// Admission, budgets, supersede semantics and errors are identical to
+    /// [`Self::adopt_relayed_inbound`].
+    pub async fn adopt_relayed_inbound_handle(
+        &self,
+        peer_id: PeerId,
+        remote: std::net::SocketAddr,
+        closed: dig_nat::ClosedHandle,
+        sink: Option<crate::NatBroadcastSink>,
+    ) -> Result<PeerId, GossipError> {
+        self.adopt_relayed_inbound_inner(
+            peer_id,
+            remote,
+            dig_nat::TraversalKind::Relayed,
+            super::state::NatTransport::Observed(closed),
+            sink,
+        )
+        .await
+    }
+
+    /// Attach (or replace) the broadcast sink of an already-registered `dig-nat` peer (**#69**).
+    ///
+    /// The dialer path ([`Self::adopt_nat_connection`]) is a published signature that cannot grow a
+    /// parameter, and a caller may only begin serving a peer some time after adopting it. This is the
+    /// seam for both. Until a peer has a sink, this node's broadcasts cannot reach it and it is
+    /// reported unreachable rather than counted as delivered.
+    ///
+    /// # Errors
+    ///
+    /// [`GossipError::PeerNotConnected`] when `peer_id` holds no `dig-nat` slot — a WebSocket peer
+    /// already receives broadcasts over its `DigLink` and needs no sink.
+    pub fn set_nat_broadcast_sink(
+        &self,
+        peer_id: PeerId,
+        sink: crate::NatBroadcastSink,
+    ) -> Result<(), GossipError> {
+        let mut peers = self
+            .inner
+            .peers
+            .lock()
+            .map_err(|_| GossipError::ChannelClosed)?;
+        match peers.get_mut(&peer_id) {
+            Some(PeerSlot::Nat(slot)) => {
+                slot.sink = Some(sink);
+                Ok(())
+            }
+            _ => Err(GossipError::PeerNotConnected(peer_id)),
+        }
+    }
+
+    /// The ONE admission path shared by both relayed-inbound entry points, so the two can never drift.
+    async fn adopt_relayed_inbound_inner(
+        &self,
+        peer_id: PeerId,
+        remote: std::net::SocketAddr,
+        method: dig_nat::TraversalKind,
+        transport: super::state::NatTransport,
+        sink: Option<crate::NatBroadcastSink>,
+    ) -> Result<PeerId, GossipError> {
+        self.require_running()?;
         if !matches!(method, dig_nat::TraversalKind::Relayed) {
             return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
                 format!("adopt_relayed_inbound: not a relayed circuit ({method:?})"),
@@ -1725,7 +1857,8 @@ impl GossipHandle {
             peers.insert(
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
-                    conn,
+                    conn: transport,
+                    sink,
                     remote,
                     is_outbound: false,
                     method,
@@ -1734,9 +1867,17 @@ impl GossipHandle {
         };
 
         // Newest-wins supersede. The admission above refuses a circuit that would displace a
-        // non-relayed slot, so anything displaced here is a `dig-nat` relayed slot: it owns no
-        // keepalive task and its transport closes when the slot drops. The #1691 ghost-keepalive
-        // teardown `adopt_nat_connection` performs therefore has nothing to do on this path.
+        // non-relayed slot, so anything displaced here is a `dig-nat` relayed slot, which owns no
+        // keepalive task — the #1691 ghost-keepalive teardown `adopt_nat_connection` performs has
+        // nothing to do on this path.
+        //
+        // What this drop does to the transport depends on which arm the displaced slot held, and for
+        // one of them it does NOTHING. An `Owned` slot drops the mux session's sole `cmd_tx` and the
+        // transport closes with it (#1717). An `Observed` slot holds only a `ClosedHandle` and is
+        // DEFINED not to tear down (#1871), so the displaced session survives this drop with its
+        // owner un-notified: the caller keeps serving a peer the pool no longer counts. See the
+        // supersede obligation on `adopt_relayed_inbound_handle` — closing it is the caller's,
+        // because the pool holds nothing that could.
         drop(superseded);
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).

@@ -59,3 +59,7 @@ pub use dig_nat::{
     PeerId as NatPeerId, PeerSession as NatPeerSession, PeerStream as NatPeerStream,
     PeerTarget as NatPeerTarget, TraversalKind,
 };
+
+// #1871: a caller that must KEEP a `PeerSession` (dig-node's relayed L7 serve loop) needs to hand the
+// pool a liveness observer instead of the connection itself.
+pub use dig_nat::ClosedHandle as NatClosedHandle;

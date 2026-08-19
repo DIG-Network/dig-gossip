@@ -1585,8 +1585,11 @@ merely because `peers.contains_key(peer_id)`.
 Instead the freshly-authenticated inbound session is admitted and **supersedes** the incumbent slot:
 `negotiate_inbound_over_ws` inserts the new `LiveSlot` over the existing key (`HashMap::insert`,
 newest-wins) and, after releasing the `peers` lock, MUST tear down the displaced slot — abort its
-keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). Rationale +
-invariants:
+keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). This
+teardown duty is the POOL's only for a slot the pool owns; a relayed slot registered by liveness
+handle through `adopt_relayed_inbound_handle` is exempt and its superseded session MUST be closed by
+the CALLER instead — see the supersede obligation in §5.2 (#1871), which is the sole exemption from
+the requirement stated here. Rationale + invariants:
 
 1. **Cert-gated displacement.** The `peer_id` at the guard is derived from the **completed, verified**
    mTLS handshake (`SHA-256` of the captured client-cert SPKI, §5.3). Only the holder of that identity's
@@ -1989,9 +1992,32 @@ path is introduced.
 **The RESPONDER half of a relayed circuit is a pool member too (#870/#1871).** A relay circuit has two
 ends. The dialer's end is adopted through `adopt_nat_connection`; the reservation HOLDER's end — the
 authenticated `PeerConnection` `dig_nat::RelayAcceptor::accept` returns for a circuit a peer opened
-through the relay — MUST be registered through `GossipHandle::adopt_relayed_inbound`. A node serving a
-peer over such a circuit and reporting `connected_peers = 0` is a defect: the pool is what every
-subsystem reads to answer "am I connected".
+through the relay — MUST be registered through `GossipHandle::adopt_relayed_inbound` or
+`GossipHandle::adopt_relayed_inbound_handle`. A node serving a peer over such a circuit and reporting
+`connected_peers = 0` is a defect: the pool is what every subsystem reads to answer "am I connected".
+
+**Registration MUST NOT cost the caller the session (#1871).** `adopt_relayed_inbound` takes the
+connection by value, and `dig_nat::PeerSession` is neither `Clone` nor splittable, so a node whose L7
+serve loop needs `&mut PeerSession` cannot use that entry point without ceasing to serve the peer —
+counted but no longer served, which is strictly worse than uncounted. `adopt_relayed_inbound_handle`
+therefore takes `(peer_id, remote, dig_nat::ClosedHandle)`: the pool never sends over a relayed slot's
+transport, and the ONE question it asks — whether the peer is still up, for the departed-peer reaper —
+is exactly what a `ClosedHandle` answers. Normatively:
+
+- Both entry points share ONE admission path; every rule below applies identically to each.
+- The `ClosedHandle` MUST observe the session serving that peer. It is the slot's only departure
+  signal, so a handle for another (or an already-dead) session makes the peer unreapable or reaps it
+  at once.
+- Transport TEARDOWN follows OWNERSHIP. Dropping a slot registered by value closes the mux; dropping a
+  slot registered by handle MUST NOT, because the caller still owns and serves the session — the pool
+  MUST NOT hang up on a peer another task is serving.
+- **SUPERSEDE teardown is the CALLER's for a handle-registered slot.** The newest-wins rule of §5.2.3
+  displaces the incumbent slot, and for a by-handle slot that displacement closes NOTHING: the pool
+  holds a `ClosedHandle`, which observes a session and cannot control one. The displaced session
+  therefore keeps running, un-counted and with its owner un-notified. A caller that may register the
+  same `peer_id` more than once MUST track the session it registered and close the previous one
+  itself. This is the ONE point where §5.2.3's "the pool MUST tear down the displaced slot" does not
+  hold, and it follows from the same ownership rule as the bullet above rather than contradicting it.
 
 The registration is normatively:
 
@@ -2145,10 +2171,26 @@ first announced. `broadcast()` disseminates `Forwarded` messages; `broadcast_loc
 disseminates `Local` ones. Both MUST insert the hash (step 3), so a `Local` message echoed back by
 a peer and offered to `broadcast()` is still suppressed and the epidemic still terminates.
 
+**A `dig-nat` peer is a broadcast target (normative, #69).** A `dig-nat` pool member has no
+`DigLink` and this crate frames nothing over the mux, so the fan-out MUST NOT be the party that
+writes to it — but it MUST NOT skip the peer either. A peer excluded from the fan-out by its slot
+CLASS never hears an announcement at all, which silences every node that depends on a relay to
+receive them. The peer's session belongs to whoever serves it (see `adopt_relayed_inbound_handle`),
+so that owner supplies a `NatBroadcastSink`, drains it, and frames each message onto the peer's
+stream; the fan-out offers every non-excluded `dig-nat` peer its message through that sink.
+Normatively:
+
+- Offering MUST NOT block and MUST NOT await while the peer map is locked. A sink whose owner has
+  stopped draining, or is behind, yields an UNREACHABLE peer — never a stalled broadcast.
+- A `dig-nat` peer with NO sink is unreachable, exactly as before: nothing can write to it.
+- A sink MAY be attached after adoption (`set_nat_broadcast_sink`), because the dialer path adopts
+  before any serve loop exists. A peer is a delivery target from the moment its sink is attached.
+
 **Return value (normative).** The value returned is a DELIVERY count: a peer is counted only when
-this call placed the frame on that peer's transport. A connected peer with no wired transport for
-this fan-out — a `dig-nat` mux peer, or a Plumtree-lazy peer while step 6's `LazyAnnounce` producer
-is unimplemented — MUST NOT be counted, and is instead reported by
+this call placed the frame on that peer's transport — for a `dig-nat` peer, when the message was
+accepted by its sink. A connected peer this fan-out could not write to — a `dig-nat` peer with no
+sink or a sink that would not accept the message, or a Plumtree-lazy peer while step 6's
+`LazyAnnounce` producer is unimplemented — MUST NOT be counted, and is instead reported by
 `GossipHandle::unreachable_peer_count()`. A count that includes peers sent nothing is
 indistinguishable from a healthy broadcast and hides exactly the failures it should surface.
 
