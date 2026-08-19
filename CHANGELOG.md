@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.26.0] - 2026-08-19
+
+### Features
+- **pool:** Adopt a relayed inbound circuit by liveness handle, not by connection (#70)
+
 ## [0.25.0] - 2026-08-17
 
 ### Bug Fixes
