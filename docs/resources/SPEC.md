@@ -1586,10 +1586,10 @@ Instead the freshly-authenticated inbound session is admitted and **supersedes**
 `negotiate_inbound_over_ws` inserts the new `LiveSlot` over the existing key (`HashMap::insert`,
 newest-wins) and, after releasing the `peers` lock, MUST tear down the displaced slot — abort its
 keepalive task then `Peer::close()` it (dropping a `LiveSlot` does not close its socket). This
-teardown duty is the POOL's only for a slot the pool owns; a relayed slot registered by liveness
-handle through `adopt_relayed_inbound_handle` is exempt and its superseded session MUST be closed by
-the CALLER instead — see the supersede obligation in §5.2 (#1871), which is the sole exemption from
-the requirement stated here. Rationale + invariants:
+teardown duty is the POOL's. A relayed slot registered by liveness handle through
+`adopt_relayed_inbound_handle` is torn down by NOTIFICATION rather than by closure — the pool fires
+the `SupersedeNotice` registered with that session and its owner ends it — see §5.2 (#1871/#71). That
+is a different mechanism for the same duty, not an exemption from it. Rationale + invariants:
 
 1. **Cert-gated displacement.** The `peer_id` at the guard is derived from the **completed, verified**
    mTLS handshake (`SHA-256` of the captured client-cert SPKI, §5.3). Only the holder of that identity's
@@ -1724,8 +1724,9 @@ path EVERY `dig-nat` connection — relayed and direct alike — becomes a pool 
 MUST NOT refuse an adoption because a slot is already held for that `peer_id` (no
 `DuplicateConnection`): the freshly SPKI-pinned-mTLS-authenticated `dig-nat` session supersedes the
 held slot at insert time, exactly as the inbound (#1691) and `connect_to` (#1703) paths do. A displaced
-`Live` slot has its keepalive aborted and its `Peer` closed; a displaced `Nat`/`Stub` slot carries no
-keepalive and its transport is torn down by being dropped.
+`Live` slot has its keepalive aborted and its `Peer` closed; a displaced `Stub` slot holds no
+transport; a displaced `Nat` slot is RETIRED by whoever owns its transport — an owned mux is torn down
+by being dropped, and an observed session's owner is told (§5.2 #71).
 
 The rule is normative over the **CLASS** of stale slots, not any single cause. A peer-map slot carries
 no liveness value to consult (slots are never reaped on disconnect), so a `contains_key` refusal cannot
@@ -1750,6 +1751,56 @@ Supersession relaxes the duplicate rule ONLY: the self-connection (#1584) and ti
 refusals are evaluated before the insert and are unaffected — a re-adoption is not a route around them.
 All of it is decided under ONE hold of the `peers` lock, the same hold that inserts, so the
 check→insert stays atomic.
+
+### 5.2.5 Discovery-driven displacement — cycling an UNUSED connection out (normative; dig_ecosystem#3128 requirement 8)
+
+Eviction from the pool was **failure-only**: `PoolRemovalReason` could express `Disconnected`, `Dead`,
+`Banned` and `Reaped` and nothing else, and at `max_connections` admission was simply refused. A holder
+content discovery found outside the persistent set was therefore dialled once, read from, and dropped —
+and rediscovered from scratch on every subsequent read. A service MUST support admitting such a holder
+by cycling out a connection that is contributing nothing.
+
+- **A separate entry point.** `GossipHandle::adopt_discovered_nat_connection` MAY displace;
+  `adopt_nat_connection` MUST NOT and MUST keep refusing with `MaxConnectionsReached` at the cap. The
+  maintenance loop dials toward a target and has no reason to prefer a candidate over a held peer;
+  discovery does, having found a peer that demonstrably holds wanted content. Both MUST share ONE
+  admission path so no other rule can differ between them.
+- **Usefulness is REPORTED, not observed.** This crate never sends over a `dig-nat` peer's transport,
+  so it cannot see a peer being used. A caller MUST hold a `PeerActivityGuard`
+  (`GossipHandle::peer_activity_guard`) for the duration of any work over a pool peer; the guard marks
+  the peer busy while alive and stamps it active at both ends. A peer the pool does not hold MUST NOT
+  be able to create a usefulness record, which is what bounds that map by membership.
+- **Scope.** Only `PeerSlot::Nat` members are displaceable. They are the persistent connection set this
+  requirement speaks of and the only slots whose usage this crate is told about; a Chia-protocol
+  WebSocket peer is busy with gossip nothing stamps here and would read as permanently idle.
+- **The victim.** Among displaceable members, the pool MUST choose the one used LONGEST AGO — not the
+  longest-established — breaking ties on the older admission and then on identity so the choice is
+  deterministic rather than dependent on map iteration order.
+- **Four bounds, all required.** A member MUST NOT be displaced when it has work in flight, when it has
+  been held for less than `min_established_secs`, or when it has been used within `min_idle_secs`; and
+  a displacement MUST NOT take the pool to or below `min_peers`. The in-flight rule is what makes
+  "never evict a peer mid-request" structural: a long transfer emitting no intermediate signal stays
+  protected where a last-used stamp would decay. The establishment floor stops the maintenance loop and
+  discovery undoing each other's dials.
+- **The churn bound.** At most ONE displacement per `displacement_interval_secs`
+  (default **600 s**). **This is the bound on an attacker-reachable lever**: a provider record is a
+  CLAIM by an untrusted peer (NC-12), so a hostile peer that gets itself returned as a holder reaches
+  this admission directly, and without a rate it could displace one honest incumbent per lookup and so
+  CHOOSE the node's persistent set — inverting the cycling NC-12 mandates into a means of holding one.
+  At one per ten minutes, replacing a default 16-slot map takes at least 160 minutes of sustained
+  hostile records, while the maintenance loop, peer exchange and the introducer keep admitting peers by
+  paths this lever cannot touch, and every peer it does admit must itself become established and then
+  idle before it can be recycled.
+- **No route around any other guard.** A discovered peer faces the self, ban, `/16` (INT-006), AS
+  (INT-007) and relayed-outbound caps exactly as any other. Those MUST be evaluated BEFORE anything is
+  displaced, so a peer they will refuse never costs the node an incumbent — otherwise a hostile peer
+  could churn the pool without ever joining it.
+- **Atomicity.** The decision, the victim's removal, the churn-bound charge and the insert MUST happen
+  under ONE hold of the `peers` lock, so two concurrent discoveries can neither both spend the last
+  slot nor both charge one interval. The victim is retired (§5.2 #71) and announced as
+  `PoolRemovalReason::Displaced` AFTER the lock is released, in the same order `disconnect()` uses.
+- **`Displaced` is not a failure.** Every other removal reason reports a peer that broke, misbehaved or
+  left; a consumer MUST NOT read `Displaced` as evidence against the peer.
 
 ### 5.3 Mandatory Mutual TLS (mTLS) via chia-ssl
 
@@ -2000,24 +2051,35 @@ through the relay — MUST be registered through `GossipHandle::adopt_relayed_in
 connection by value, and `dig_nat::PeerSession` is neither `Clone` nor splittable, so a node whose L7
 serve loop needs `&mut PeerSession` cannot use that entry point without ceasing to serve the peer —
 counted but no longer served, which is strictly worse than uncounted. `adopt_relayed_inbound_handle`
-therefore takes `(peer_id, remote, dig_nat::ClosedHandle)`: the pool never sends over a relayed slot's
+therefore takes `(peer_id, remote, ObservedSession)`: the pool never sends over a relayed slot's
 transport, and the ONE question it asks — whether the peer is still up, for the departed-peer reaper —
-is exactly what a `ClosedHandle` answers. Normatively:
+is exactly what the `dig_nat::ClosedHandle` inside an `ObservedSession` answers. Normatively:
 
 - Both entry points share ONE admission path; every rule below applies identically to each.
+- An `ObservedSession` pairs that `ClosedHandle` with a `SupersedeNotice` — the callback reaching
+  whoever owns the session — and the two MUST NOT be registrable apart. A slot with no way to notify
+  its owner is a silent accounting failure by construction, which is the class of defect this pairing
+  exists to remove.
 - The `ClosedHandle` MUST observe the session serving that peer. It is the slot's only departure
   signal, so a handle for another (or an already-dead) session makes the peer unreapable or reaps it
   at once.
 - Transport TEARDOWN follows OWNERSHIP. Dropping a slot registered by value closes the mux; dropping a
   slot registered by handle MUST NOT, because the caller still owns and serves the session — the pool
   MUST NOT hang up on a peer another task is serving.
-- **SUPERSEDE teardown is the CALLER's for a handle-registered slot.** The newest-wins rule of §5.2.3
-  displaces the incumbent slot, and for a by-handle slot that displacement closes NOTHING: the pool
-  holds a `ClosedHandle`, which observes a session and cannot control one. The displaced session
-  therefore keeps running, un-counted and with its owner un-notified. A caller that may register the
-  same `peer_id` more than once MUST track the session it registered and close the previous one
-  itself. This is the ONE point where §5.2.3's "the pool MUST tear down the displaced slot" does not
-  hold, and it follows from the same ownership rule as the bullet above rather than contradicting it.
+- **RETIRE is not RELINQUISH, and a retired slot's owner MUST be told (#71).** Two different things
+  remove a slot, and only one of them ends the peer's session.
+  - **Relinquish** — `disconnect()` and the departed-peer reaper stop ACCOUNTING for the peer. A
+    by-handle slot's session MUST be left running: its owner may still be mid-conversation, and the
+    pool MUST NOT hang up on a peer another task is serving.
+  - **Retire** — a newer session for the same `peer_id` supersedes the slot (§5.2.3 newest-wins), or
+    the pool displaces it to admit a discovered holder (§5.2.5). The session is then obsolete:
+    uncounted, unreplaceable, and closable only by its owner. The pool MUST fire that session's
+    `SupersedeNotice` exactly once, after releasing the `peers` lock.
+
+  Ownership is unchanged by this — the pool runs the CALLER's callback and the caller ends the
+  session — so it satisfies §5.2.3's teardown duty rather than exempting the by-handle path from it.
+  Firing a notice on a RELINQUISH would be a defect: it would hang up on a peer the node is serving,
+  which is the very failure the by-handle path exists to prevent.
 
 The registration is normatively:
 

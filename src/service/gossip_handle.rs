@@ -1747,6 +1747,9 @@ impl GossipHandle {
                         "#3128: chosen displacement victim {victim} is not in the peer map"
                     )))
                 })?;
+                // Forget the victim NOW rather than relying on the `PeerRemoved` publish below: that
+                // happens after the lock is released, and a concurrent admission reading the
+                // usefulness map in the gap would otherwise see a record for a peer already gone.
                 self.inner.pool.record_departure(&victim);
                 self.inner.pool.record_displacement(now);
                 Ok(Some((victim, slot)))
