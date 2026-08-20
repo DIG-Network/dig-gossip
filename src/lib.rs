@@ -161,7 +161,9 @@ pub use nat::{unified_discover, UnifiedDiscoveryConfig};
 // borrow connected peers and observe pool churn.
 pub use service::observed_session::{ObservedSession, SupersedeNotice};
 pub use service::peer_pool::{
-    ConnectedPoolPeer, DialBackoff, Dialer, PoolCandidate, PoolEvent, PoolRemovalReason, PoolStats,
+    plan_displacement, ConnectedPoolPeer, DialBackoff, Dialer, DiscoveryAdmission,
+    DisplacementDecision, DisplacementRefusal, DisplacementRequest, PeerActivity,
+    PeerActivityGuard, PoolCandidate, PoolEvent, PoolRemovalReason, PoolStats,
 };
 pub use types::config::PeerPoolConfig;
 

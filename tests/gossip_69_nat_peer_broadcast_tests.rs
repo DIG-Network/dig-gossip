@@ -75,7 +75,11 @@ async fn nat_peer(
         .adopt_relayed_inbound_handle(
             peer_id,
             accepted_relayed_remote(),
-            session.closed_handle(),
+            dig_gossip::ObservedSession::new(session.closed_handle(), || {
+                // These fixtures never supersede or displace, so the notice must never
+                // fire; a panic here would surface a retirement they do not expect.
+                panic!("the pool retired a slot no fixture in this file displaces")
+            }),
             sink,
         )
         .await

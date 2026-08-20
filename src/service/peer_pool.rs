@@ -86,6 +86,15 @@ pub enum PoolRemovalReason {
     /// Distinguished from [`Self::Dead`] (a CON-004 keepalive eviction) so churn consumers can tell
     /// the periodic sweep apart from the keepalive path.
     Reaped,
+    /// Cycled out — while healthy — to make room for a holder content discovery found outside the
+    /// persistent set (**dig_ecosystem#3128** requirement 8).
+    ///
+    /// The only removal reason that is not a failure. Every other variant reports a peer that broke,
+    /// misbehaved or left; this one reports a peer that was fine and was simply contributing nothing,
+    /// so a consumer must not read it as evidence against the peer. It is deliberately distinct for
+    /// that reason: eviction here had no vocabulary at all, which is what made the policy
+    /// inexpressible rather than merely unimplemented.
+    Displaced,
 }
 
 /// One dialable candidate the pool may connect to: its [`PeerId`] (when known) + address.
@@ -439,6 +448,201 @@ pub fn plan_pass(snap: &PoolSnapshot, cfg: &PeerPoolConfig) -> PoolPlan {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Displacement (dig_ecosystem#3128 requirement 8) — cycling an UNUSED connection
+// out so a holder content discovery found can be held instead.
+// ---------------------------------------------------------------------------
+
+/// What the pool knows about ONE held peer's usefulness to this node.
+///
+/// # Why usefulness has to be reported rather than observed
+///
+/// The pool never sends over a `dig-nat` slot's transport — the gossip loop for such a peer is wired
+/// in dig-node, not here — so this crate cannot see a peer being used and must be told. That is what
+/// [`GossipHandle::peer_activity_guard`](crate::GossipHandle::peer_activity_guard) is for, and it is
+/// also why the metric is deliberately narrow: it measures what THIS node did with the peer, and
+/// nothing about what the peer holds.
+///
+/// A peer that is quiet but holds rare content is therefore not distinguished here — it is
+/// distinguished by its USER. dig-node marks a peer active whenever it fetches from it, so a rarely
+/// but genuinely used holder keeps a recent [`Self::last_active_at`] and is never the idlest peer. A
+/// peer this node has never once talked to is idle from the moment it was admitted, which is the
+/// honest reading: whatever it may hold, this node has never obtained anything from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerActivity {
+    /// The held peer.
+    pub peer_id: PeerId,
+    /// Unix seconds at which this peer was admitted (a supersede re-admits, resetting this).
+    pub admitted_at: u64,
+    /// Unix seconds of the most recent time work started or finished over this peer. Equals
+    /// [`Self::admitted_at`] for a peer that has never been used.
+    pub last_active_at: u64,
+    /// How many pieces of work are in flight over this peer right now. Non-zero means "mid-request",
+    /// and a peer mid-request is never displaced regardless of every other measure.
+    pub in_flight: usize,
+}
+
+impl PeerActivity {
+    /// Whether this peer may be cycled out at `now` under `cfg` — unused for long enough, held for
+    /// long enough, and with nothing in flight.
+    fn is_displaceable(&self, now: u64, cfg: &PeerPoolConfig) -> bool {
+        self.in_flight == 0
+            && now.saturating_sub(self.admitted_at) >= cfg.min_established_secs
+            && now.saturating_sub(self.last_active_at) >= cfg.min_idle_secs
+    }
+}
+
+/// Everything the pure displacement planner needs, so the policy is testable without a socket (the
+/// same split [`plan_pass`] uses for the maintenance policy).
+#[derive(Debug, Clone)]
+pub struct DisplacementRequest<'a> {
+    /// Peers currently held, counting EVERY slot kind — this is what the admission cap compares.
+    pub connected: usize,
+    /// The hard admission cap (`GossipConfig::max_connections`). Below it there is nothing to
+    /// displace, because the peer can simply be admitted.
+    pub capacity: usize,
+    /// Every incumbent that is a candidate to be cycled out, in any order.
+    pub incumbents: &'a [PeerActivity],
+    /// Unix seconds of the last displacement this pool performed, or `None` if it never has.
+    pub last_displacement_at: Option<u64>,
+    /// Current unix time (seconds).
+    pub now: u64,
+}
+
+/// What the pool should do with a discovered holder that wants a place in the persistent set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplacementDecision {
+    /// There is a free slot — admit without cycling anyone out.
+    RoomAlready,
+    /// Cycle this incumbent out, then admit.
+    Displace(PeerId),
+    /// Do not admit, for this reason.
+    Refused(DisplacementRefusal),
+}
+
+/// Why a discovered holder was not given a place in the persistent set.
+///
+/// Named rather than collapsed into one error because the three mean different things to a caller: one
+/// says try again later, one says the pool is too small to cycle at all, and one says every peer held
+/// is doing useful work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplacementRefusal {
+    /// The churn bound (`displacement_interval_secs`) has not elapsed since the last displacement.
+    RateLimited {
+        /// Seconds until a displacement would be allowed again.
+        retry_after_secs: u64,
+    },
+    /// Cycling anyone out would take the pool to or below `min_peers`, leaving it under-connected.
+    WouldBreachMinPeers,
+    /// Every incumbent is either in use, too recently used, or too recently admitted.
+    NoIdleIncumbent,
+}
+
+/// Decide whether a discovered holder may take a place in the persistent connection set, and at whose
+/// expense (**dig_ecosystem#3128** requirement 8).
+///
+/// # The rules, in the order they apply
+///
+/// 1. **Room already** — below `capacity` nothing is displaced; ordinary admission handles it.
+/// 2. **Never below `min_peers`** — a pool small enough that cycling would leave it under-connected
+///    refuses instead. Losing a peer to gain a peer is neutral for a healthy pool and harmful for a
+///    starving one.
+/// 3. **The churn bound** — at most one displacement per `displacement_interval_secs`. This is the
+///    bound on the attacker-reachable lever: a provider record is a claim by an untrusted peer, so a
+///    hostile peer that gets itself returned as a holder reaches this path directly, and without a
+///    rate it could choose the whole persistent set one lookup at a time. See
+///    [`DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS`](crate::constants::DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS)
+///    for why the interval is enough.
+/// 4. **The victim is the idlest DISPLACEABLE incumbent** — nothing in flight, held for at least
+///    `min_established_secs`, unused for at least `min_idle_secs`; among those, the one used longest
+///    ago. Ties break on the older admission and then on identity, so the choice is deterministic
+///    rather than dependent on map iteration order.
+///
+/// Rules 2-4 are all necessary: 2 protects connectivity, 3 protects against a chosen set, and 4 is
+/// what makes "unused" mean unused rather than merely least-recently-used.
+pub fn plan_displacement(req: &DisplacementRequest, cfg: &PeerPoolConfig) -> DisplacementDecision {
+    let cfg = cfg.normalized();
+    if req.connected < req.capacity {
+        return DisplacementDecision::RoomAlready;
+    }
+    if req.connected <= cfg.min_peers {
+        return DisplacementDecision::Refused(DisplacementRefusal::WouldBreachMinPeers);
+    }
+    if let Some(last) = req.last_displacement_at {
+        let next_allowed = last.saturating_add(cfg.displacement_interval_secs);
+        if req.now < next_allowed {
+            return DisplacementDecision::Refused(DisplacementRefusal::RateLimited {
+                retry_after_secs: next_allowed - req.now,
+            });
+        }
+    }
+    req.incumbents
+        .iter()
+        .filter(|peer| peer.is_displaceable(req.now, &cfg))
+        .min_by_key(|peer| (peer.last_active_at, peer.admitted_at, peer.peer_id))
+        .map_or(
+            DisplacementDecision::Refused(DisplacementRefusal::NoIdleIncumbent),
+            |victim| DisplacementDecision::Displace(victim.peer_id),
+        )
+}
+
+/// The outcome of admitting a holder content discovery found: who was admitted, and who — if anyone —
+/// was cycled out to make room.
+///
+/// `displaced` is `Some` only when the pool was at capacity and an unused incumbent was retired for
+/// this peer. A caller that tracks its own view of the connected set needs that identity, and the
+/// alternative (inferring it from the churn bus) is a race against the very event this returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscoveryAdmission {
+    /// The verified identity now in the pool.
+    pub peer_id: PeerId,
+    /// The peer cycled out to make room, or `None` when a slot was already free.
+    pub displaced: Option<PeerId>,
+}
+
+/// The per-peer usefulness record the pool keeps for each held peer, behind [`PoolState`]'s lock.
+#[derive(Debug, Clone, Copy)]
+struct ActivityRecord {
+    admitted_at: u64,
+    last_active_at: u64,
+    in_flight: usize,
+}
+
+/// Marks a held peer BUSY for as long as it is alive, and stamps it active at both ends
+/// (**dig_ecosystem#3128** requirement 8).
+///
+/// Hold one for the duration of any work over a pool peer — a peer-RPC round trip, a range stream, a
+/// parked recursive ask. While it lives the peer cannot be displaced at all, which is what makes
+/// "never evict a peer mid-request" structural rather than a documented hope: a long transfer that
+/// emits no intermediate signal is still protected, because the guard does not decay with time the way
+/// a last-used stamp would.
+///
+/// Dropping it stamps the peer active again, so a request that has just finished leaves the peer at
+/// the FRONT of the usefulness order rather than wherever it was when the request began.
+#[must_use = "the peer counts as busy only while the guard is held"]
+#[derive(Debug)]
+pub struct PeerActivityGuard {
+    pool: Arc<PoolState>,
+    peer_id: PeerId,
+}
+
+impl PeerActivityGuard {
+    /// Begin a unit of work over `peer_id`, or `None` when the pool holds no such peer.
+    pub(crate) fn begin(pool: Arc<PoolState>, peer_id: PeerId, now: u64) -> Option<Self> {
+        pool.begin_activity(peer_id, now)
+            .then(|| PeerActivityGuard { pool, peer_id })
+    }
+}
+
+impl Drop for PeerActivityGuard {
+    fn drop(&mut self) {
+        self.pool.end_activity(
+            self.peer_id,
+            crate::types::peer::metric_unix_timestamp_secs(),
+        );
+    }
+}
+
 /// Mutable pool bookkeeping held inside [`ServiceState`] — the dial backoff table, the in-flight
 /// reservation set, and the churn event broadcaster.
 ///
@@ -453,6 +657,18 @@ pub struct PoolState {
     /// Churn broadcaster: [`PoolEvent`]s go out here as peers join/leave. `None` until `start()` wires
     /// it (same lifecycle as the inbound channel).
     pub(crate) events_tx: Mutex<Option<broadcast::Sender<PoolEvent>>>,
+    /// Per-peer usefulness for the displacement policy (#3128 requirement 8).
+    ///
+    /// **Bounded by the peer map, and only by it.** An entry is created solely by
+    /// [`Self::record_admission`] for a peer that was just inserted into `ServiceState::peers`, and is
+    /// removed on every departure plus swept against the live map on every admission
+    /// ([`Self::retain_admitted`]). Untrusted input never reaches it: a stranger cannot name a key
+    /// here without first completing an mTLS handshake and passing admission. That matters because an
+    /// unbounded map keyed by peer-supplied identity is a live defect class in this ecosystem.
+    activity: Mutex<HashMap<PeerId, ActivityRecord>>,
+    /// Unix seconds of the last discovery displacement, for the churn bound. `None` until the pool has
+    /// displaced anyone.
+    last_displacement_at: Mutex<Option<u64>>,
 }
 
 impl PoolState {
@@ -462,12 +678,130 @@ impl PoolState {
             backoff: Mutex::new(HashMap::new()),
             in_flight: Mutex::new(std::collections::HashSet::new()),
             events_tx: Mutex::new(None),
+            activity: Mutex::new(HashMap::new()),
+            last_displacement_at: Mutex::new(None),
         }
     }
 
+    /// Start tracking a peer's usefulness from its admission (#3128 requirement 8). A re-admission —
+    /// the newest-wins supersede — resets both clocks, because the session being measured is new.
+    pub(crate) fn record_admission(&self, peer_id: PeerId, now: u64) {
+        if let Ok(mut g) = self.activity.lock() {
+            g.insert(
+                peer_id,
+                ActivityRecord {
+                    admitted_at: now,
+                    last_active_at: now,
+                    in_flight: 0,
+                },
+            );
+        }
+    }
+
+    /// Forget a departed peer's usefulness record.
+    pub(crate) fn record_departure(&self, peer_id: &PeerId) {
+        if let Ok(mut g) = self.activity.lock() {
+            g.remove(peer_id);
+        }
+    }
+
+    /// Drop every usefulness record for a peer that is no longer held.
+    ///
+    /// [`Self::record_departure`] is called on each departure path, so this is the backstop that keeps
+    /// the map bounded by the peer map even if a future path forgets: it is run against the live peer
+    /// map on every displacement decision, which is the one moment the map is already in hand.
+    pub(crate) fn retain_admitted(&self, held: &std::collections::HashSet<PeerId>) {
+        if let Ok(mut g) = self.activity.lock() {
+            g.retain(|peer_id, _| held.contains(peer_id));
+        }
+    }
+
+    /// Mark work as STARTED over `peer_id`, returning `false` when the peer holds no record — a peer
+    /// this pool does not hold cannot be made busy, which is what bounds [`Self::activity`].
+    pub(crate) fn begin_activity(&self, peer_id: PeerId, now: u64) -> bool {
+        match self.activity.lock() {
+            Ok(mut g) => match g.get_mut(&peer_id) {
+                Some(record) => {
+                    record.in_flight = record.in_flight.saturating_add(1);
+                    record.last_active_at = now;
+                    true
+                }
+                None => false,
+            },
+            Err(_) => false,
+        }
+    }
+
+    /// Mark work as FINISHED over `peer_id`, stamping it active so a just-served peer sorts as the
+    /// most recently useful rather than as of when its request began.
+    pub(crate) fn end_activity(&self, peer_id: PeerId, now: u64) {
+        if let Ok(mut g) = self.activity.lock() {
+            if let Some(record) = g.get_mut(&peer_id) {
+                record.in_flight = record.in_flight.saturating_sub(1);
+                record.last_active_at = now;
+            }
+        }
+    }
+
+    /// The usefulness of every held peer whose identity is in `eligible`, as the pure planner sees it.
+    ///
+    /// `eligible` is what scopes displacement to the `dig-nat` pool slots: those are the persistent
+    /// connection set requirement 8 speaks of, and the only slots whose usage this crate cannot
+    /// observe for itself. A Chia-protocol WebSocket peer is busy with gossip this crate never stamps,
+    /// so measuring it by this clock would read as permanently idle and evict it first.
+    pub(crate) fn activity_of(
+        &self,
+        eligible: &std::collections::HashSet<PeerId>,
+    ) -> Vec<PeerActivity> {
+        let Ok(g) = self.activity.lock() else {
+            return Vec::new();
+        };
+        eligible
+            .iter()
+            .filter_map(|peer_id| {
+                g.get(peer_id).map(|record| PeerActivity {
+                    peer_id: *peer_id,
+                    admitted_at: record.admitted_at,
+                    last_active_at: record.last_active_at,
+                    in_flight: record.in_flight,
+                })
+            })
+            .collect()
+    }
+
+    /// When this pool last displaced a peer, for the churn bound.
+    pub(crate) fn last_displacement_at(&self) -> Option<u64> {
+        self.last_displacement_at.lock().ok().and_then(|g| *g)
+    }
+
+    /// Charge the churn bound for a displacement performed at `now`.
+    pub(crate) fn record_displacement(&self, now: u64) {
+        if let Ok(mut g) = self.last_displacement_at.lock() {
+            *g = Some(now);
+        }
+    }
+
+    /// Number of peers whose usefulness is being tracked — so a test can assert this map never
+    /// outgrows the peer map it is bounded by.
+    #[cfg(any(test, feature = "test-util"))]
+    #[doc(hidden)]
+    pub fn tracked_peer_count(&self) -> usize {
+        self.activity.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
     /// Publish a churn event to all subscribers (no-op if the channel isn't wired or has no
-    /// subscribers — a dropped event is never fatal).
+    /// subscribers — a dropped event is never fatal), and keep the usefulness map in step with it.
+    ///
+    /// Membership bookkeeping lives HERE rather than at each admission and departure site because this
+    /// is already the one place every one of them funnels through to announce itself. Two sets that
+    /// must agree and are maintained in two places drift; maintained in one, they cannot.
     pub(crate) fn publish(&self, event: PoolEvent) {
+        match &event {
+            PoolEvent::PeerAdded { peer_id, .. } => {
+                self.record_admission(*peer_id, crate::types::peer::metric_unix_timestamp_secs());
+            }
+            PoolEvent::PeerRemoved { peer_id, .. } => self.record_departure(peer_id),
+        }
         if let Ok(g) = self.events_tx.lock() {
             if let Some(tx) = g.as_ref() {
                 let _ = tx.send(event);
@@ -1015,7 +1349,248 @@ mod tests {
         pool.release(k);
         assert!(pool.reserve(k), "reservable again after release");
     }
+
+    // -----------------------------------------------------------------------
+    // Displacement policy (dig_ecosystem#3128 requirement 8)
+    //
+    // Every bound below is pinned from BOTH sides — at the threshold it is
+    // allowed, one unit short it is refused — because a bound tested only from
+    // the refusing side is satisfied by an implementation that refuses always.
+    // -----------------------------------------------------------------------
+
+    /// Pool config with the three displacement bounds set explicitly, so no fixture depends on the
+    /// shipped defaults and each test states the bound it is exercising.
+    fn displacement_cfg(min: usize, idle: u64, established: u64, interval: u64) -> PeerPoolConfig {
+        PeerPoolConfig {
+            min_peers: min,
+            target_peers: min.max(4),
+            max_peers: 16,
+            min_idle_secs: idle,
+            min_established_secs: established,
+            displacement_interval_secs: interval,
+            ..Default::default()
+        }
+    }
+
+    fn incumbent(tag: u8, admitted_at: u64, last_active_at: u64, in_flight: usize) -> PeerActivity {
+        PeerActivity {
+            peer_id: PeerId::from([tag; 32]),
+            admitted_at,
+            last_active_at,
+            in_flight,
+        }
+    }
+
+    /// A request with one knob per fixture; `connected` defaults to the incumbent count, which is the
+    /// realistic shape (every held peer is cyclable in these fixtures).
+    fn request<'a>(
+        incumbents: &'a [PeerActivity],
+        capacity: usize,
+        now: u64,
+        last_displacement_at: Option<u64>,
+    ) -> DisplacementRequest<'a> {
+        DisplacementRequest {
+            connected: incumbents.len(),
+            capacity,
+            incumbents,
+            last_displacement_at,
+            now,
+        }
+    }
+
+    #[test]
+    fn below_capacity_nobody_is_displaced() {
+        let cfg = displacement_cfg(1, 0, 0, 0);
+        let held = [incumbent(1, 0, 0, 0), incumbent(2, 0, 0, 0)];
+        assert_eq!(
+            plan_displacement(&request(&held, 4, 1_000, None), &cfg),
+            DisplacementDecision::RoomAlready,
+            "a free slot is not a reason to evict anyone"
+        );
+    }
+
+    /// The min-peers floor, from both sides: with `min_peers` peers held, cycling would leave the node
+    /// under-connected and is refused; one peer above it, the same request succeeds. Every other input
+    /// is identical, so only the floor can explain the difference.
+    #[test]
+    fn displacement_never_takes_the_pool_to_or_below_min_peers() {
+        let cfg = displacement_cfg(2, 0, 0, 0);
+        let at_floor = [incumbent(1, 0, 0, 0), incumbent(2, 0, 0, 0)];
+        assert_eq!(
+            plan_displacement(&request(&at_floor, 2, 1_000, None), &cfg),
+            DisplacementDecision::Refused(DisplacementRefusal::WouldBreachMinPeers),
+            "two peers with min_peers=2: losing one leaves the node under-connected"
+        );
+        let above_floor = [
+            incumbent(1, 0, 0, 0),
+            incumbent(2, 0, 0, 0),
+            incumbent(3, 0, 0, 0),
+        ];
+        assert!(
+            matches!(
+                plan_displacement(&request(&above_floor, 3, 1_000, None), &cfg),
+                DisplacementDecision::Displace(_)
+            ),
+            "one peer above the floor, the same cycle is allowed"
+        );
+    }
+
+    /// **The churn bound — the bound on the attacker-reachable lever**, pinned from both sides. One
+    /// second before the interval elapses the displacement is refused with the wait; exactly at the
+    /// interval it is allowed. A bound only tested from below would also pass against an
+    /// implementation that never displaces again at all.
+    #[test]
+    fn the_churn_bound_admits_one_displacement_per_interval_and_no_more() {
+        let cfg = displacement_cfg(1, 0, 0, 600);
+        let held = [incumbent(1, 0, 0, 0), incumbent(2, 0, 0, 0)];
+
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 1_599, Some(1_000)), &cfg),
+            DisplacementDecision::Refused(DisplacementRefusal::RateLimited {
+                retry_after_secs: 1
+            }),
+            "one second short of the interval, a second displacement is refused"
+        );
+        assert!(
+            matches!(
+                plan_displacement(&request(&held, 2, 1_600, Some(1_000)), &cfg),
+                DisplacementDecision::Displace(_)
+            ),
+            "exactly at the interval it is allowed again, or the bound is a permanent stop"
+        );
+        assert!(
+            matches!(
+                plan_displacement(&request(&held, 2, 1, None), &cfg),
+                DisplacementDecision::Displace(_)
+            ),
+            "a pool that has never displaced is not rate-limited"
+        );
+    }
+
+    /// **Never evict a peer mid-request**, and the fixture makes the in-flight peer the one a
+    /// policy ignoring `in_flight` would certainly pick: it is BOTH the longest-established and the
+    /// longest-idle. So a pass here cannot come from the victim simply being unattractive.
+    #[test]
+    fn a_peer_with_work_in_flight_is_never_the_victim() {
+        let cfg = displacement_cfg(1, 0, 0, 0);
+        let busy_but_idlest = incumbent(1, 0, 0, 1);
+        let quiet = incumbent(2, 500, 500, 0);
+        let held = [busy_but_idlest, quiet];
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 1_000, None), &cfg),
+            DisplacementDecision::Displace(quiet.peer_id),
+            "the idlest peer had work in flight, so the next-idlest must be chosen instead"
+        );
+
+        let only_busy = [busy_but_idlest, incumbent(3, 0, 0, 2)];
+        assert_eq!(
+            plan_displacement(&request(&only_busy, 2, 1_000, None), &cfg),
+            DisplacementDecision::Refused(DisplacementRefusal::NoIdleIncumbent),
+            "when every peer is mid-request there is no victim, and refusing is the answer"
+        );
+    }
+
+    /// **"Unused" must mean unused, not merely least-recently-used** — pinned from both sides of
+    /// `min_idle_secs`. The single incumbent is the only possible victim in both halves, so the
+    /// threshold is the only thing that can change the outcome.
+    #[test]
+    fn only_a_peer_idle_for_long_enough_may_be_displaced() {
+        let cfg = displacement_cfg(1, 300, 0, 0);
+        let held = [incumbent(1, 0, 0, 0), incumbent(2, 0, 800, 0)];
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 1_099, None), &cfg),
+            DisplacementDecision::Displace(PeerId::from([1; 32])),
+            "peer 2 was used 299s ago and is protected; peer 1 has been idle far longer"
+        );
+        let both_recent = [incumbent(1, 0, 900, 0), incumbent(2, 0, 800, 0)];
+        assert_eq!(
+            plan_displacement(&request(&both_recent, 2, 1_099, None), &cfg),
+            DisplacementDecision::Refused(DisplacementRefusal::NoIdleIncumbent),
+            "a busy node whose least-recently-used peer was used 199s ago cycles nobody out"
+        );
+        let at_threshold = [incumbent(1, 0, 900, 0), incumbent(2, 0, 800, 0)];
+        assert_eq!(
+            plan_displacement(&request(&at_threshold, 2, 1_200, None), &cfg),
+            DisplacementDecision::Displace(PeerId::from([2; 32])),
+            "at exactly min_idle_secs the idlest peer becomes displaceable"
+        );
+    }
+
+    /// **A freshly admitted peer is protected**, from both sides of `min_established_secs` — otherwise
+    /// the maintenance loop and discovery thrash, each undoing the other's dial.
+    #[test]
+    fn a_recently_admitted_peer_is_protected_from_displacement() {
+        let cfg = displacement_cfg(1, 0, 600, 0);
+        let fresh = [incumbent(1, 500, 500, 0), incumbent(2, 401, 401, 0)];
+        assert_eq!(
+            plan_displacement(&request(&fresh, 2, 1_000, None), &cfg),
+            DisplacementDecision::Refused(DisplacementRefusal::NoIdleIncumbent),
+            "held for 500s and 599s: both are inside the establishment floor"
+        );
+        let one_established = [incumbent(1, 500, 500, 0), incumbent(2, 400, 400, 0)];
+        assert_eq!(
+            plan_displacement(&request(&one_established, 2, 1_000, None), &cfg),
+            DisplacementDecision::Displace(PeerId::from([2; 32])),
+            "at exactly 600s held, that peer becomes displaceable"
+        );
+    }
+
+    /// **The victim is the IDLEST, not the oldest.** The fixture inverts the two orders: the
+    /// longest-established peer is the most recently used, so a policy that evicted by admission time
+    /// (an easy mistake, and what an LRU keyed on the wrong field looks like) picks the opposite peer.
+    #[test]
+    fn the_victim_is_the_idlest_peer_not_the_longest_established_one() {
+        let cfg = displacement_cfg(1, 0, 0, 0);
+        let oldest_but_busiest = incumbent(1, 0, 900, 0);
+        let newest_but_idlest = incumbent(2, 100, 200, 0);
+        let held = [oldest_but_busiest, newest_but_idlest];
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 1_000, None), &cfg),
+            DisplacementDecision::Displace(newest_but_idlest.peer_id),
+            "usefulness is measured by last use, not by how long the peer has been held"
+        );
+    }
+
+    /// Two peers equally idle and equally established must resolve the same way every time — a policy
+    /// that fell through to map iteration order would make the eviction, and every test above it,
+    /// non-deterministic.
+    #[test]
+    fn an_exact_tie_is_broken_deterministically() {
+        let cfg = displacement_cfg(1, 0, 0, 0);
+        let held = [incumbent(9, 100, 200, 0), incumbent(2, 100, 200, 0)];
+        let reversed = [incumbent(2, 100, 200, 0), incumbent(9, 100, 200, 0)];
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 1_000, None), &cfg),
+            plan_displacement(&request(&reversed, 2, 1_000, None), &cfg),
+            "the same set of incumbents must yield the same victim in either order"
+        );
+    }
+
+    /// The usefulness map is bounded by POOL MEMBERSHIP, and an identity the pool does not hold cannot
+    /// create an entry in it. That is the property that keeps an untrusted peer from growing it.
+    #[test]
+    fn usefulness_is_tracked_only_for_admitted_peers() {
+        let pool = PoolState::new();
+        let stranger = PeerId::from([0xaa; 32]);
+        assert!(
+            !pool.begin_activity(stranger, 10),
+            "a peer the pool does not hold cannot be marked busy"
+        );
+        assert_eq!(
+            pool.tracked_peer_count(),
+            0,
+            "and must not have created a record by asking"
+        );
+
+        pool.record_admission(stranger, 10);
+        assert!(pool.begin_activity(stranger, 20), "an admitted peer can");
+        assert_eq!(pool.tracked_peer_count(), 1);
+
+        pool.retain_admitted(&std::collections::HashSet::new());
+        assert_eq!(
+            pool.tracked_peer_count(),
+            0,
+            "and the sweep drops every record whose peer is no longer held"
+        );
+    }
 }
-
-
-// WIP (dig_ecosystem#3128 lane C): #71 observed-session teardown, then idleness displacement.

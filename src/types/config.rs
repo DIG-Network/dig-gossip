@@ -430,14 +430,26 @@ pub struct PeerPoolConfig {
     /// Consecutive failures after which a candidate is dropped from the dial rotation for the
     /// session. Default [`DEFAULT_POOL_MAX_DIAL_FAILURES`](crate::constants::DEFAULT_POOL_MAX_DIAL_FAILURES).
     pub max_dial_failures: u32,
+    /// Seconds a held peer must have gone UNUSED before content discovery may displace it. Default
+    /// [`DEFAULT_POOL_MIN_IDLE_SECS`](crate::constants::DEFAULT_POOL_MIN_IDLE_SECS).
+    pub min_idle_secs: u64,
+    /// Seconds a held peer must have been HELD before content discovery may displace it. Default
+    /// [`DEFAULT_POOL_MIN_ESTABLISHED_SECS`](crate::constants::DEFAULT_POOL_MIN_ESTABLISHED_SECS).
+    pub min_established_secs: u64,
+    /// Minimum seconds between two discovery-driven displacements — the bound on the
+    /// attacker-reachable churn lever. Default
+    /// [`DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS`](crate::constants::DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS).
+    pub displacement_interval_secs: u64,
 }
 
 impl Default for PeerPoolConfig {
     fn default() -> Self {
         use crate::constants::{
-            DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS, DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS,
-            DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS, DEFAULT_POOL_MAX_DIAL_FAILURES,
-            DEFAULT_POOL_MAX_PEERS, DEFAULT_POOL_MIN_PEERS, DEFAULT_POOL_TARGET_PEERS,
+            DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS, DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS,
+            DEFAULT_POOL_MAINTENANCE_INTERVAL_SECS, DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS,
+            DEFAULT_POOL_MAX_DIAL_FAILURES, DEFAULT_POOL_MAX_PEERS,
+            DEFAULT_POOL_MIN_ESTABLISHED_SECS, DEFAULT_POOL_MIN_IDLE_SECS, DEFAULT_POOL_MIN_PEERS,
+            DEFAULT_POOL_TARGET_PEERS,
         };
         Self {
             target_peers: DEFAULT_POOL_TARGET_PEERS,
@@ -447,6 +459,9 @@ impl Default for PeerPoolConfig {
             dial_backoff_base_secs: DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS,
             max_dial_backoff_secs: DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS,
             max_dial_failures: DEFAULT_POOL_MAX_DIAL_FAILURES,
+            min_idle_secs: DEFAULT_POOL_MIN_IDLE_SECS,
+            min_established_secs: DEFAULT_POOL_MIN_ESTABLISHED_SECS,
+            displacement_interval_secs: DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS,
         }
     }
 }

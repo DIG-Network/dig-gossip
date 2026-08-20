@@ -46,15 +46,20 @@ fn node_cert(seed: [u8; 32]) -> Arc<dig_tls::NodeCert> {
 }
 
 /// Run a REAL mTLS handshake over an in-memory duplex and return the RESPONDER's session plus the
-/// `peer_id` its certificate proved. Calling this twice with the same `initiator` seed yields two
-/// DIFFERENT sessions for the SAME identity — the reconnect the supersede path exists for.
+/// `peer_id` its certificate proved.
+///
+/// The initiator is passed as an already-minted [`dig_tls::NodeCert`] rather than a seed, because
+/// `peer_id = SHA-256(TLS SPKI DER)` and `NodeCert::generate_signed` mints a FRESH TLS keypair every
+/// call — two certs from the same BLS seed prove two DIFFERENT identities. Reusing one cert across two
+/// handshakes is therefore the only way to produce two distinct sessions for one identity, which is
+/// exactly the reconnect the supersede path exists for.
 ///
 /// The initiator side is returned so the caller can hold it: dropping it would close the circuit and
 /// make the responder's liveness observer report a departed peer, which these fixtures must not
 /// confuse with a retirement.
 async fn authenticated_relayed_circuit(
     responder: [u8; 32],
-    initiator: [u8; 32],
+    initiator: &Arc<dig_tls::NodeCert>,
 ) -> (
     dig_nat::PeerSession,
     dig_gossip::PeerId,
@@ -62,7 +67,7 @@ async fn authenticated_relayed_circuit(
 ) {
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let server_node = node_cert(responder);
-    let client_node = node_cert(initiator);
+    let client_node = Arc::clone(initiator);
 
     let server = async move {
         let tls = dig_tls::server_config_spki_pinned(&server_node, BindingPolicy::Opportunistic)
@@ -140,9 +145,12 @@ async fn running_handle() -> (GossipService, GossipHandle, tempfile::TempDir) {
 #[tokio::test]
 async fn superseding_an_observed_session_tells_that_session_owner_and_no_other() {
     let (svc, handle, _dir) = running_handle().await;
-    let (first_session, peer_id, _first_peer) = authenticated_relayed_circuit([31; 32], [32; 32]).await;
+    // ONE certificate, TWO handshakes: same proven identity, two live sessions.
+    let peer_cert = node_cert([32; 32]);
+    let (first_session, peer_id, _first_peer) =
+        authenticated_relayed_circuit([31; 32], &peer_cert).await;
     let (second_session, same_peer_id, _second_peer) =
-        authenticated_relayed_circuit([33; 32], [32; 32]).await;
+        authenticated_relayed_circuit([33; 32], &peer_cert).await;
     assert_eq!(
         peer_id, same_peer_id,
         "both circuits must prove the SAME identity, or this is not a supersede at all"
@@ -197,9 +205,9 @@ async fn superseding_an_observed_session_tells_that_session_owner_and_no_other()
 #[tokio::test]
 async fn adopting_a_different_peer_retires_nobody() {
     let (svc, handle, _dir) = running_handle().await;
-    let (held_session, held_id, _held_peer) = authenticated_relayed_circuit([34; 32], [35; 32]).await;
+    let (held_session, held_id, _held_peer) = authenticated_relayed_circuit([34; 32], &node_cert([35; 32])).await;
     let (other_session, other_id, _other_peer) =
-        authenticated_relayed_circuit([36; 32], [37; 32]).await;
+        authenticated_relayed_circuit([36; 32], &node_cert([37; 32])).await;
     assert_ne!(held_id, other_id, "the fixture needs two distinct peers");
 
     let held = NoticeCounter::default();
@@ -242,7 +250,7 @@ async fn adopting_a_different_peer_retires_nobody() {
 #[tokio::test]
 async fn disconnect_relinquishes_the_slot_without_retiring_the_session() {
     let (svc, handle, _dir) = running_handle().await;
-    let (session, peer_id, _peer) = authenticated_relayed_circuit([38; 32], [39; 32]).await;
+    let (session, peer_id, _peer) = authenticated_relayed_circuit([38; 32], &node_cert([39; 32])).await;
     let owner = NoticeCounter::default();
 
     handle
