@@ -183,6 +183,20 @@ pub struct GossipHandle {
     pub(crate) inner: Arc<ServiceState>,
 }
 
+/// Who is asking for a `dig-nat` peer to be admitted, which decides only what happens at a FULL pool.
+///
+/// Every other admission rule — self, ban, the /16 and AS eclipse caps, the relayed-outbound cap — is
+/// identical for both, and deliberately so: discovery is reachable by an untrusted peer's claim, so it
+/// must not be a route around any guard. What it does earn is the ability to displace, because unlike
+/// the maintenance loop it has a reason to prefer this peer over one the node already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionSource {
+    /// The pool maintenance loop or a manual dial: refused when the pool is full.
+    Maintained,
+    /// Content discovery found a holder outside the persistent set: may cycle an unused peer out.
+    Discovered,
+}
+
 impl GossipHandle {
     // ------------------------------------------------------------------
     // Internal helpers
@@ -1168,13 +1182,13 @@ impl GossipHandle {
         // it cannot fire a ghost teardown against this newer session, then close its WebSocket
         // (dropping a `LiveSlot` does not close the socket). The generation guard in
         // `disconnect_after_keepalive_failure` is the load-bearing invariant; this abort is the prompt
-        // first line of defence. A displaced Stub/Nat slot carries no keepalive and is closed by being
-        // dropped here (its dedicated transport teardown is #1703 items 2/4, out of scope). No
-        // diversity-budget bookkeeping is needed on supersede — occupancy is derived from the map, so
-        // removing the old slot and inserting the new one IS the accounting.
-        if let Some(PeerSlot::Live(stale)) = superseded {
-            stale.keepalive_task.abort();
-            let _ = stale.peer.close().await;
+        // first line of defence. A displaced Stub/Nat slot carries no keepalive; an `Owned` `dig-nat`
+        // slot closes by being dropped (#1717) and an `Observed` one tells its owner (#71) — both via
+        // `retire_slot`, because a direct link supersedes a relayed session rather than coexisting
+        // with it. No diversity-budget bookkeeping is needed on supersede — occupancy is derived from
+        // the map, so removing the old slot and inserting the new one IS the accounting.
+        if let Some(stale) = superseded {
+            super::state::retire_slot(stale).await;
         }
 
         // INT-001: Register peer in Plumtree state (starts as eager per SPEC §8.1).
@@ -1443,6 +1457,58 @@ impl GossipHandle {
         &self,
         conn: crate::nat::NatPeerConnection,
     ) -> Result<PeerId, GossipError> {
+        self.admit_nat_connection(conn, AdmissionSource::Maintained)
+            .await
+            .map(|admission| admission.peer_id)
+    }
+
+    /// Adopt a connection to a holder CONTENT DISCOVERY found, cycling an unused peer out if the pool
+    /// is full (**dig_ecosystem#3128** requirement 8).
+    ///
+    /// [`Self::adopt_nat_connection`] refuses at the cap, which is right for the maintenance loop: it
+    /// dials toward a target and has no reason to prefer one candidate over the peers already held.
+    /// Discovery does have such a reason — it found a peer that demonstrably holds content this node
+    /// wants — so at the cap it may displace an incumbent that is contributing nothing instead of
+    /// being turned away and rediscovering the same holder on every future read.
+    ///
+    /// # What may be displaced, and what may not
+    ///
+    /// The victim is chosen by [`plan_displacement`](crate::service::peer_pool::plan_displacement):
+    /// the idlest `dig-nat` pool peer with nothing in flight, held for at least
+    /// `min_established_secs` and unused for at least `min_idle_secs`, never taking the pool to or
+    /// below `min_peers`, and at most one displacement per `displacement_interval_secs`. A peer with
+    /// work in flight is excluded structurally rather than by timing — see
+    /// [`Self::peer_activity_guard`].
+    ///
+    /// # This is an attacker-reachable path, and the bound is deliberate
+    ///
+    /// A provider record is a CLAIM by an untrusted peer (NC-12), so a hostile peer that gets itself
+    /// returned as a holder reaches this admission directly. The churn bound is what stops that
+    /// becoming a way to CHOOSE this node's persistent set one lookup at a time; the eclipse caps
+    /// (INT-006 /16, INT-007 AS, and the relayed-outbound cap) apply to a discovered peer exactly as
+    /// to any other, and are evaluated BEFORE anything is displaced — so a peer those caps will refuse
+    /// never costs this node an incumbent.
+    ///
+    /// # Errors
+    ///
+    /// [`GossipError::ConnectionFiltered`] naming the refusal when the pool is full and no peer may be
+    /// cycled out; otherwise exactly the errors [`Self::adopt_nat_connection`] returns.
+    pub async fn adopt_discovered_nat_connection(
+        &self,
+        conn: crate::nat::NatPeerConnection,
+    ) -> Result<crate::service::peer_pool::DiscoveryAdmission, GossipError> {
+        self.admit_nat_connection(conn, AdmissionSource::Discovered)
+            .await
+    }
+
+    /// The ONE `dig-nat` admission path, shared by the maintenance loop and content discovery so the
+    /// self / ban / capacity / eclipse rules can never drift between them. `source` decides only how a
+    /// FULL pool is handled: the maintenance loop is refused, discovery may cycle a peer out.
+    async fn admit_nat_connection(
+        &self,
+        conn: crate::nat::NatPeerConnection,
+        source: AdmissionSource,
+    ) -> Result<crate::service::peer_pool::DiscoveryAdmission, GossipError> {
         self.require_running()?;
         let peer_id = conn.peer_id();
         let remote = conn.remote_addr();
@@ -1468,7 +1534,8 @@ impl GossipHandle {
         // Both admission budgets and the insert are decided under ONE `peers`-lock hold, so the
         // check→insert is atomic (no TOCTOU where two concurrent net-new adoptions into the same empty
         // group both pass). The displaced slot leaves the lock scope in `superseded` and is torn down
-        // after the lock is released.
+        // after the lock is released; a peer CYCLED OUT to make room leaves in `displaced`.
+        let mut displaced: Option<(PeerId, PeerSlot)> = None;
         let superseded = {
             let mut peers = self
                 .inner
@@ -1496,7 +1563,14 @@ impl GossipHandle {
             let replaces_held_slot = held.is_some();
             let is_outbound_reconnect = matches!(held, Some(slot) if slot.is_outbound());
 
-            if !replaces_held_slot && peers.len() >= self.inner.config.max_connections {
+            // #3128: the maintenance loop is refused at the cap here, unchanged. Discovery's capacity
+            // is resolved AFTER the eclipse caps below, so an eviction is never spent admitting a peer
+            // those caps were going to refuse anyway.
+            let needs_a_free_slot = !replaces_held_slot;
+            if needs_a_free_slot
+                && source == AdmissionSource::Maintained
+                && peers.len() >= self.inner.config.max_connections
+            {
                 return Err(GossipError::MaxConnectionsReached(
                     self.inner.config.max_connections,
                 ));
@@ -1550,6 +1624,13 @@ impl GossipHandle {
                     }
                 });
             }
+            // #3128 requirement 8 - a discovered holder may take an UNUSED peer's place, decided
+            // under the same lock hold as the insert so two concurrent discoveries cannot both spend
+            // the last slot (the #1710 atomicity rule) or both charge one displacement interval.
+            if needs_a_free_slot && source == AdmissionSource::Discovered {
+                displaced = self.displace_for_discovered_peer(&mut peers)?;
+            }
+
             peers.insert(
                 peer_id,
                 PeerSlot::Nat(super::state::NatSlot {
@@ -1562,17 +1643,13 @@ impl GossipHandle {
             )
         };
 
-        // Newest-wins supersede (#1762) — tear the displaced slot down AFTER releasing the `peers`
-        // lock. A displaced `Live` slot needs its keepalive aborted first, or that stale task's
-        // teardown could fire against this newer session (the #1691 ghost-keepalive race; the
-        // generation guard in `disconnect_after_keepalive_failure` is the load-bearing invariant, this
-        // abort is the prompt first line of defence), then its WebSocket closed — dropping a `LiveSlot`
-        // does not close the socket. A displaced `Nat`/`Stub` slot owns no keepalive and its transport
-        // is closed by being dropped here (`Nat` drop tears down the mux session — the #1717
-        // invariant), which is exactly what frees the dead relay circuit this fix supersedes.
-        if let Some(PeerSlot::Live(stale)) = superseded {
-            stale.keepalive_task.abort();
-            let _ = stale.peer.close().await;
+        // Newest-wins supersede (#1762) — retire the displaced slot AFTER releasing the `peers` lock,
+        // each arm by whoever owns its transport (`retire_slot`): a `Live` slot's keepalive is aborted
+        // before its socket closes (the #1691 ghost-keepalive race), an `Owned` `dig-nat` slot's mux
+        // closes on drop (#1717) — which is exactly what frees the dead relay circuit this fix
+        // supersedes — and an `Observed` one tells its owner, because nothing here can close it (#71).
+        if let Some(stale) = superseded {
+            super::state::retire_slot(stale).await;
         }
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
@@ -1592,7 +1669,119 @@ impl GossipHandle {
         // lifecycle — establish here, teardown at `disconnect` / `reap_departed_peers` — is visible in
         // logs. The silent drop is why 10k+ redundant re-dials churned invisibly for days.
         tracing::info!(peer_id = %peer_id, remote = %remote, ?method, "pool connection established");
-        Ok(peer_id)
+
+        // The cycled-out peer is torn down and announced AFTER the lock, in the same order
+        // `disconnect` uses (retire, log, publish, Plumtree) so no lock-order inversion is introduced.
+        let displaced_id = match displaced {
+            Some((victim, slot)) => {
+                super::state::retire_slot(slot).await;
+                tracing::info!(
+                    peer_id = %victim,
+                    for_peer = %peer_id,
+                    reason = ?crate::service::peer_pool::PoolRemovalReason::Displaced,
+                    "pool connection closed",
+                );
+                self.inner
+                    .pool
+                    .publish(crate::service::peer_pool::PoolEvent::PeerRemoved {
+                        peer_id: victim,
+                        reason: crate::service::peer_pool::PoolRemovalReason::Displaced,
+                    });
+                self.inner.remove_from_plumtree_unless_reconnected(&victim);
+                Some(victim)
+            }
+            None => None,
+        };
+        Ok(crate::service::peer_pool::DiscoveryAdmission {
+            peer_id,
+            displaced: displaced_id,
+        })
+    }
+
+    /// Cycle one UNUSED peer out of a full map so a discovered holder can be admitted, or refuse.
+    ///
+    /// Runs under the caller's `peers`-lock hold: the decision, the removal and the churn-bound charge
+    /// are one atomic step, so two concurrent discoveries cannot both displace on one interval.
+    fn displace_for_discovered_peer(
+        &self,
+        peers: &mut std::collections::HashMap<PeerId, PeerSlot>,
+    ) -> Result<Option<(PeerId, PeerSlot)>, GossipError> {
+        use crate::service::peer_pool::{
+            plan_displacement, DisplacementDecision, DisplacementRequest,
+        };
+
+        let held: std::collections::HashSet<PeerId> = peers.keys().copied().collect();
+        // Displacement is scoped to `dig-nat` pool slots: they are the persistent connection set
+        // requirement 8 speaks of, and the only slots whose usefulness this crate is TOLD about
+        // rather than observing. A Chia-protocol WebSocket peer is busy with gossip nothing stamps
+        // here, so judging it by this clock would read as permanently idle and evict it first.
+        let cyclable: std::collections::HashSet<PeerId> = peers
+            .iter()
+            .filter(|(_, slot)| matches!(slot, PeerSlot::Nat(_)))
+            .map(|(peer_id, _)| *peer_id)
+            .collect();
+        // The one moment the live peer map is in hand: prune any usefulness record that outlived its
+        // peer, so the map stays bounded by membership whichever departure path ran.
+        self.inner.pool.retain_admitted(&held);
+
+        let cfg = self.inner.config.peer_pool.clone().unwrap_or_default();
+        let now = metric_unix_timestamp_secs();
+        let incumbents = self.inner.pool.activity_of(&cyclable);
+        let decision = plan_displacement(
+            &DisplacementRequest {
+                connected: peers.len(),
+                capacity: self.inner.config.max_connections,
+                incumbents: &incumbents,
+                last_displacement_at: self.inner.pool.last_displacement_at(),
+                now,
+            },
+            &cfg,
+        );
+
+        match decision {
+            DisplacementDecision::RoomAlready => Ok(None),
+            DisplacementDecision::Displace(victim) => {
+                let slot = peers.remove(&victim).ok_or_else(|| {
+                    // Unreachable: the victim was chosen from this very map under this very lock.
+                    GossipError::ConnectionFiltered(SafeText::from_untrusted(format!(
+                        "#3128: chosen displacement victim {victim} is not in the peer map"
+                    )))
+                })?;
+                // Forget the victim NOW rather than relying on the `PeerRemoved` publish below: that
+                // happens after the lock is released, and a concurrent admission reading the
+                // usefulness map in the gap would otherwise see a record for a peer already gone.
+                self.inner.pool.record_departure(&victim);
+                self.inner.pool.record_displacement(now);
+                Ok(Some((victim, slot)))
+            }
+            DisplacementDecision::Refused(reason) => {
+                Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                    format!("#3128: the pool is full and no peer may be cycled out ({reason:?})"),
+                )))
+            }
+        }
+    }
+
+    /// Mark a pool peer BUSY, and stamp it useful, for as long as the returned guard lives
+    /// (**dig_ecosystem#3128** requirement 8).
+    ///
+    /// This crate never sends over a `dig-nat` peer's transport - that loop lives in dig-node - so it
+    /// cannot see a peer being used and must be told. Hold a guard around any work over a pool peer: a
+    /// peer-RPC round trip, a range stream, a parked ask. While it lives the peer cannot be displaced
+    /// at all, and dropping it stamps the peer as most-recently-useful.
+    ///
+    /// Returns `None` for a peer this pool does not hold, which is what keeps the usefulness map
+    /// bounded by membership rather than by whatever identities a caller mentions.
+    #[must_use]
+    pub fn peer_activity_guard(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<crate::service::peer_pool::PeerActivityGuard> {
+        crate::service::peer_pool::PeerActivityGuard::begin(
+            Arc::clone(&self.inner.pool),
+            peer_id,
+            metric_unix_timestamp_secs(),
+        )
     }
 
     /// Snapshot each connected peer's ADVERTISED SOFTWARE BUILD: `(peer_id, software_version)`
@@ -1712,18 +1901,19 @@ impl GossipHandle {
     ///   bytes — convert with `PeerId::from(*nat_peer_id.as_bytes())`.
     /// * `remote` is the RELAY endpoint the circuit arrived over, never a peer address; it is reported
     ///   as the session address and is never dialed (the slot is [`TraversalKind::Relayed`]).
-    /// * `closed` MUST observe the session serving THIS peer
-    ///   ([`PeerSession::closed_handle`](dig_nat::PeerSession::closed_handle)). It is the slot's only
-    ///   departure signal: a handle for a different (or already-dead) session makes the peer reap
+    /// * `session` pairs the liveness observer with the notice that reaches the session's owner — see
+    ///   [`ObservedSession::new`](crate::ObservedSession::new). The observer is the slot's only
+    ///   departure signal, so one for a different (or already-dead) session makes the peer reap
     ///   immediately or never.
     /// * Teardown stays the CALLER's. Unlike the by-value path, dropping this slot does not close the
-    ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving.
-    /// * **Supersede is teardown too, and the pool cannot perform it.** A later circuit for the same
-    ///   `peer_id` displaces this slot newest-wins, and dropping an observer closes nothing — so the
-    ///   displaced session keeps running, un-counted and un-notified, unless the CALLER closes it. A
-    ///   caller that may adopt the same peer twice MUST therefore track the session it registered and
-    ///   close the previous one itself. The pool cannot do this for it: a `ClosedHandle` observes a
-    ///   session, it does not control one.
+    ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving,
+    ///   and [`Self::disconnect`] likewise only stops ACCOUNTING for it.
+    /// * **Supersede is different, and the pool now tells you (#71).** A later circuit for the same
+    ///   `peer_id` displaces this slot newest-wins, and so does a discovery displacement
+    ///   ([`Self::adopt_discovered_nat_connection`]). The displaced session is then obsolete —
+    ///   uncounted, unreplaceable, and closable only by its owner — so the pool fires the notice
+    ///   registered above rather than dropping an observer that closes nothing. Ownership is
+    ///   unchanged: the pool runs the caller's callback and the caller ends the session.
     ///
     /// Admission, budgets, supersede semantics and errors are identical to
     /// [`Self::adopt_relayed_inbound`].
@@ -1731,14 +1921,14 @@ impl GossipHandle {
         &self,
         peer_id: PeerId,
         remote: std::net::SocketAddr,
-        closed: dig_nat::ClosedHandle,
+        session: crate::ObservedSession,
         sink: Option<crate::NatBroadcastSink>,
     ) -> Result<PeerId, GossipError> {
         self.adopt_relayed_inbound_inner(
             peer_id,
             remote,
             dig_nat::TraversalKind::Relayed,
-            super::state::NatTransport::Observed(closed),
+            super::state::NatTransport::Observed(session),
             sink,
         )
         .await
@@ -1871,14 +2061,14 @@ impl GossipHandle {
         // keepalive task — the #1691 ghost-keepalive teardown `adopt_nat_connection` performs has
         // nothing to do on this path.
         //
-        // What this drop does to the transport depends on which arm the displaced slot held, and for
-        // one of them it does NOTHING. An `Owned` slot drops the mux session's sole `cmd_tx` and the
-        // transport closes with it (#1717). An `Observed` slot holds only a `ClosedHandle` and is
-        // DEFINED not to tear down (#1871), so the displaced session survives this drop with its
-        // owner un-notified: the caller keeps serving a peer the pool no longer counts. See the
-        // supersede obligation on `adopt_relayed_inbound_handle` — closing it is the caller's,
-        // because the pool holds nothing that could.
-        drop(superseded);
+        // What retiring does to the transport depends on which arm the displaced slot held, and the
+        // two are not symmetric. An `Owned` slot drops the mux session's sole `cmd_tx` and the
+        // transport closes with it (#1717). An `Observed` slot holds no transport to drop, so the
+        // displaced session would otherwise survive with its owner un-notified — served by a caller
+        // the pool no longer counts (#71). `retire_slot` fires that owner's notice instead.
+        if let Some(stale) = superseded {
+            super::state::retire_slot(stale).await;
+        }
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
         if let Ok(mut pt) = self.inner.plumtree.lock() {

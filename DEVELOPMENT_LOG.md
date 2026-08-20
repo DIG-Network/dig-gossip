@@ -2,6 +2,59 @@
 
 Durable, high-signal realizations (not a change diary).
 
+## Removing a slot is TWO different acts, and conflating them breaks whichever one you did not mean (#1871/#71/#3128)
+
+`adopt_relayed_inbound_handle` lets the pool count a peer whose session the CALLER owns and serves, by
+holding a `dig_nat::ClosedHandle` — which observes a session and cannot control one. That produced an
+asymmetry nobody could act on: dropping a displaced `Owned` slot closes its mux (#1717); dropping a
+displaced `Observed` slot closes nothing, so the session kept running, served by its owner and counted
+by nobody. PR #70 wrote the obligation down as a caller MUST; #71 exists because a documented MUST with
+no mechanism is indistinguishable, at runtime, from nothing.
+
+The fix was not "close it" — the pool genuinely must not hang up on a peer another task is serving.
+It was noticing that slot removal is two acts with opposite requirements:
+
+- **Relinquish** (`disconnect`, the reaper) — stop ACCOUNTING for the peer. The session must be left
+  alone; its owner may be mid-conversation. `con_1871`'s test that a `disconnect`ed peer is still
+  served is precisely this, and it is what a "fire the notice on any removal" fix would have broken.
+- **Retire** (newest-wins supersede, discovery displacement) — the session is obsolete: uncounted,
+  unreplaceable, closable only by its owner. Here the owner MUST be told.
+
+So an observed session is registered as an `ObservedSession` = liveness observer + `SupersedeNotice`,
+which cannot be registered apart, and one `retire_slot` helper tears each slot arm down by whoever owns
+its transport. Two lessons worth keeping:
+
+- **When a type can only OBSERVE, the fix is a channel to whoever can act — not a stronger observer.**
+  Every attempt to give the pool more power over the session re-created the #1871 defect one layer in.
+- **The distinction had to exist before the feature that needed it.** Requirement 8 (#3128) makes
+  eviction routine, and eviction of an observed slot IS a retire. Built on the old shape it would have
+  shipped one leaked live session per eviction — which is why #71 was sequenced as a prerequisite
+  rather than a follow-up. A defect that is rare enough to document becomes structural the moment a
+  feature makes its trigger common.
+
+## Eviction had no VOCABULARY here, which is why the policy read as unimplemented rather than absent (#3128 requirement 8)
+
+`PoolRemovalReason` could express `Disconnected`, `Dead`, `Banned` and `Reaped` — four failures and no
+success — so the pool could not describe cycling a healthy peer out even in principle, and at
+`max_connections` admission was simply refused. The measurement that mattered was structural, not
+behavioural: a grep for `last_used|idle_|request_count` across the whole crate returned ZERO hits, so
+there was no notion of a peer being useful at all. Two things fell out of building one:
+
+- **Usefulness here must be REPORTED, not observed.** This crate never sends over a `dig-nat` peer's
+  transport (that loop is dig-node's), so it cannot see a peer being used. A last-used stamp inferred
+  from anything this crate CAN see — broadcasts, keepalives — would have been uniform across peers and
+  therefore useless. Hence `peer_activity_guard`: the layer doing the work says so.
+- **A last-used stamp cannot express "mid-request"; a guard can.** A long transfer emitting no
+  intermediate signal decays under a timestamp and stays protected under an RAII guard. "Never evict a
+  peer mid-request" is a structural property only in the second shape.
+
+The bound worth remembering is the churn one. Discovery output is a CLAIM by an untrusted peer (NC-12),
+so letting it evict makes eviction attacker-reachable: without a rate, a hostile peer that gets itself
+returned as a holder chooses the node's persistent set one lookup at a time, inverting NC-12's cycling
+mandate into a means of holding a set. One displacement per 600 s is what keeps it a nudge; the reason
+that costs so little is that the FETCH path never depended on it — a discovered holder is dialled and
+read from regardless, and displacement only decides whether the connection is KEPT.
+
 ## The map-remove→plumtree-remove gap can wipe a reconnect's fresh Plumtree membership — narrow it, don't nest the locks (#1792)
 
 Both peer-departure paths — `GossipHandle::disconnect` and `reap_departed_peers` Phase 2 — remove the id from the `peers` map under the lock, RELEASE the lock, then call `plumtree.remove_peer(id)`. PR#44 deliberately does the Plumtree cleanup OUTSIDE the `peers` lock to avoid a `peers`+`plumtree` nested-lock inversion. The cost of that non-atomicity: a concurrent reconnect (`adopt_nat_connection`/`connect_to` → `plumtree.add_peer`) landing in the gap re-inserts the id into `peers` with a FRESH eager membership, and the trailing unconditional `plumtree.remove_peer` then wipes it — a transient partition of a healthy peer. Fix (both sites, shared helper `ServiceState::remove_from_plumtree_unless_reconnected`): re-read `peers` before the removal and SKIP it when the id is present again (the reconnect's `add_peer` wins). Key lesson — this NARROWS, does not ELIMINATE, the window: the `contains_key` re-check and the `remove_peer` are still two SEPARATE (never nested) locks, so a reconnect between them survives as a residual. That residual is accepted and self-healing via Plumtree's PLT-006 IHAVE/GRAFT re-graft. Closing it fully would require holding `peers` across the `plumtree` write — reintroducing exactly the lock-order inversion PR#44 removed — so the narrowed guard is the correct trade, not a half-measure.

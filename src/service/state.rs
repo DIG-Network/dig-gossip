@@ -263,8 +263,11 @@ pub(crate) enum NatTransport {
     /// (#1871 — dig-node's relayed L7 serve loop needs `&mut PeerSession`, which is not `Clone`).
     ///
     /// Dropping this slot therefore does NOT tear the transport down: teardown is the owner's, which
-    /// is correct — the pool must not hang up on a peer another task is actively serving.
-    Observed(dig_nat::ClosedHandle),
+    /// is correct — the pool must not hang up on a peer another task is actively serving. When the
+    /// pool RETIRES the slot rather than relinquishing it, the session's owner is told through the
+    /// [`SupersedeNotice`](crate::service::observed_session::SupersedeNotice) registered alongside the
+    /// observer (#71) — see [`retire_slot`].
+    Observed(crate::service::observed_session::ObservedSession),
 }
 
 impl NatTransport {
@@ -272,8 +275,43 @@ impl NatTransport {
     pub(crate) fn is_closed(&self) -> bool {
         match self {
             NatTransport::Owned(conn) => conn.is_transport_closed(),
-            NatTransport::Observed(closed) => closed.is_closed(),
+            NatTransport::Observed(session) => session.is_closed(),
         }
+    }
+}
+
+/// Tear down a slot the pool has REMOVED from the peer map and judged OBSOLETE — superseded by a newer
+/// session for the same identity, or displaced to admit another peer (**#71**).
+///
+/// # Retire is not relinquish
+///
+/// Two different things can remove a slot, and only one of them ends the peer's session.
+///
+/// * **Relinquish** — [`GossipHandle::disconnect`](super::gossip_handle::GossipHandle::disconnect) and
+///   the departed-peer reaper stop ACCOUNTING for a peer. An `Observed` session is left running,
+///   because its owner may still be mid-conversation and the pool must not hang up on it (#1871). That
+///   is the shipped, tested contract and this function is deliberately not called there.
+/// * **Retire** — a newer session for the same `peer_id` has taken this slot, or the pool displaced it
+///   to make room. The session is now obsolete: nothing counts it, nothing will replace it, and only
+///   its owner can end it. So the owner is TOLD.
+///
+/// Each arm is torn down by whoever owns it: a `Live` slot's keepalive is aborted before its socket is
+/// closed (the #1691 ghost-keepalive race — dropping a `LiveSlot` does not close the socket), an
+/// `Owned` `dig-nat` slot closes by being dropped (the #1717 mux invariant), and an `Observed` one
+/// fires its notice, which is the only reach the pool has into a session it never owned. Call this
+/// AFTER releasing the peer-map lock: it awaits a socket close and runs caller-supplied code.
+pub(crate) async fn retire_slot(slot: PeerSlot) {
+    match slot {
+        PeerSlot::Live(stale) => {
+            stale.keepalive_task.abort();
+            let _ = stale.peer.close().await;
+        }
+        PeerSlot::Nat(NatSlot {
+            conn: NatTransport::Observed(session),
+            ..
+        }) => session.into_notice().fire(),
+        // `Owned` closes on drop (#1717); a `Stub` holds no transport at all.
+        PeerSlot::Nat(_) | PeerSlot::Stub(_) => {}
     }
 }
 

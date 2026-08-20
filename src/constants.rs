@@ -188,6 +188,43 @@ pub const DEFAULT_POOL_DIAL_BACKOFF_BASE_SECS: u64 = 5;
 /// no more often than this.
 pub const DEFAULT_POOL_MAX_DIAL_BACKOFF_SECS: u64 = 300;
 
+/// Minimum seconds a pool peer must have gone UNUSED before content discovery may displace it to
+/// admit a newly-found holder (**dig_ecosystem#3128** requirement 8).
+///
+/// Requirement 8 says "cycle out an UNUSED connection", and the least-recently-used peer of a busy
+/// node may have been used seconds ago. This threshold is what makes "unused" mean unused rather than
+/// merely least-recently-used, and it is the same clock that keeps a peer with work in flight safe:
+/// activity is stamped when a request starts AND when it finishes, so a peer being talked to is never
+/// idle by this measure. Five minutes is comfortably longer than any single peer-RPC round trip and
+/// than the 90s keepalive window, so a peer this quiet is genuinely contributing nothing.
+pub const DEFAULT_POOL_MIN_IDLE_SECS: u64 = 300;
+
+/// Minimum seconds a pool peer must have been HELD before content discovery may displace it
+/// (**dig_ecosystem#3128** requirement 8).
+///
+/// A peer the maintenance loop dialled seconds ago has not yet had the chance to be used, so without
+/// this floor the two subsystems thrash: the maintenance pass fills toward target and discovery
+/// immediately evicts what it just admitted, at a cost of one dial each way. Ten minutes is longer
+/// than [`DEFAULT_POOL_MIN_IDLE_SECS`] by design — a peer must first be held, and only then be seen to
+/// go unused.
+pub const DEFAULT_POOL_MIN_ESTABLISHED_SECS: u64 = 600;
+
+/// Minimum seconds between two discovery-driven displacements (**dig_ecosystem#3128** requirement 8).
+///
+/// **This is the bound on the attacker-reachable lever.** A provider record is a claim by an untrusted
+/// peer (NC-12), so a hostile peer that gets itself returned as a holder reaches this admission path
+/// directly. Without a rate bound it could displace one honest incumbent per lookup and choose the
+/// node's entire persistent set — turning the cycling NC-12 mandates into a way to CHOOSE the set
+/// rather than a defence against holding one.
+///
+/// At one displacement per ten minutes, replacing a default 16-slot map takes at least 160 minutes of
+/// sustained hostile provider records, during which the maintenance loop, peer exchange and the
+/// introducer keep admitting peers by paths this lever cannot touch, and every peer it does admit must
+/// itself survive [`DEFAULT_POOL_MIN_ESTABLISHED_SECS`] and go idle before it can be recycled. The
+/// cost of the bound is small because the fetch path does not depend on it: a discovered holder is
+/// dialled and read from regardless — displacement only decides whether the connection is KEPT.
+pub const DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS: u64 = 600;
+
 /// Default consecutive dial failures after which an address is dropped from the dial rotation
 /// for the current session (avoids hammering a permanently-dead peer).
 pub const DEFAULT_POOL_MAX_DIAL_FAILURES: u32 = 5;

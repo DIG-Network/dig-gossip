@@ -172,7 +172,11 @@ async fn a_relayed_peer_adopted_by_handle_is_counted_and_still_served() {
         .adopt_relayed_inbound_handle(
             peer_id,
             accepted_relayed_remote(),
-            responder.closed_handle(),
+            dig_gossip::ObservedSession::new(responder.closed_handle(), || {
+                // These fixtures never supersede or displace, so the notice must never
+                // fire; a panic here would surface a retirement they do not expect.
+                panic!("the pool retired a slot no fixture in this file displaces")
+            }),
             None,
         )
         .await
@@ -215,7 +219,11 @@ async fn removing_the_pool_slot_does_not_hang_up_on_a_peer_the_caller_is_serving
         .adopt_relayed_inbound_handle(
             peer_id,
             accepted_relayed_remote(),
-            responder.closed_handle(),
+            dig_gossip::ObservedSession::new(responder.closed_handle(), || {
+                // These fixtures never supersede or displace, so the notice must never
+                // fire; a panic here would surface a retirement they do not expect.
+                panic!("the pool retired a slot no fixture in this file displaces")
+            }),
             None,
         )
         .await
@@ -249,7 +257,11 @@ async fn the_liveness_handle_keeps_a_live_peer_and_reaps_a_departed_one() {
         .adopt_relayed_inbound_handle(
             peer_id,
             accepted_relayed_remote(),
-            responder.closed_handle(),
+            dig_gossip::ObservedSession::new(responder.closed_handle(), || {
+                // These fixtures never supersede or displace, so the notice must never
+                // fire; a panic here would surface a retirement they do not expect.
+                panic!("the pool retired a slot no fixture in this file displaces")
+            }),
             None,
         )
         .await
@@ -299,7 +311,11 @@ async fn both_entry_points_share_one_admission_path() {
         .adopt_relayed_inbound_handle(
             peer_id,
             accepted_relayed_remote(),
-            responder.closed_handle(),
+            dig_gossip::ObservedSession::new(responder.closed_handle(), || {
+                // These fixtures never supersede or displace, so the notice must never
+                // fire; a panic here would surface a retirement they do not expect.
+                panic!("the pool retired a slot no fixture in this file displaces")
+            }),
             None,
         )
         .await
