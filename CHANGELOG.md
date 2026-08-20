@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.27.0] - 2026-08-20
+
+### Features
+- **pool:** Retire a superseded observed session, and cycle an idle peer for a discovered one (#73)
+
 ## [0.26.0] - 2026-08-19
 
 ### Features
