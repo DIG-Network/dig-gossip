@@ -1172,9 +1172,8 @@ impl GossipHandle {
         // dropped here (its dedicated transport teardown is #1703 items 2/4, out of scope). No
         // diversity-budget bookkeeping is needed on supersede — occupancy is derived from the map, so
         // removing the old slot and inserting the new one IS the accounting.
-        if let Some(PeerSlot::Live(stale)) = superseded {
-            stale.keepalive_task.abort();
-            let _ = stale.peer.close().await;
+        if let Some(stale) = superseded {
+            super::state::retire_slot(stale).await;
         }
 
         // INT-001: Register peer in Plumtree state (starts as eager per SPEC §8.1).
@@ -1712,18 +1711,19 @@ impl GossipHandle {
     ///   bytes — convert with `PeerId::from(*nat_peer_id.as_bytes())`.
     /// * `remote` is the RELAY endpoint the circuit arrived over, never a peer address; it is reported
     ///   as the session address and is never dialed (the slot is [`TraversalKind::Relayed`]).
-    /// * `closed` MUST observe the session serving THIS peer
-    ///   ([`PeerSession::closed_handle`](dig_nat::PeerSession::closed_handle)). It is the slot's only
-    ///   departure signal: a handle for a different (or already-dead) session makes the peer reap
+    /// * `session` pairs the liveness observer with the notice that reaches the session's owner — see
+    ///   [`ObservedSession::new`](crate::ObservedSession::new). The observer is the slot's only
+    ///   departure signal, so one for a different (or already-dead) session makes the peer reap
     ///   immediately or never.
     /// * Teardown stays the CALLER's. Unlike the by-value path, dropping this slot does not close the
-    ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving.
-    /// * **Supersede is teardown too, and the pool cannot perform it.** A later circuit for the same
-    ///   `peer_id` displaces this slot newest-wins, and dropping an observer closes nothing — so the
-    ///   displaced session keeps running, un-counted and un-notified, unless the CALLER closes it. A
-    ///   caller that may adopt the same peer twice MUST therefore track the session it registered and
-    ///   close the previous one itself. The pool cannot do this for it: a `ClosedHandle` observes a
-    ///   session, it does not control one.
+    ///   transport — deliberately, so the pool cannot hang up on a peer the caller is still serving,
+    ///   and [`Self::disconnect`] likewise only stops ACCOUNTING for it.
+    /// * **Supersede is different, and the pool now tells you (#71).** A later circuit for the same
+    ///   `peer_id` displaces this slot newest-wins, and so does a discovery displacement
+    ///   ([`Self::adopt_discovered_nat_connection`]). The displaced session is then obsolete —
+    ///   uncounted, unreplaceable, and closable only by its owner — so the pool fires the notice
+    ///   registered above rather than dropping an observer that closes nothing. Ownership is
+    ///   unchanged: the pool runs the caller's callback and the caller ends the session.
     ///
     /// Admission, budgets, supersede semantics and errors are identical to
     /// [`Self::adopt_relayed_inbound`].
@@ -1731,14 +1731,14 @@ impl GossipHandle {
         &self,
         peer_id: PeerId,
         remote: std::net::SocketAddr,
-        closed: dig_nat::ClosedHandle,
+        session: crate::ObservedSession,
         sink: Option<crate::NatBroadcastSink>,
     ) -> Result<PeerId, GossipError> {
         self.adopt_relayed_inbound_inner(
             peer_id,
             remote,
             dig_nat::TraversalKind::Relayed,
-            super::state::NatTransport::Observed(closed),
+            super::state::NatTransport::Observed(session),
             sink,
         )
         .await
@@ -1871,14 +1871,14 @@ impl GossipHandle {
         // keepalive task — the #1691 ghost-keepalive teardown `adopt_nat_connection` performs has
         // nothing to do on this path.
         //
-        // What this drop does to the transport depends on which arm the displaced slot held, and for
-        // one of them it does NOTHING. An `Owned` slot drops the mux session's sole `cmd_tx` and the
-        // transport closes with it (#1717). An `Observed` slot holds only a `ClosedHandle` and is
-        // DEFINED not to tear down (#1871), so the displaced session survives this drop with its
-        // owner un-notified: the caller keeps serving a peer the pool no longer counts. See the
-        // supersede obligation on `adopt_relayed_inbound_handle` — closing it is the caller's,
-        // because the pool holds nothing that could.
-        drop(superseded);
+        // What retiring does to the transport depends on which arm the displaced slot held, and the
+        // two are not symmetric. An `Owned` slot drops the mux session's sole `cmd_tx` and the
+        // transport closes with it (#1717). An `Observed` slot holds no transport to drop, so the
+        // displaced session would otherwise survive with its owner un-notified — served by a caller
+        // the pool no longer counts (#71). `retire_slot` fires that owner's notice instead.
+        if let Some(stale) = superseded {
+            super::state::retire_slot(stale).await;
+        }
 
         // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
         if let Ok(mut pt) = self.inner.plumtree.lock() {
