@@ -168,7 +168,11 @@ async fn superseding_an_observed_session_tells_that_session_owner_and_no_other()
         )
         .await
         .expect("the first circuit is adopted");
-    assert_eq!(displaced.fires(), 0, "adopting a session must not retire it");
+    assert_eq!(
+        displaced.fires(),
+        0,
+        "adopting a session must not retire it"
+    );
 
     handle
         .adopt_relayed_inbound_handle(
@@ -205,7 +209,8 @@ async fn superseding_an_observed_session_tells_that_session_owner_and_no_other()
 #[tokio::test]
 async fn adopting_a_different_peer_retires_nobody() {
     let (svc, handle, _dir) = running_handle().await;
-    let (held_session, held_id, _held_peer) = authenticated_relayed_circuit([34; 32], &node_cert([35; 32])).await;
+    let (held_session, held_id, _held_peer) =
+        authenticated_relayed_circuit([34; 32], &node_cert([35; 32])).await;
     let (other_session, other_id, _other_peer) =
         authenticated_relayed_circuit([36; 32], &node_cert([37; 32])).await;
     assert_ne!(held_id, other_id, "the fixture needs two distinct peers");
@@ -238,7 +243,11 @@ async fn adopting_a_different_peer_retires_nobody() {
         "a peer that kept its slot must not be told its session was retired"
     );
     assert_eq!(other.fires(), 0, "nor may the newcomer");
-    assert_eq!(handle.peer_count().await, 2, "two distinct peers, two slots");
+    assert_eq!(
+        handle.peer_count().await,
+        2,
+        "two distinct peers, two slots"
+    );
 
     svc.stop().await.expect("stop");
 }
@@ -250,7 +259,8 @@ async fn adopting_a_different_peer_retires_nobody() {
 #[tokio::test]
 async fn disconnect_relinquishes_the_slot_without_retiring_the_session() {
     let (svc, handle, _dir) = running_handle().await;
-    let (session, peer_id, _peer) = authenticated_relayed_circuit([38; 32], &node_cert([39; 32])).await;
+    let (session, peer_id, _peer) =
+        authenticated_relayed_circuit([38; 32], &node_cert([39; 32])).await;
     let owner = NoticeCounter::default();
 
     handle

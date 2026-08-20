@@ -1751,11 +1751,11 @@ impl GossipHandle {
                 self.inner.pool.record_displacement(now);
                 Ok(Some((victim, slot)))
             }
-            DisplacementDecision::Refused(reason) => Err(GossipError::ConnectionFiltered(
-                SafeText::from_untrusted(format!(
-                    "#3128: the pool is full and no peer may be cycled out ({reason:?})"
-                )),
-            )),
+            DisplacementDecision::Refused(reason) => {
+                Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                    format!("#3128: the pool is full and no peer may be cycled out ({reason:?})"),
+                )))
+            }
         }
     }
 

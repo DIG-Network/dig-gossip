@@ -70,7 +70,10 @@ impl ObservedSession {
     /// ([`dig_nat::PeerSession::closed_handle`]) — it is the slot's only departure signal, so a handle
     /// for a different or already-dead session makes the peer reap immediately or never.
     /// `on_superseded` MUST reach whoever holds that same session.
-    pub fn new(closed: dig_nat::ClosedHandle, on_superseded: impl FnOnce() + Send + 'static) -> Self {
+    pub fn new(
+        closed: dig_nat::ClosedHandle,
+        on_superseded: impl FnOnce() + Send + 'static,
+    ) -> Self {
         ObservedSession {
             closed,
             on_superseded: SupersedeNotice::new(on_superseded),
