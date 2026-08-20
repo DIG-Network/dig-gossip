@@ -194,7 +194,7 @@ async fn at_the_cap_discovery_displaces_an_unused_peer_where_ordinary_admission_
 async fn displacing_an_observed_session_tells_its_owner() {
     let (svc, handle, _dir) = running_handle(2, unbounded_displacement(0)).await;
     let served_id = dig_gossip::PeerId::from([0x44; 32]);
-    let busy_id = dig_gossip::PeerId::from([0x55; 32]);
+    let busy_id = dig_gossip::PeerId::from([0x11; 32]);
 
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let served_session = dig_nat::PeerSession::client(client_io);
@@ -215,7 +215,7 @@ async fn displacing_an_observed_session_tells_its_owner() {
         .expect("a relayed circuit this node is serving");
 
     let (busy, keep_busy) = loopback_nat_conn(
-        [0x55; 32],
+        [0x11; 32],
         addr("[2001:dc8::5]:9251"),
         TraversalKind::Direct,
     );
@@ -245,7 +245,7 @@ async fn displacing_an_observed_session_tells_its_owner() {
     assert_eq!(
         admission.displaced,
         Some(served_id),
-        "the busy peer is ineligible, so the observed session is the only possible victim"
+        "the busy peer sorts FIRST on the tie-break, so only its in-flight work can explain the observed session being chosen instead"
     );
     assert_eq!(
         owner_told.load(Ordering::SeqCst),
