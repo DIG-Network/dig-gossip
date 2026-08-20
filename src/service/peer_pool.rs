@@ -1016,3 +1016,6 @@ mod tests {
         assert!(pool.reserve(k), "reservable again after release");
     }
 }
+
+
+// WIP (dig_ecosystem#3128 lane C): #71 observed-session teardown, then idleness displacement.
