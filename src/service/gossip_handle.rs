@@ -2721,12 +2721,21 @@ impl GossipHandle {
 
     pub async fn disconnect(&self, peer_id: &PeerId) -> Result<(), GossipError> {
         self.require_running()?;
-        let removed = self
-            .inner
-            .peers
-            .lock()
-            .map_err(|_| GossipError::ChannelClosed)?
-            .remove(peer_id);
+        let removed = {
+            let mut peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+            let removed = peers.remove(peer_id);
+            // dig-gossip#74: forget the usefulness record inside the SAME `peers` hold as the
+            // removal, so a reconnect cannot slip a fresh record in before a trailing cleanup wipes
+            // it (the #1792 shape). `publish` below only announces.
+            if removed.is_some() {
+                self.inner.pool.record_departure(peer_id);
+            }
+            removed
+        };
         let was_present = removed.is_some();
         if let Some(PeerSlot::Live(l)) = removed {
             l.keepalive_task.abort();
@@ -3178,6 +3187,17 @@ impl GossipHandle {
     #[doc(hidden)]
     pub fn __remove_from_plumtree_unless_reconnected_for_tests(&self, peer_id: &PeerId) {
         self.inner.remove_from_plumtree_unless_reconnected(peer_id);
+    }
+
+    /// dig-gossip#74 test hook: how many peers the pool currently tracks a usefulness record for.
+    ///
+    /// Exposed because the record is now dropped at each REMOVAL SITE rather than by the churn
+    /// announcement, and that placement is only observable from outside the crate: a test needs to see
+    /// that `disconnect` and the reaper still forget their peer, or "the announcement no longer
+    /// removes" would be indistinguishable from "nothing removes".
+    #[doc(hidden)]
+    pub fn __tracked_pool_activity_count_for_tests(&self) -> usize {
+        self.inner.pool.tracked_peer_count()
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.

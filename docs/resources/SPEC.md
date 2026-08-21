@@ -1791,6 +1791,27 @@ by cycling out a connection that is contributing nothing.
   hostile records, while the maintenance loop, peer exchange and the introducer keep admitting peers by
   paths this lever cannot touch, and every peer it does admit must itself become established and then
   idle before it can be recycled.
+- **The bounds have a configuration floor, enforced by `PeerPoolConfig::normalized()`.** A configured
+  `displacement_interval_secs` MUST be raised to at least **600 s** — the churn bound is the only
+  globally-charged, attacker-reachable bound, and a configured `0` retires it entirely, so the
+  sufficiency argument above MUST NOT be defeatable by configuration. A configured
+  `min_established_secs` MUST be raised to at least `min_idle_secs`: the reverse ordering is incoherent,
+  because a member would become old enough to displace before it could have been observed going unused.
+  Both repairs only ever RAISE a value, so a deliberately stricter operator setting survives. There is
+  deliberately NO absolute floor on `min_idle_secs`/`min_established_secs`: with the churn bound floored
+  and the in-flight rule structural, they govern thrash and victim quality rather than the
+  attacker-reachable lever.
+- **Usefulness records are dropped at the REMOVAL SITE.** Departures paired with `PeerRemoved` publishing MUST forget the peer's usefulness
+  record inside the SAME `peers`-lock hold as the removal from the peer map. Three removal paths do not publish an announcement — `enforce_timed_ban_and_disconnect` (state.rs:1160, :1165) and the keepalive timeout (keepalive.rs:421) — and leave the usefulness record behind, roughly 56 bytes each, one full mTLS handshake per record, until swept when the pool reaches capacity. The `PeerRemoved` churn
+  announcement MUST NOT remove records. Announcements are published after the lock is released, so a removal
+  performed there is the trailing cleanup a concurrent reconnect races: the reconnect re-admits the id
+  with a fresh record and the trailing removal would wipe the live session. A record that outlives its
+  peer is nonetheless harmless — only records whose peer is in the live eligible set are reported to the
+  planner, and the membership sweep is the backstop — so this path fails SAFE in both directions.
+- **A supersede MUST NOT clear a member's in-flight count.** The newest-wins re-admission resets both
+  clocks, because the session being measured is new, but `PeerActivityGuard`s are held by the work and
+  not by the session. Zeroing the count on re-admission would downgrade "never evict a peer
+  mid-request" from structural to a matter of timing.
 - **No route around any other guard.** A discovered peer faces the self, ban, `/16` (INT-006), AS
   (INT-007) and relayed-outbound caps exactly as any other. Those MUST be evaluated BEFORE anything is
   displaced, so a peer they will refuse never costs the node an incumbent — otherwise a hostile peer

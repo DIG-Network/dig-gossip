@@ -684,21 +684,56 @@ impl PoolState {
     }
 
     /// Start tracking a peer's usefulness from its admission (#3128 requirement 8). A re-admission —
-    /// the newest-wins supersede — resets both clocks, because the session being measured is new.
+    /// the newest-wins supersede — resets both CLOCKS, because the session being measured is new.
+    ///
+    /// # It does not reset `in_flight` (dig-gossip#74)
+    ///
+    /// `in_flight` counts LIVE [`PeerActivityGuard`]s, and a supersede does not drop them: the guard
+    /// is held by whoever is doing the work, not by the session. Re-inserting a fresh record with
+    /// `in_flight: 0` therefore made "a peer mid-request is never displaced" a matter of TIMING — a
+    /// supersede landing inside a live guard published a peer as idle while a transfer ran, and the
+    /// guard's own `Drop` then decremented a count that no longer knew about it.
+    ///
+    /// So the reset writes only the two clocks. That is what makes the property structural rather than
+    /// checked: `in_flight` is **never assigned on an existing record** anywhere in this type — it is
+    /// created at `0` for a peer the map does not hold, incremented by [`Self::begin_activity`], and
+    /// decremented by [`Self::end_activity`], which only [`PeerActivityGuard::drop`] calls. There is no
+    /// code path that can zero it while a guard lives, so the count equals the number of live guards by
+    /// construction.
     pub(crate) fn record_admission(&self, peer_id: PeerId, now: u64) {
         if let Ok(mut g) = self.activity.lock() {
-            g.insert(
-                peer_id,
-                ActivityRecord {
+            g.entry(peer_id)
+                .and_modify(|record| {
+                    record.admitted_at = now;
+                    record.last_active_at = now;
+                })
+                .or_insert(ActivityRecord {
                     admitted_at: now,
                     last_active_at: now,
                     in_flight: 0,
-                },
-            );
+                });
         }
     }
 
     /// Forget a departed peer's usefulness record.
+    ///
+    /// # Call this AT the removal site, under the `peers` lock (dig-gossip#74)
+    ///
+    /// Every departure path removes the peer from `ServiceState::peers` under that map's lock and
+    /// calls this in the SAME critical section, because doing it afterwards carries the #1792 reconnect
+    /// race: a reconnect landing in the gap re-admits the id with a fresh record, and a trailing
+    /// removal would then wipe the LIVE session's record. Removing inside the hold closes the window by
+    /// construction — the reconnect must acquire the lock to insert, and `record_admission` runs after,
+    /// creating a happens-before chain — which is stronger than the best-effort re-check
+    /// [`ServiceState::remove_from_plumtree_unless_reconnected`](crate::service::state::ServiceState::remove_from_plumtree_unless_reconnected)
+    /// can manage for Plumtree, whose state is behind a second lock that must not be nested with this
+    /// one.
+    ///
+    /// This is why [`Self::publish`] does NOT remove records for
+    /// [`PoolEvent::PeerRemoved`]: that runs after the lock is released, so it is exactly the trailing
+    /// removal described above. [`Self::retain_admitted`] remains the backstop, and a record that
+    /// outlives its peer is harmless in the meantime — [`Self::activity_of`] only reports records whose
+    /// peer is in the live eligible set, so a stale record can never be chosen as a victim.
     pub(crate) fn record_departure(&self, peer_id: &PeerId) {
         if let Ok(mut g) = self.activity.lock() {
             g.remove(peer_id);
@@ -782,25 +817,33 @@ impl PoolState {
     }
 
     /// Number of peers whose usefulness is being tracked — so a test can assert this map never
-    /// outgrows the peer map it is bounded by.
-    #[cfg(any(test, feature = "test-util"))]
+    /// outgrows the peer map it is bounded by, and that each departure path still forgets its peer
+    /// (dig-gossip#74).
     #[doc(hidden)]
     pub fn tracked_peer_count(&self) -> usize {
         self.activity.lock().map(|g| g.len()).unwrap_or(0)
     }
 
     /// Publish a churn event to all subscribers (no-op if the channel isn't wired or has no
-    /// subscribers — a dropped event is never fatal), and keep the usefulness map in step with it.
+    /// subscribers — a dropped event is never fatal), and start tracking a newly-admitted peer.
     ///
-    /// Membership bookkeeping lives HERE rather than at each admission and departure site because this
-    /// is already the one place every one of them funnels through to announce itself. Two sets that
-    /// must agree and are maintained in two places drift; maintained in one, they cannot.
+    /// # Admission is funnelled here; departure is not (dig-gossip#74)
+    ///
+    /// Admission bookkeeping lives HERE because this is already the one place every admission path
+    /// funnels through to announce itself, and an announcement can only ever FOLLOW the insertion it
+    /// announces — a late `PeerAdded` cannot destroy anything.
+    ///
+    /// A late `PeerRemoved` can. This runs after the `peers` lock is released, so removing the
+    /// usefulness record here is the trailing removal the #1792 reconnect race exploits. Departure is
+    /// therefore recorded at each removal site instead, inside the same lock hold as the
+    /// `peers.remove` — see [`Self::record_departure`], and [`Self::retain_admitted`] for the backstop
+    /// that keeps the map bounded if a future path forgets.
     pub(crate) fn publish(&self, event: PoolEvent) {
         match &event {
             PoolEvent::PeerAdded { peer_id, .. } => {
                 self.record_admission(*peer_id, crate::types::peer::metric_unix_timestamp_secs());
             }
-            PoolEvent::PeerRemoved { peer_id, .. } => self.record_departure(peer_id),
+            PoolEvent::PeerRemoved { .. } => {}
         }
         if let Ok(g) = self.events_tx.lock() {
             if let Some(tx) = g.as_ref() {
@@ -1591,6 +1634,180 @@ mod tests {
             pool.tracked_peer_count(),
             0,
             "and the sweep drops every record whose peer is no longer held"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // dig-gossip#74 - the config floor, and the two activity-map races.
+    // -----------------------------------------------------------------------
+
+    /// **D1 - the churn bound cannot be switched off by configuration.**
+    ///
+    /// `displacement_interval_secs: 0` made the only globally-charged, attacker-facing bound a no-op
+    /// while `normalized()` - whose whole job is that a caller cannot hand the pool an incoherent
+    /// config - passed it through untouched. Pinned from BOTH sides: below the floor the value is
+    /// raised, at and above it the operator's larger value survives, because a clamp that also lowered
+    /// a deliberately-stricter setting would invert the guard it is meant to be.
+    #[test]
+    fn normalized_floors_the_churn_bound_and_leaves_a_stricter_one_alone() {
+        let disabled = PeerPoolConfig {
+            displacement_interval_secs: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            disabled.normalized().displacement_interval_secs,
+            600,
+            "a zero interval must come out at the floor, or the churn bound is optional"
+        );
+
+        let too_low = PeerPoolConfig {
+            displacement_interval_secs: 599,
+            ..Default::default()
+        };
+        assert_eq!(
+            too_low.normalized().displacement_interval_secs,
+            600,
+            "one second under the floor is still under it"
+        );
+
+        let stricter = PeerPoolConfig {
+            displacement_interval_secs: 3_600,
+            ..Default::default()
+        };
+        assert_eq!(
+            stricter.normalized().displacement_interval_secs,
+            3_600,
+            "an operator who wants a SLOWER churn bound keeps it; the clamp only raises"
+        );
+    }
+
+    /// **D1, behaviourally** - the floor has to be reached by the code that actually rate-limits, not
+    /// merely be observable on the returned struct. With the bound configured to zero, a second
+    /// displacement one second after the first must still be refused.
+    #[test]
+    fn a_zero_configured_interval_still_rate_limits_a_second_displacement() {
+        let cfg = displacement_cfg(1, 0, 0, 0);
+        let held = [incumbent(1, 0, 0, 0), incumbent(2, 0, 0, 0)];
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 1_001, Some(1_000)), &cfg),
+            DisplacementDecision::Refused(DisplacementRefusal::RateLimited {
+                retry_after_secs: 599
+            }),
+            "displacement_interval_secs: 0 must not buy unbounded churn"
+        );
+    }
+
+    /// **D1 - the two per-peer thresholds are ordered, the way `min <= target <= max` is.**
+    ///
+    /// `min_established_secs < min_idle_secs` is incoherent: a peer would become old enough to displace
+    /// before it could possibly have been observed going unused. Repaired by raising the establishment
+    /// floor (the conservative direction), never by lowering the idleness one.
+    #[test]
+    fn normalized_orders_the_establishment_floor_above_the_idleness_floor() {
+        let incoherent = PeerPoolConfig {
+            min_idle_secs: 900,
+            min_established_secs: 120,
+            ..Default::default()
+        };
+        let fixed = incoherent.normalized();
+        assert_eq!(
+            fixed.min_idle_secs, 900,
+            "the idleness floor is never lowered to repair the ordering"
+        );
+        assert_eq!(
+            fixed.min_established_secs, 900,
+            "the establishment floor is raised to meet it"
+        );
+
+        let coherent = PeerPoolConfig {
+            min_idle_secs: 300,
+            min_established_secs: 600,
+            ..Default::default()
+        };
+        assert_eq!(
+            coherent.normalized().min_established_secs,
+            600,
+            "an already-ordered pair is left exactly as configured"
+        );
+    }
+
+    /// **D2 - a supersede must not clear a live activity guard's in-flight count.**
+    ///
+    /// The fixture is shaped so the OUTCOME, not just the field, changes: the superseded peer is also
+    /// the idlest, so a policy that saw `in_flight == 0` would pick it. Peer 2 is the honest control -
+    /// a genuinely idle incumbent that remains a legitimate victim - so a pass here cannot come from
+    /// the planner refusing everything.
+    #[test]
+    fn a_supersede_does_not_clear_a_live_activity_guards_in_flight_count() {
+        let pool = PoolState::new();
+        let busy = PeerId::from([1; 32]);
+        let idle = PeerId::from([2; 32]);
+
+        pool.record_admission(busy, 1_000);
+        assert!(pool.begin_activity(busy, 1_000), "the guard starts");
+        pool.record_admission(busy, 1_000); // the newest-wins supersede, guard still held.
+        pool.record_admission(idle, 1_100);
+
+        let held: Vec<PeerActivity> = pool.activity_of(&[busy, idle].into_iter().collect());
+        assert_eq!(
+            held.iter().find(|p| p.peer_id == busy).map(|p| p.in_flight),
+            Some(1),
+            "the supersede re-dated the session; it must not have forgotten the live guard"
+        );
+
+        let cfg = displacement_cfg(1, 300, 600, 600);
+        assert_eq!(
+            plan_displacement(&request(&held, 2, 100_000, None), &cfg),
+            DisplacementDecision::Displace(idle),
+            "the idlest peer is mid-request, so the honest idle control must be chosen instead"
+        );
+    }
+
+    /// **D3 - a delayed `PeerRemoved` announcement cannot destroy the session that replaced it.**
+    ///
+    /// The #1792 shape: a departure path removes the peer, a reconnect re-admits it in the gap, and the
+    /// first session's announcement then arrives. The record is now dropped AT the removal site, inside
+    /// the same `peers`-lock hold as the `peers.remove`, so a reconnect cannot interleave - the
+    /// announcement is only an announcement. The second half is the control that keeps this from being
+    /// "nothing is ever forgotten": a departure with no reconnect still clears the record.
+    #[test]
+    fn a_delayed_departure_announcement_does_not_wipe_a_reconnected_session() {
+        let pool = PoolState::new();
+        let peer = PeerId::from([7; 32]);
+
+        pool.record_admission(peer, 1_000); // session 1
+        pool.record_departure(&peer); // ...removed, under the peers lock
+        pool.record_admission(peer, 2_000); // session 2 - the reconnect
+        assert!(
+            pool.begin_activity(peer, 2_010),
+            "session 2 is live and in use"
+        );
+
+        pool.publish(PoolEvent::PeerRemoved {
+            peer_id: peer,
+            reason: PoolRemovalReason::Disconnected,
+        }); // session 1's announcement, delayed past the reconnect
+
+        assert_eq!(
+            pool.tracked_peer_count(),
+            1,
+            "the reconnected session's record must survive the stale announcement"
+        );
+        assert_eq!(
+            pool.activity_of(&[peer].into_iter().collect())
+                .first()
+                .map(|p| (p.admitted_at, p.in_flight)),
+            Some((2_000, 1)),
+            "and it must be session 2's record, guard included - not a fresh, guard-less one"
+        );
+
+        let gone = PeerId::from([8; 32]);
+        pool.record_admission(gone, 3_000);
+        pool.record_departure(&gone);
+        assert_eq!(
+            pool.tracked_peer_count(),
+            1,
+            "control: an ordinary departure still forgets its peer, so the map stays bounded"
         );
     }
 }
