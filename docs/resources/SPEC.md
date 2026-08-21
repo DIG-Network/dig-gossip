@@ -1801,9 +1801,9 @@ by cycling out a connection that is contributing nothing.
   deliberately NO absolute floor on `min_idle_secs`/`min_established_secs`: with the churn bound floored
   and the in-flight rule structural, they govern thrash and victim quality rather than the
   attacker-reachable lever.
-- **Usefulness records are dropped at the REMOVAL SITE.** A departure MUST forget the peer's usefulness
-  record inside the SAME `peers`-lock hold as the removal from the peer map, and the `PeerRemoved` churn
-  announcement MUST NOT remove it. Announcements are published after the lock is released, so a removal
+- **Usefulness records are dropped at the REMOVAL SITE.** Departures paired with `PeerRemoved` publishing MUST forget the peer's usefulness
+  record inside the SAME `peers`-lock hold as the removal from the peer map. Three removal paths do not publish an announcement — `enforce_timed_ban_and_disconnect` (state.rs:1160, :1165) and the keepalive timeout (keepalive.rs:421) — and leave the usefulness record behind, roughly 56 bytes each, one full mTLS handshake per record, until swept when the pool reaches capacity. The `PeerRemoved` churn
+  announcement MUST NOT remove records. Announcements are published after the lock is released, so a removal
   performed there is the trailing cleanup a concurrent reconnect races: the reconnect re-admits the id
   with a fresh record and the trailing removal would wipe the live session. A record that outlives its
   peer is nonetheless harmless — only records whose peer is in the live eligible set are reported to the
