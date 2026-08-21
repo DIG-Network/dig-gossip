@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.28.0] - 2026-08-21
+
+### Bug Fixes
+- **pool:** Clamp the displacement bounds in normalized(), and close two activity-map races (#77)
+
 ## [0.27.0] - 2026-08-20
 
 ### Features
