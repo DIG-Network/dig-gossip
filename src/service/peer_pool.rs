@@ -723,7 +723,8 @@ impl PoolState {
     /// calls this in the SAME critical section, because doing it afterwards carries the #1792 reconnect
     /// race: a reconnect landing in the gap re-admits the id with a fresh record, and a trailing
     /// removal would then wipe the LIVE session's record. Removing inside the hold closes the window by
-    /// construction — insertion takes the same lock — which is stronger than the best-effort re-check
+    /// construction — the reconnect must acquire the lock to insert, and `record_admission` runs after,
+    /// creating a happens-before chain — which is stronger than the best-effort re-check
     /// [`ServiceState::remove_from_plumtree_unless_reconnected`](crate::service::state::ServiceState::remove_from_plumtree_unless_reconnected)
     /// can manage for Plumtree, whose state is behind a second lock that must not be nested with this
     /// one.

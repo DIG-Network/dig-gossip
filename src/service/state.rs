@@ -379,6 +379,7 @@ pub(crate) fn peer_id_from_hex(id: &str) -> Option<PeerId> {
     let mut out = [0u8; 32];
     // `as_chunks` over `chunks_exact` for a const width: the remainder is provably empty here (the
     // length was checked above), and clippy rejects the iterator form on a constant chunk size.
+    // NOTE: `as_chunks` stabilised in Rust 1.88; this crate currently has no `rust-version` pin.
     for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
         let hi = (chunk[0] as char).to_digit(16)?;
         let lo = (chunk[1] as char).to_digit(16)?;
