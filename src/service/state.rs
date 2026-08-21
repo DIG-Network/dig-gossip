@@ -377,7 +377,9 @@ pub(crate) fn peer_id_from_hex(id: &str) -> Option<PeerId> {
     }
     let bytes = s.as_bytes();
     let mut out = [0u8; 32];
-    for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+    // `as_chunks` over `chunks_exact` for a const width: the remainder is provably empty here (the
+    // length was checked above), and clippy rejects the iterator form on a constant chunk size.
+    for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
         let hi = (chunk[0] as char).to_digit(16)?;
         let lo = (chunk[1] as char).to_digit(16)?;
         out[i] = (hi * 16 + lo) as u8;
@@ -1243,6 +1245,12 @@ impl ServiceState {
                 }
                 !departed
             });
+            // dig-gossip#74: forget each reaped peer's usefulness record inside this same `peers`
+            // hold, so a reconnect landing in Phase 2 cannot have its fresh record wiped by a
+            // trailing cleanup (the #1792 shape). Phase 2 below only announces.
+            for peer_id in &ids {
+                self.pool.record_departure(peer_id);
+            }
             ids
         };
 

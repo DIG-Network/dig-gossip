@@ -467,12 +467,32 @@ impl Default for PeerPoolConfig {
 }
 
 impl PeerPoolConfig {
-    /// Return a copy with the `min <= target <= max` invariant enforced (clamping, never panicking).
+    /// Return a copy with every pool invariant enforced (clamping, never panicking).
     ///
     /// A caller can hand-build a config with, say, `min > max`; rather than let the maintenance loop
     /// misbehave, we clamp: `target` is pulled into `[min, max]` and `min` is pulled down to `target`
     /// when it exceeds it, so the ordering always holds. Also forces `max >= 1` so the pool can hold
     /// at least one peer.
+    ///
+    /// # The displacement bounds (dig-gossip#74)
+    ///
+    /// This function exists so a caller *cannot* hand the pool an incoherent config, and on the three
+    /// displacement bounds incoherence is a SECURITY property rather than a performance one — so they
+    /// are repaired here too, each in the way its own invariant calls for:
+    ///
+    /// - **`displacement_interval_secs` is raised to
+    ///   [`MIN_POOL_DISPLACEMENT_INTERVAL_SECS`](crate::constants::MIN_POOL_DISPLACEMENT_INTERVAL_SECS)**
+    ///   — an absolute floor, because this is the one globally-charged, attacker-reachable bound and
+    ///   `0` retired it completely. See that constant for why the floor is the default itself.
+    /// - **`min_established_secs` is raised to at least `min_idle_secs`** — an ORDERING invariant, not
+    ///   a magic number, in exactly the sense `min <= target <= max` is one. The reverse ordering is
+    ///   incoherent: a peer would become old enough to displace before it could possibly have been
+    ///   observed going unused. There is deliberately no absolute floor on these two — with the churn
+    ///   bound floored and `in_flight == 0` structural, they govern thrash and victim quality, and no
+    ///   sufficiency argument exists for any particular minimum.
+    ///
+    /// Both repairs only ever RAISE a value, so a deliberately-stricter operator setting survives and
+    /// the clamp cannot turn a tolerant policy into a denying one.
     pub fn normalized(&self) -> PeerPoolConfig {
         let max = self.max_peers.max(1);
         let target = self.target_peers.clamp(1, max);
@@ -481,6 +501,10 @@ impl PeerPoolConfig {
             target_peers: target,
             min_peers: min,
             max_peers: max,
+            min_established_secs: self.min_established_secs.max(self.min_idle_secs),
+            displacement_interval_secs: self
+                .displacement_interval_secs
+                .max(crate::constants::MIN_POOL_DISPLACEMENT_INTERVAL_SECS),
             ..self.clone()
         }
     }

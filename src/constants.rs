@@ -225,6 +225,29 @@ pub const DEFAULT_POOL_MIN_ESTABLISHED_SECS: u64 = 600;
 /// dialled and read from regardless — displacement only decides whether the connection is KEPT.
 pub const DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS: u64 = 600;
 
+/// The FLOOR a configured `displacement_interval_secs` is raised to
+/// ([`PeerPoolConfig::normalized`](crate::PeerPoolConfig::normalized), dig-gossip#74).
+///
+/// Equal to [`DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS`] **by construction** — the default IS the
+/// floor, and defining it as an alias rather than as a second literal is what makes the two
+/// incapable of drifting apart.
+///
+/// # Why the default, rather than some smaller non-zero number
+///
+/// The sufficiency argument for this bound (see [`DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS`]) is
+/// arithmetic about *this* interval: at one displacement per ten minutes a default 16-slot set takes
+/// at least 160 minutes of sustained hostile provider records to turn over, during which the
+/// maintenance loop, peer exchange and the introducer keep admitting peers by paths the lever cannot
+/// touch. No smaller interval has that argument made about it, so no smaller interval is known to be
+/// enough — and `displacement_interval_secs: 0` retires the bound entirely. A floor that only
+/// insisted on "non-zero" would leave the sufficiency claim conditional on a number nobody chose,
+/// which is the same defect wearing a different value.
+///
+/// The clamp only ever RAISES: an operator who wants a slower churn bound keeps it. Every value of
+/// this field is safe in the upward direction (churn gets rarer) and unsafe downward, so raising to
+/// the floor cannot turn a tolerant policy into a denying one.
+pub const MIN_POOL_DISPLACEMENT_INTERVAL_SECS: u64 = DEFAULT_POOL_DISPLACEMENT_INTERVAL_SECS;
+
 /// Default consecutive dial failures after which an address is dropped from the dial rotation
 /// for the current session (avoids hammering a permanently-dead peer).
 pub const DEFAULT_POOL_MAX_DIAL_FAILURES: u32 = 5;

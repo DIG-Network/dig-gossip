@@ -361,3 +361,59 @@ async fn a_discovered_peer_refused_by_the_eclipse_caps_costs_no_incumbent() {
     let _ = (keep_first, keep_second, keep_same);
     svc.stop().await.expect("stop");
 }
+
+/// **dig-gossip#74 — the usefulness record is forgotten at the REMOVAL SITE, not by the churn
+/// announcement.**
+///
+/// The announcement is published after the `peers` lock is released, so removing the record there
+/// carried the #1792 reconnect race: a reconnect landing in the gap re-admits the id with a fresh
+/// record, and the trailing removal would wipe the LIVE session. That race is closed by dropping the
+/// record inside the same lock hold as the `peers.remove` — which means this test has to exist, because
+/// "the announcement no longer removes" is indistinguishable from "nothing removes any more" unless
+/// something proves the departure path still forgets its peer.
+///
+/// Two peers, and only ONE is disconnected: the surviving peer is the control that stops a blanket
+/// "the map is empty" from passing, so a fix that forgot everything on any departure would fail here.
+#[tokio::test]
+async fn disconnect_forgets_only_the_departing_peers_usefulness_record() {
+    let (svc, handle, _dir) = running_handle(4, unbounded_displacement(1)).await;
+
+    let (leaving, keep_leaving) = loopback_nat_conn(
+        [0x51; 32],
+        addr("[2001:db8::51]:9251"),
+        TraversalKind::Direct,
+    );
+    let (staying, keep_staying) = loopback_nat_conn(
+        [0x52; 32],
+        addr("[2001:dc8::52]:9251"),
+        TraversalKind::Direct,
+    );
+    handle
+        .adopt_nat_connection(leaving)
+        .await
+        .expect("the peer that will leave");
+    handle
+        .adopt_nat_connection(staying)
+        .await
+        .expect("the peer that will stay");
+    assert_eq!(
+        handle.__tracked_pool_activity_count_for_tests(),
+        2,
+        "both admitted peers are tracked"
+    );
+
+    handle
+        .disconnect(&dig_gossip::PeerId::from([0x51; 32]))
+        .await
+        .expect("disconnect");
+
+    assert_eq!(
+        handle.__tracked_pool_activity_count_for_tests(),
+        1,
+        "the departing peer's record must be dropped at the removal site, or the map leaks"
+    );
+
+    drop(keep_leaving);
+    drop(keep_staying);
+    svc.stop().await.expect("stop");
+}
