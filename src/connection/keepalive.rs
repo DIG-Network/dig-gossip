@@ -35,7 +35,7 @@
 //!
 //! ## Why not `chia_protocol::Ping` / `Pong`?
 //!
-//! The published [`chia_protocol`](https://docs.rs/chia-protocol/0.26.0/chia_protocol/) **0.26** wire
+//! The published [`chia_protocol`](https://docs.rs/chia-protocol/0.36.1/chia_protocol/) **0.36.1** wire
 //! enum [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes) does **not** define separate
 //! application-level Ping/Pong message types — Chia’s networking docs describe **WebSocket** library
 //! heartbeats for transport liveness. Upstream [`dig_peer_protocol::DigLink`](dig_peer_protocol::DigLink)’s

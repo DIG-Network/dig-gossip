@@ -4,7 +4,7 @@
 //! # Why this module exists
 //!
 //! [`chia_protocol::ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes) names the introducer
-//! RPC opcodes, but **`chia-protocol` 0.26** does not export standalone Rust structs for those bodies
+//! RPC opcodes, but **`chia-protocol` 0.36.1** still does not export standalone Rust structs for those bodies
 //! (unlike [`RequestPeers`](chia_protocol::RequestPeers) / [`RespondPeers`](chia_protocol::RespondPeers)
 //! in `full_node_protocol.rs`). DIG still needs [`ChiaProtocolMessage`](chia_protocol::ChiaProtocolMessage)
 //! + [`Streamable`](chia_traits::Streamable) types so [`Peer::request_infallible`](dig_peer_protocol::Peer::request_infallible)
