@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.29.0] - 2026-08-22
+
+### Build
+- **deps:** Adopt dig-peer-protocol 0.7 and move onto the chia-protocol 0.36.1 line (#79)
+
 ## [0.28.0] - 2026-08-21
 
 ### Bug Fixes
