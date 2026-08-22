@@ -29,6 +29,21 @@
 //! own generation, so it can never evict a newer slot). [`stale_keepalive_does_not_evict_reconnect`]
 //! drives this with short keepalive overrides and waits past the timeout.
 //!
+//! ## Platform precondition — these tests need strict SPKI binding
+//!
+//! Newest-wins is keyed on `peer_id = SHA-256(TLS SPKI DER)`, so every assertion below depends on
+//! the listener deriving that id from the **client's certificate**. It only can where the inbound
+//! acceptor requires a client cert: the vendored `native-tls` fork patches
+//! `src/imp/openssl.rs` alone, so OpenSSL-backed platforms get strict binding while **Windows
+//! (SChannel)** and **macOS (SecureTransport)** hide the peer leaf and fall back to
+//! `peer_id_for_addr(remote_addr)` — a deliberate, documented choice at
+//! `src/connection/listener.rs:437`.
+//!
+//! That fallback embeds the peer's **ephemeral source port**, so a restarted client is a *different*
+//! key by construction and cannot be superseded. The newest-wins tests are therefore gated to the
+//! strict platforms, and [`reconnect_on_the_address_fallback_does_not_supersede`] pins the other
+//! side of the split so the divergence is asserted rather than merely skipped.
+//!
 //! ## Proof strategy (real wire, not a symmetric mock)
 //!
 //! Every test drives the **real** [`GossipService`] listener over native-tls: TCP → TLS → WSS →
@@ -41,10 +56,19 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use dig_gossip::{GossipConfig, GossipHandle, GossipService, PeerId};
+use dig_gossip::{GossipHandle, GossipService};
+// `PeerId` is only named by the strict-SPKI tests; on the address-fallback platforms those are
+// gated out and the import would be dead. `GossipConfig` is named only by
+// `service_with_config`, which is gated the same way.
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
+use dig_gossip::{GossipConfig, PeerId};
 
 /// Start a [`GossipService`] whose config is produced by `configure` — used to set short keepalive
 /// timings so a stale keepalive actually fires inside the test window.
+///
+/// Only the keepalive supersede test needs this, and that test is gated to the strict-SPKI
+/// platforms.
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 async fn service_with_config(
     dir: &Path,
     configure: impl FnOnce(&mut GossipConfig),
@@ -76,6 +100,7 @@ async fn service_from_dir(dir: &Path) -> (GossipService, GossipHandle) {
 ///
 /// Fails before the fix because the duplicate guard rejected the reconnect at TLS time (the client's
 /// `connect_to` errors out when the server drops the session pre-handshake).
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 #[tokio::test]
 async fn restarted_peer_reconnects_and_supersedes_stale_slot() {
     // --- Server ---
@@ -134,6 +159,7 @@ async fn restarted_peer_reconnects_and_supersedes_stale_slot() {
 
 /// **Map-boundedness under reconnect churn:** repeated restarts of the same identity never grow the
 /// peer map beyond one slot — a single identity cannot exhaust the map by reconnecting.
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 #[tokio::test]
 async fn reconnect_churn_keeps_peer_map_bounded() {
     let server_dir = common::test_temp_dir();
@@ -176,6 +202,7 @@ async fn reconnect_churn_keeps_peer_map_bounded() {
 /// hence a different `peer_id`) gets its **own** slot and does **not** evict the incumbent. Only a
 /// party that can complete the mTLS handshake as `peer_id` can reach the newest-wins path for that
 /// slot, so a live peer cannot be displaced by anyone who lacks its key.
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 #[tokio::test]
 async fn foreign_identity_cannot_displace_incumbent() {
     let server_dir = common::test_temp_dir();
@@ -223,6 +250,7 @@ async fn foreign_identity_cannot_displace_incumbent() {
 /// Fails on a fix that only closes the displaced socket (the stale keepalive still ticks, its blind
 /// `peers.remove(peer_id)` deletes the reconnect). Passes once the displaced keepalive is aborted on
 /// supersede AND the teardown is generation-guarded.
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 #[tokio::test]
 async fn stale_keepalive_does_not_evict_reconnect() {
     // Short keepalive so the STALE session's probe fails well inside the test window: 1 s ping, 2 s
@@ -287,6 +315,7 @@ async fn stale_keepalive_does_not_evict_reconnect() {
 /// (the drain-window race is too non-deterministic to force on the wire): a reconnect makes the live
 /// slot generation 1; a STALE caller (generation 0) is a no-op, a MATCHING caller (generation 1)
 /// charges + bans. RED without the guard: the stale calls would ban+evict the reconnect.
+#[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
 #[tokio::test]
 async fn stale_rate_limit_violation_does_not_ban_reconnect() {
     let server_dir = common::test_temp_dir();
@@ -345,5 +374,70 @@ async fn stale_rate_limit_violation_does_not_ban_reconnect() {
     assert!(
         !server_h.__peer_ids_for_tests().contains(&peer_pid),
         "a matching-generation rate-limit ban evicts the live slot"
+    );
+}
+
+// ============================================================================
+// The other side of the platform split — SChannel / SecureTransport
+// ============================================================================
+
+/// **The address fallback cannot supersede, and that is the documented behaviour.**
+///
+/// Where the inbound acceptor cannot see the client leaf (Windows SChannel, macOS
+/// SecureTransport), `src/connection/listener.rs` falls back to `peer_id_for_addr(remote_addr)`.
+/// That key is derived from the peer's address *including its ephemeral source port*, so a
+/// restarted client presents a **different** key even though it presents the **same certificate** —
+/// newest-wins has nothing to match against and the stale slot survives beside the new one.
+///
+/// This test exists so the gate above is not a silent skip. Without it, the whole file would
+/// vanish on these platforms and a change to the fallback — say, keying on the IP alone, which
+/// would make an unauthenticated peer able to displace an incumbent by source address — would be
+/// invisible here. It pins the divergence rather than hiding it.
+///
+/// It deliberately asserts **two** slots rather than merely "not one": a fallback that started
+/// returning a constant would also fail the one-slot assertion, but for the opposite reason.
+#[cfg(any(target_os = "windows", target_vendor = "apple"))]
+#[tokio::test]
+async fn reconnect_on_the_address_fallback_does_not_supersede() {
+    let server_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(server_dir.path());
+    let (_server_svc, server_h) = service_from_dir(server_dir.path()).await;
+    let bound = server_h
+        .__listen_bound_addr_for_tests()
+        .expect("listen addr");
+
+    // One client identity, reused across the restart — exactly the strict-platform fixture.
+    let client_dir = common::test_temp_dir();
+    let _ = common::generate_test_certs(client_dir.path());
+
+    let (client1_svc, client1_h) = service_from_dir(client_dir.path()).await;
+    client1_h.connect_to(bound).await.expect("first connect");
+    let first = server_h.__peer_ids_for_tests();
+    assert_eq!(
+        first.len(),
+        1,
+        "the first inbound session registers one slot"
+    );
+
+    // Abrupt teardown, so the slot is not reaped — same as the strict-platform tests.
+    drop(client1_h);
+    drop(client1_svc);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (_client2_svc, client2_h) = service_from_dir(client_dir.path()).await;
+    client2_h
+        .connect_to(bound)
+        .await
+        .expect("the reconnect is still accepted — it simply is not recognised as the same peer");
+
+    let after = server_h.__peer_ids_for_tests();
+    assert_eq!(
+        after.len(),
+        2,
+        "without SPKI binding the reconnect is a new identity, so the stale slot survives beside it"
+    );
+    assert!(
+        after.contains(&first[0]),
+        "the original slot is still present — the newcomer did not displace it"
     );
 }
