@@ -77,9 +77,9 @@ fn features_table(manifest: &Value) -> &toml::value::Table {
         .expect("[features] table must exist for STR-001")
 }
 
-/// Extract a simple version string like `"0.26"` from either:
-/// - `dep = "0.26"`
-/// - `dep = { version = "0.26", ... }`
+/// Extract a simple version string like `"0.36.1"` from either:
+/// - `dep = "0.36.1"`
+/// - `dep = { version = "0.36.1", ... }`
 fn dep_version(dep: &Value) -> String {
     if let Some(s) = dep.as_str() {
         return s.to_string();
@@ -135,7 +135,7 @@ fn test_cargo_toml_has_chia_protocol() {
     let dep = deps
         .get("chia-protocol")
         .expect("chia-protocol must be declared");
-    assert_eq!(dep_version(dep), "0.26");
+    assert_eq!(dep_version(dep), "0.36.1");
 }
 
 #[test]
@@ -161,7 +161,51 @@ fn test_cargo_toml_has_chia_traits() {
     let dep = deps
         .get("chia-traits")
         .expect("chia-traits must be declared");
-    assert_eq!(dep_version(dep), "0.26");
+    assert_eq!(dep_version(dep), "0.36.1");
+}
+
+/// The chia crates declared here must all sit on **one** version line.
+///
+/// `chia-protocol` and `chia-traits` are pinned individually above; this closes the pair of
+/// gaps beside them. A partial uplift — some of these moved, some left behind — is the specific
+/// failure a downstream workspace cannot consume, because a DIG type would then cross a
+/// chia-protocol version boundary. Pinning only two of the four could not see it.
+///
+/// `chia-ssl` is deliberately absent: it is not declared here, and it resolves to the version
+/// `chia-sdk-client` wants rather than to this line.
+#[test]
+fn test_cargo_toml_chia_crates_share_one_version_line() {
+    const LINE: &str = "0.36.1";
+    let manifest = load_cargo_toml();
+    let deps = dependencies_table(&manifest);
+    for name in [
+        "chia-protocol",
+        "chia-traits",
+        "chia-sha2",
+        "chia_streamable_macro",
+    ] {
+        let dep = deps
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} must be declared"));
+        assert_eq!(
+            dep_version(dep),
+            LINE,
+            "{name} is off the shared chia line — a partial uplift splits the DIG path"
+        );
+    }
+}
+
+/// `dig-peer-protocol` carries the chia line into this crate, so its major.minor is part of the
+/// same contract as the pins above: a 0.6 here alongside a 0.36.1 chia-protocol is incoherent,
+/// because 0.6 can only resolve chia-protocol 0.26.
+#[test]
+fn test_cargo_toml_dig_peer_protocol_is_on_the_matching_line() {
+    let manifest = load_cargo_toml();
+    let deps = dependencies_table(&manifest);
+    let dep = deps
+        .get("dig-peer-protocol")
+        .expect("dig-peer-protocol must be declared");
+    assert_eq!(dep_version(dep), "0.7");
 }
 
 #[test]
