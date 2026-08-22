@@ -16,7 +16,7 @@
 //! ## DIG wire types (the `dig_extension_rate_limits_map` table)
 //!
 //! [`crate::types::dig_messages::DigMessageType`] discriminants (`200..=219`) are **not**
-//! [`ProtocolMessageTypes`] variants in `chia-protocol` 0.26, so they cannot appear in
+//! [`ProtocolMessageTypes`] variants in `chia-protocol` 0.36.1, so they cannot appear in
 //! [`dig_peer_protocol::RateLimits`] `tx` / `other` maps. But the **220-band** opcodes —
 //! `StoreMelted` = 221 (#1316), `HoldingsAnnounce` = 222 (#1720) — ARE `ProtocolMessageTypes`
 //! variants and DO arrive on the live wire as Chia [`DigMessage`] values. Either way their bound is a

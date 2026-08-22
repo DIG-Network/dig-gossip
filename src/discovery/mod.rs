@@ -15,7 +15,7 @@ pub mod introducer_peers;
 pub mod introducer_register_wire;
 /// Introducer wire structs for protocol IDs **63** / **64** (DSC-004).
 ///
-/// `chia-protocol` 0.26 lists these only on [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes);
+/// `chia-protocol` 0.36.1 lists these only on [`ProtocolMessageTypes`](chia_protocol::ProtocolMessageTypes);
 /// the streamable bodies match Chia’s introducer wire layout (empty request, `peer_list` response —
 /// same shape as [`RespondPeers`](chia_protocol::RespondPeers)).
 pub mod introducer_wire;
