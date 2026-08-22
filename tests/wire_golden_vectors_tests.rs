@@ -337,3 +337,120 @@ fn decode_unassigned_opcode_succeeds_where_the_forked_enum_rejected() {
     assert_eq!(msg.id, None);
     assert_eq!(msg.data.as_ref(), ENVELOPE_PAYLOAD);
 }
+
+// ============================================================================
+// Opcodes 63/64 — the introducer bodies dig-gossip declares itself
+// ============================================================================
+//
+// Every vector above pins a body type that `dig-peer-protocol` owns and has
+// already proven byte-stable across the chia-protocol uplift. These two are
+// different: `RequestPeersIntroducer` / `RespondPeersIntroducer` are declared in
+// THIS crate (`src/discovery/introducer_wire.rs`) with `#[streamable(message)]`,
+// so their encoding is produced by `chia_streamable_macro` against a
+// `chia_protocol::TimestampedPeerInfo` — two crates that move together on a
+// version-line uplift. Nothing upstream can pin them; the obligation is ours.
+//
+// The literals below were blessed on the **chia-protocol 0.26** line, in their
+// own commit, before any manifest edit — so they can *detect* drift rather than
+// merely record whatever the new line happens to emit.
+//
+// Fixture design, distinguishing the encoding from the nearest wrong one:
+//
+// - **A `Vec` of length two, whose entries differ in every field.** A one-entry
+//   list cannot see a wrong element stride, and a `Vec` at all is what pins the
+//   `u32` big-endian length prefix — the empty vector alone would encode as four
+//   zero bytes, which is indistinguishable from a missing prefix.
+// - **A `timestamp` with eight distinct non-zero bytes.** `0x0102030405060708`
+//   reads differently in either endianness and at any width, so a widened,
+//   narrowed or byte-swapped field is visible. A timestamp of `1` — the second
+//   entry — could not show any of that on its own.
+// - **Both an IPv4-shaped and an IPv6-shaped host, of different lengths.** The
+//   host is a length-prefixed `String`, so two equal-length hosts would hide a
+//   prefix that had stopped tracking the body.
+// - **`msg_type()` asserted alongside the bytes.** `#[streamable(message)]`
+//   derives the opcode from the Rust struct identifier via
+//   `ProtocolMessageTypes`; a renumbered upstream variant would leave the body
+//   bytes untouched while addressing the frame to the wrong opcode.
+
+use chia_protocol::ChiaProtocolMessage;
+use dig_gossip::{RequestPeersIntroducer, RespondPeersIntroducer, TimestampedPeerInfo};
+
+/// Empty request body — `RequestPeersIntroducer` has no fields, so zero bytes is correct.
+const GOLDEN_63_REQUEST: &str = "";
+
+/// Two peers, deliberately dissimilar in host length, port and timestamp.
+const GOLDEN_64_RESPONSE: &str = "000000020000000a3139322e302e322e3838255301020304050607080000000b323030313a6462383a3a3124e40000000000000001";
+
+/// The empty peer list — a bare `u32` zero length prefix, not an absent field.
+const GOLDEN_64_EMPTY: &str = "00000000";
+
+/// The exact peer rows [`GOLDEN_64_RESPONSE`] encodes.
+fn golden_peer_rows() -> Vec<TimestampedPeerInfo> {
+    vec![
+        TimestampedPeerInfo::new("192.0.2.88".into(), 9555, 0x0102_0304_0506_0708),
+        TimestampedPeerInfo::new("2001:db8::1".into(), 9444, 1),
+    ]
+}
+
+#[test]
+fn golden_opcode_63_request_peers_introducer_encodes() {
+    let body = RequestPeersIntroducer::new();
+    assert_eq!(
+        hex(&body.to_bytes().expect("body serializes")),
+        GOLDEN_63_REQUEST
+    );
+}
+
+#[test]
+fn golden_opcode_64_respond_peers_introducer_encodes() {
+    let body = RespondPeersIntroducer::new(golden_peer_rows());
+    assert_eq!(
+        hex(&body.to_bytes().expect("body serializes")),
+        GOLDEN_64_RESPONSE
+    );
+}
+
+#[test]
+fn golden_opcode_64_respond_peers_introducer_empty_list_encodes() {
+    let body = RespondPeersIntroducer::new(vec![]);
+    assert_eq!(
+        hex(&body.to_bytes().expect("body serializes")),
+        GOLDEN_64_EMPTY
+    );
+}
+
+#[test]
+fn decode_opcode_63_request_peers_introducer() {
+    let body = RequestPeersIntroducer::from_bytes(&unhex(GOLDEN_63_REQUEST))
+        .expect("a golden body must decode");
+    assert_eq!(body, RequestPeersIntroducer::new());
+}
+
+#[test]
+fn decode_opcode_64_respond_peers_introducer() {
+    let body = RespondPeersIntroducer::from_bytes(&unhex(GOLDEN_64_RESPONSE))
+        .expect("a golden body must decode");
+    assert_eq!(
+        body.peer_list,
+        golden_peer_rows(),
+        "a wrong element stride would misalign the second row, not the first"
+    );
+}
+
+#[test]
+fn decode_opcode_64_respond_peers_introducer_empty_list() {
+    let body = RespondPeersIntroducer::from_bytes(&unhex(GOLDEN_64_EMPTY))
+        .expect("a golden body must decode");
+    assert!(
+        body.peer_list.is_empty(),
+        "four zero bytes are an empty list, not a truncated one"
+    );
+}
+
+#[test]
+fn the_introducer_bodies_still_address_their_own_opcodes() {
+    // The bytes can stay identical while the derived opcode moves, which would
+    // send a correct body to the wrong handler.
+    assert_eq!(RequestPeersIntroducer::msg_type() as u8, 63);
+    assert_eq!(RespondPeersIntroducer::msg_type() as u8, 64);
+}
