@@ -47,6 +47,26 @@ use dig_peer_protocol::{Bytes, DigMessage};
 use dig_tls::bls::{sign_message, verify_signature, SecretKey};
 use sha2::{Digest, Sha256};
 
+/// Compile-time proof that the BLS line and the `chia-protocol` line are the SAME chia line.
+///
+/// [`sign`] takes a `SecretKey` (from `chia-bls`, reached via `dig_tls::bls`) and a [`Bytes32`]
+/// (from `chia-protocol`) in one signature. Nothing about that signature forces the two crates to
+/// agree: they are independent parameters, so the compiler never unifies them. That is exactly how
+/// `dig-gossip` 0.29.0 shipped — signing with a chia-bls **0.26** key while handing round a
+/// chia-protocol **0.36.1** id — and it built cleanly, because the only thing holding the crate on
+/// one line was dependency RESOLUTION, which no test can see.
+///
+/// Requiring the two `SecretKey` types to be the same type turns that resolution accident into an
+/// `E0308`. `chia-bls` is declared directly in `Cargo.toml` for this purpose, so a `dig-tls` that
+/// moves BLS lines fails the build here rather than silently re-splitting the crate.
+const _: () = {
+    fn bls_line_matches_chia_protocol_line(sk: chia_bls::SecretKey) -> SecretKey {
+        sk
+    }
+    // Reference it so the function cannot be optimised out of the type check.
+    let _ = bls_line_matches_chia_protocol_line;
+};
+
 /// Wire opcode for a `store-melted` broadcast.
 ///
 /// Canonical value **221** — the second opcode of the 220-255 "free" band, after
