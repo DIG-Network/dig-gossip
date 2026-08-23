@@ -47,6 +47,42 @@ use dig_peer_protocol::{Bytes, DigMessage};
 use dig_tls::bls::{sign_message, verify_signature, SecretKey};
 use sha2::{Digest, Sha256};
 
+/// Compile-time proof that `dig-tls`, `chia-bls` and `chia-protocol` are ALL on the same chia line.
+///
+/// [`sign`] takes a `SecretKey` (from `chia-bls`, reached via `dig_tls::bls`) and a [`Bytes32`]
+/// (from `chia-protocol`) in one signature. Nothing about that signature forces the two crates to
+/// agree: they are independent parameters, so the compiler never unifies them. That is exactly how
+/// `dig-gossip` 0.29.0 shipped — signing with a chia-bls **0.26** key while handing round a
+/// chia-protocol **0.36.1** id — and it built cleanly, because the only thing holding the crate on
+/// one line was dependency RESOLUTION, which no test can see.
+///
+/// Two legs are needed, because each catches drift the other cannot see, and neither implies the
+/// other:
+///
+/// - **Leg 1 — `dig-tls` ≡ `chia-bls`.** Requires `dig_tls::bls::SecretKey` and this manifest's
+///   `chia_bls::SecretKey` to be the same type, so a `dig-tls` that moves BLS lines is an `E0308`
+///   here rather than a silent re-split. `chia-bls` is declared directly in `Cargo.toml` for this.
+/// - **Leg 2 — `chia-bls` ≡ `chia-protocol`.** [`chia_protocol::SpendBundle`] carries a
+///   `chia_bls::G2Element`, so returning that field as this manifest's `G2Element` unifies the BLS
+///   crate `chia-protocol` was built against with the one declared here. Leg 1 alone would still
+///   pass if a future cascade moved `chia-protocol` forward and left both `chia-bls` and `dig-tls`
+///   behind together — the mirror image of the 0.29.0 defect.
+///
+/// Chained, the two legs give `dig-tls ≡ chia-bls ≡ chia-protocol` transitively, enforced by the
+/// compiler. Leg 2 mentions no version literal at all, so it cannot rot the way a hand-maintained
+/// cascade list does.
+const _: () = {
+    fn dig_tls_line_matches_bls_line(sk: chia_bls::SecretKey) -> SecretKey {
+        sk
+    }
+    fn bls_line_matches_chia_protocol_line(sb: chia_protocol::SpendBundle) -> chia_bls::G2Element {
+        sb.aggregated_signature
+    }
+    // Reference them so the functions cannot be optimised out of the type check.
+    let _ = dig_tls_line_matches_bls_line;
+    let _ = bls_line_matches_chia_protocol_line;
+};
+
 /// Wire opcode for a `store-melted` broadcast.
 ///
 /// Canonical value **221** — the second opcode of the 220-255 "free" band, after

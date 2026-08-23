@@ -21,7 +21,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -103,16 +103,31 @@ dig-peer-protocol = { version = "0.7", default-features = false }
 # re-exports (`NodeCert`, `PeerId`, `BindingPolicy`, `peer_id_from_*`) come from dig-tls, which both
 # dig-nat versions pin at `^0.3`, so cargo unifies those. Six rotating nominal types is still a
 # breaking public-API change for consumers ⇒ MINOR on `0.x`, not patch.
-dig-nat = "0.18"
+# `0.19` (cascade dig_ecosystem#2761) and `0.20` move dig-nat onto the chia 0.36.1 line via dig-tls
+# 0.4. `0.20` is the version to take: 0.19 is itself internally split (it carries the same
+# chia-bls-omitted-from-the-cascade-list defect this crate is fixing), so pinning 0.19 would import
+# the very split we are closing. `NodeCert::generate_signed` now takes a `chia_bls::SecretKey` on
+# 0.36.1, which is the breaking surface reaching this crate.
+dig-nat = "0.20"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid
 # reference-DOWN edge; consumed from crates.io (no git dep).
-dig-tls = "0.3"
-# Canonical relay endpoint (`DIG_RELAY_URL`) — consumed from crates.io (#1214). The `>=0.2, <0.5` req
-# matches dig-nat 0.5's own dig-constants req, so both resolve to ONE crates.io `dig-constants` (0.4.x)
-# and stay in lockstep. `<0.5` guards a future breaking 0.5.
-dig-constants = ">=0.2, <0.5"
+# `0.4` (dig_ecosystem#2761) moves dig-tls from chia-bls 0.26 to chia-bls 0.36.1. This is the bump
+# that closes the internal split 0.29.0 shipped with: that release declared chia-protocol/-traits/
+# -sha2 at 0.36.1 while dig-tls 0.3 still carried chia-bls 0.26, so `store_melted::sign` took a 0.26
+# `SecretKey` and a 0.36.1 `Bytes32` in ONE public signature. It compiled only because the sole
+# consumer (dig-node) was equally stale. After this bump every chia type in this crate resolves on
+# the single 0.36.1 line.
+dig-tls = "0.4"
+# `dig-constants` is deliberately NOT declared here. It was carried as a direct dependency at
+# `>=0.2, <0.5` but is referenced NOWHERE in `src/` or `tests/` — and that range spans a chia-line
+# boundary: it admits `dig-constants` 0.4.0, which re-exports `chia_protocol::Bytes32` and
+# `ConsensusConstants` on the OLD 0.26 line. An unused dependency whose range straddles two chia
+# lines is exactly the shape that produces a silent split the first time someone imports from it, so
+# the declaration is removed rather than pinned. dig-nat still depends on it transitively; if this
+# crate ever needs it directly, re-add it pinned to a SINGLE version on the same chia line as
+# `chia-protocol` below.
 # Canonical address-family authority (CLAUDE.md §5.2 / SPEC §1.10): `dig_ip::Family` keys the
 # IPv6-first candidate ordering and `dig_ip::LocalStack` supplies the local∩peer family INTERSECTION
 # so this crate never dials a family the LOCAL host cannot originate on. A leaf crate on crates.io
@@ -126,6 +141,21 @@ chia_streamable_macro = "0.36.1"
 chia-protocol = "0.36.1"
 chia-traits = "0.36.1"
 chia-sha2 = "0.36.1"
+# chia-bls is declared DIRECTLY, and it is the reason this crate is being re-cut. It reaches this
+# crate only through `dig_tls::bls`, so it was absent from the enumerated chia cascade list
+# (chia-protocol, chia-wallet-sdk, chia-query, chia-sdk-*, chia-ssl) — and an invariant written as a
+# list omits whatever nobody thought to add. That omission shipped `dig-gossip` 0.29.0 with a 0.26
+# `SecretKey` and a 0.36.1 `Bytes32` in one public signature, and shipped the same split in
+# `dig-nat` 0.19.0.
+#
+# Declaring it here converts the invariant from a list into a COMPILER CHECK. The two-leg
+# type-identity assertion in `src/service/store_melted.rs` requires `dig_tls::bls::SecretKey` and
+# `chia_bls::SecretKey` to be the SAME type (leg 1), AND `chia_protocol::SpendBundle`'s
+# `aggregated_signature` to be this manifest's `chia_bls::G2Element` (leg 2) — so BOTH a dig-tls
+# that moves chia-bls lines and a chia-protocol bumped without chia-bls are an E0308 here instead
+# of a silent re-split. Without it nothing forces them to agree: they are independent parameters of
+# `sign()`, never unified by the compiler, which is precisely why 0.29.0 built.
+chia-bls = "0.36.1"
 # SHA256(peer TLS SubjectPublicKeyInfo DER) — API-005 / CON-001 peer_id derivation (NIST SHA-256).
 sha2 = "0.10"
 # HOL-001 (#1428): hex-encode/decode the 64-char `provider_peer_id` in a `HoldingsAnnounce`.

@@ -616,10 +616,13 @@ they ride on top of whatever byte transport delivers a peer's messages.
   unified `PeerRecord` (`{ peer_id, addresses:[{host,port,kind}], network_id, last_seen, via }`);
   `merge_records_into_address_manager()` folds dialable records into the same `AddressManager`.
 
-`dig-nat` (and the `dig-constants` it needs) are consumed as **crates.io** dependencies
-(`dig-nat = "0.8"`), released before `dig-gossip` per the bottom-up publish order — a git dependency
-cannot be `cargo publish`ed. The former `dig-protocol` crate has been renamed to **`dig-peer-protocol`**
-(consumed as `dig-peer-protocol = "0.2"`); it re-exports the chia-* surface plus the DIG `200..=219`
+`dig-nat` (`0.20`) and `dig-tls` (`0.4`) are consumed as **crates.io** dependencies, released before
+`dig-gossip` per the bottom-up publish order — a git dependency cannot be `cargo publish`ed. Both sit
+on the **chia 0.36.1** line, as do the `chia-protocol` / `chia-traits` / `chia-sha2` / `chia-bls`
+declarations; `chia-bls` is declared directly so that a dependency drifting onto another chia line is
+a compile error rather than a silent internal split (see `src/service/store_melted.rs`). The former
+`dig-protocol` crate has been renamed to **`dig-peer-protocol`** (consumed as
+`dig-peer-protocol = "0.7"`); it re-exports the chia-* surface plus the DIG `200..=222`
 opcode band (`DigMessage`, `DigMessageType`), so dig-gossip consumes those wire types rather than
 hand-rolling them.
 
