@@ -148,11 +148,13 @@ chia-sha2 = "0.36.1"
 # `SecretKey` and a 0.36.1 `Bytes32` in one public signature, and shipped the same split in
 # `dig-nat` 0.19.0.
 #
-# Declaring it here converts the invariant from a list into a COMPILER CHECK: the type-identity
-# assertion in `src/service/store_melted.rs` requires `dig_tls::bls::SecretKey` and
-# `chia_bls::SecretKey` to be the SAME type, so a dig-tls that moves chia-bls lines is an E0308 here
-# instead of a silent re-split. Without it nothing forces the two to agree: they are independent
-# parameters of `sign()`, never unified by the compiler, which is precisely why 0.29.0 built.
+# Declaring it here converts the invariant from a list into a COMPILER CHECK. The two-leg
+# type-identity assertion in `src/service/store_melted.rs` requires `dig_tls::bls::SecretKey` and
+# `chia_bls::SecretKey` to be the SAME type (leg 1), AND `chia_protocol::SpendBundle`'s
+# `aggregated_signature` to be this manifest's `chia_bls::G2Element` (leg 2) — so BOTH a dig-tls
+# that moves chia-bls lines and a chia-protocol bumped without chia-bls are an E0308 here instead
+# of a silent re-split. Without it nothing forces them to agree: they are independent parameters of
+# `sign()`, never unified by the compiler, which is precisely why 0.29.0 built.
 chia-bls = "0.36.1"
 # SHA256(peer TLS SubjectPublicKeyInfo DER) — API-005 / CON-001 peer_id derivation (NIST SHA-256).
 sha2 = "0.10"
