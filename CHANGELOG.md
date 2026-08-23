@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.30.0] - 2026-08-23
+
+### Build
+- **deps:** Close the internal chia-line split by adopting dig-tls 0.4 / dig-nat 0.20 (#81)
+
 ## [0.29.0] - 2026-08-22
 
 ### Build
