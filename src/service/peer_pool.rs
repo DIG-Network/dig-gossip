@@ -1154,7 +1154,10 @@ mod tests {
             let relayed = max_relayed_inbound(max_connections);
 
             assert_eq!(direct, relayed, "the two tiers are derived symmetrically");
-            assert!(direct <= total, "a tier cannot exceed the shared inbound budget");
+            assert!(
+                direct <= total,
+                "a tier cannot exceed the shared inbound budget"
+            );
             if total == 0 {
                 assert_eq!(direct, 0, "an empty inbound budget grants no tier a slot");
             } else {
@@ -1166,7 +1169,11 @@ mod tests {
         }
 
         // The two configurations that produced the regression and the one the suites pin.
-        assert_eq!(max_relayed_inbound(2), 1, "a two-slot pool still serves a circuit");
+        assert_eq!(
+            max_relayed_inbound(2),
+            1,
+            "a two-slot pool still serves a circuit"
+        );
         assert_eq!(max_relayed_inbound(3), 1);
         assert_eq!(max_relayed_inbound(8), 5);
         assert_eq!(max_direct_inbound(8), 5);
