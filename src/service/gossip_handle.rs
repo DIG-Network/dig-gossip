@@ -1996,8 +1996,7 @@ impl GossipHandle {
         self.require_running()?;
         if matches!(method, dig_nat::TraversalKind::Relayed) {
             return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
-                "adopt_direct_inbound: a relayed circuit belongs to adopt_relayed_inbound_handle"
-                    .to_string(),
+                "adopt_direct_inbound: a relayed circuit belongs to adopt_relayed_inbound_handle",
             )));
         }
         if peer_id == self.inner.config.peer_id {
@@ -2056,8 +2055,9 @@ impl GossipHandle {
                             && !s.is_outbound()
                     })
                     .count();
-                let cap =
-                    crate::service::peer_pool::max_direct_inbound(self.inner.config.max_connections);
+                let cap = crate::service::peer_pool::max_direct_inbound(
+                    self.inner.config.max_connections,
+                );
                 if accepted_direct >= cap {
                     return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
                         format!("#3124: accepted direct inbound cap reached ({cap})"),

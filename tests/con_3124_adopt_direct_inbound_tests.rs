@@ -379,7 +379,8 @@ async fn a_direct_inbound_peer_is_typed_direct_inbound_and_is_not_dialable() {
 #[tokio::test]
 async fn a_relayed_tier_is_refused_by_the_direct_inbound_entry_point() {
     let (svc, handle, _dir) = running_handle().await;
-    let (responder, peer_id, _initiator) = authenticated_inbound_connection([38; 32], [39; 32]).await;
+    let (responder, peer_id, _initiator) =
+        authenticated_inbound_connection([38; 32], [39; 32]).await;
 
     let err = handle
         .adopt_direct_inbound_handle(
@@ -429,7 +430,11 @@ async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
             .unwrap_or_else(|e| panic!("inbound peer {i} is within the cap: {e:?}"));
         held.push((responder, initiator));
     }
-    assert_eq!(handle.peer_count().await, cap, "the cap is reached, not the pool");
+    assert_eq!(
+        handle.peer_count().await,
+        cap,
+        "the cap is reached, not the pool"
+    );
 
     let (extra_responder, extra_id, _extra_initiator) =
         authenticated_inbound_connection([70; 32], [71; 32]).await;
@@ -449,7 +454,11 @@ async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
     );
 
     // The reserved room is real: a peer THIS node dials is still admitted at the same moment.
-    let (dialed, _s) = loopback_nat_conn([72; 32], addr("[2001:db8:2::7]:9445"), TraversalKind::Direct);
+    let (dialed, _s) = loopback_nat_conn(
+        [72; 32],
+        addr("[2001:db8:2::7]:9445"),
+        TraversalKind::Direct,
+    );
     handle
         .adopt_nat_connection(dialed)
         .await
