@@ -431,7 +431,7 @@ fn reserving_a_quarter(n: usize) -> usize {
 ///
 /// The floor is the half of the reservation that a plain [`reserving_a_quarter`] cannot express.
 /// Applying the quarter twice — once to reach the inbound budget, once to reach a tier's share of it
-/// — collapses to `0` for every `max_connections <= 3`, because `reserving_a_quarter(1) == 0`. A cap
+/// — collapses to `0` for every `max_connections <= 2`, because `reserving_a_quarter(1) == 0`. A cap
 /// of zero does not RESERVE a tier's room, it DENIES the tier outright: at `max_connections = 2`
 /// every relayed circuit this node serves was refused with
 /// `accepted relayed circuit cap reached (0)`, which is the same starvation the symmetric derivation

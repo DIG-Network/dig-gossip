@@ -2120,7 +2120,7 @@ set. Three bounds hold that, and they are ordered deliberately:
    ```
 
    **The floor is normative, not a rounding detail.** Applying the quarter twice — once to reach `b`,
-   once to reach a tier's share of it — yields ZERO for every `max_connections <= 3`, and a cap of zero
+   once to reach a tier's share of it — yields ZERO for every `max_connections <= 2`, and a cap of zero
    does not RESERVE a tier's room, it CLOSES the tier: every circuit is refused with
    `accepted relayed circuit cap reached (0)`, which is the same starvation the symmetric derivation
    exists to prevent, merely inflicted on the other side. An implementation MUST NOT emit a tier cap of
