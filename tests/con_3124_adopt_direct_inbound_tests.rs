@@ -679,7 +679,9 @@ async fn one_source_group_cannot_take_the_accepted_direct_tier() {
             None,
         )
         .await
-        .expect("a peer from a different source group is admitted while the crowded group is refused");
+        .expect(
+            "a peer from a different source group is admitted while the crowded group is refused",
+        );
 
     svc.stop().await.expect("stop");
 }
@@ -1004,7 +1006,10 @@ async fn a_full_relayed_tier_still_leaves_the_direct_tier_a_slot() {
          one of the aggregate 6 is always left to the other tier"
     );
     assert!(
-        matches!(refusal, Some(dig_gossip::GossipError::ConnectionFiltered(_))),
+        matches!(
+            refusal,
+            Some(dig_gossip::GossipError::ConnectionFiltered(_))
+        ),
         "the sixth circuit is refused by the relayed cap, not by MaxConnectionsReached — got \
          {refusal:?}"
     );
