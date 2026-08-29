@@ -1934,6 +1934,162 @@ impl GossipHandle {
         .await
     }
 
+    /// Register an authenticated DIRECT connection this node ACCEPTED, whose session the CALLER keeps
+    /// (**dig_ecosystem#3124**).
+    ///
+    /// # Why this is its own entry point
+    ///
+    /// Before it, none of the four adoption paths could take an accepted direct connection, so a node
+    /// serving inbound peers registered none of them and `connected_peers` under-reported every one.
+    /// Each path that LOOKS reusable corrupts a different downstream decision, and none of the three
+    /// corruptions is visible at the call site:
+    ///
+    /// * [`Self::adopt_relayed_inbound_handle`] types the slot [`TraversalKind::Relayed`](dig_nat::TraversalKind).
+    ///   The peer record's [`via`](crate::nat::peer_record::Via) and both relayed caps derive from that
+    ///   tier, so a directly-connected peer would be reported as relay-tunnelled to peer selection and
+    ///   charged against the budget that bounds relay-chosen peers.
+    /// * [`Self::adopt_nat_connection`] stamps `is_outbound = true`, charging the INT-006 /16 and
+    ///   INT-007 AS **outbound** diversity budgets for a peer this node never dialed — spending the
+    ///   diversity of a set the peer did not join.
+    /// * Either would report the slot's `remote` as dialable, and an accepted connection's `remote` is
+    ///   the peer's EPHEMERAL SOURCE PORT. See [`PeerSlot::dial_addr`](crate::service::state::PeerSlot::dial_addr):
+    ///   this slot reports `None`, so peer selection never offers an address nothing is bound to.
+    ///
+    /// # Caller obligations
+    ///
+    /// * `peer_id` MUST come from the completed mTLS handshake, exactly as for
+    ///   [`Self::adopt_relayed_inbound_handle`] — the guarantee is the caller's, not the type's.
+    ///   Convert dig-nat's with `PeerId::from(*nat_peer_id.as_bytes())`.
+    /// * `remote` is the accepted connection's SOURCE address. It is reported for observability
+    ///   ([`ConnectedPoolPeer::session_addr`](crate::service::peer_pool::ConnectedPoolPeer::session_addr))
+    ///   and is never dialed.
+    /// * `method` is the traversal tier the connection actually arrived over, from the caller.
+    ///   [`TraversalKind::Relayed`](dig_nat::TraversalKind) is REFUSED here — that is
+    ///   [`Self::adopt_relayed_inbound_handle`]'s path, and accepting it would let a circuit be
+    ///   accounted against the direct tier and escape the relayed cap.
+    /// * `session` pairs the liveness observer with the supersede notice, as for the relayed handle
+    ///   path: teardown stays the CALLER's, and dropping this slot closes nothing.
+    /// * `sink` is how broadcasts reach the peer. **A peer adopted with `None` is counted and served
+    ///   but receives no broadcast at all** — the pool reports it unreachable rather than pretending
+    ///   delivery. Supply one here, or attach it later with [`Self::set_nat_broadcast_sink`].
+    ///
+    /// # Admission
+    ///
+    /// Refuses this node itself ([`GossipError::SelfConnection`]), a banned peer
+    /// ([`GossipError::PeerBanned`]), a full pool ([`GossipError::MaxConnectionsReached`]), a relayed
+    /// tier, a peer already holding a DIALABLE slot (an accepted connection never demotes a peer this
+    /// node can reach at a known address to one it cannot), and more than
+    /// [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) accepted direct peers.
+    /// No OUTBOUND diversity budget is charged: this node dialed nothing, so it occupies no outbound
+    /// group.
+    ///
+    /// Re-adoption by the same peer is newest-wins and free, for the same reasons as
+    /// [`Self::adopt_nat_connection`]; the displaced slot's owner is notified (#71).
+    pub async fn adopt_direct_inbound_handle(
+        &self,
+        peer_id: PeerId,
+        remote: std::net::SocketAddr,
+        method: dig_nat::TraversalKind,
+        session: crate::ObservedSession,
+        sink: Option<crate::NatBroadcastSink>,
+    ) -> Result<PeerId, GossipError> {
+        self.require_running()?;
+        if matches!(method, dig_nat::TraversalKind::Relayed) {
+            return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                "adopt_direct_inbound: a relayed circuit belongs to adopt_relayed_inbound_handle"
+                    .to_string(),
+            )));
+        }
+        if peer_id == self.inner.config.peer_id {
+            return Err(GossipError::SelfConnection);
+        }
+        if self
+            .inner
+            .is_peer_id_banned_at(peer_id, metric_unix_timestamp_secs())
+            .await
+        {
+            return Err(GossipError::PeerBanned(peer_id));
+        }
+
+        // Budgets and the insert are decided under ONE `peers`-lock hold, so no two concurrent
+        // accepted connections can both pass the last free slot (the #1710 atomicity rule).
+        let superseded = {
+            let mut peers = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| GossipError::ChannelClosed)?;
+
+            let held = peers.get(&peer_id);
+
+            // An accepted connection NEVER supersedes a slot this node can dial. Doing so would trade
+            // a peer reachable at a known address for one reachable only while the peer keeps this
+            // connection open, at the peer's own initiative — the #870 rule, which is about losing
+            // dialability rather than about relays specifically.
+            if matches!(held, Some(slot) if slot.dial_addr().is_some()) {
+                return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                    format!("#3124: {peer_id} holds a dialable slot; an accepted connection does not supersede it"),
+                )));
+            }
+
+            // The map grows only for an identity holding no slot at all.
+            if held.is_none() && peers.len() >= self.inner.config.max_connections {
+                return Err(GossipError::MaxConnectionsReached(
+                    self.inner.config.max_connections,
+                ));
+            }
+
+            // The accepted-direct budget is occupied only by a slot that is ITSELF an accepted direct
+            // peer, so re-adopting one is free while converting a relayed slot into an accepted direct
+            // one is net-new occupancy and is charged. Exempting every held slot would make the cap a
+            // formality: any peer admitted by another path could then be converted for nothing.
+            let replaces_accepted_direct = matches!(
+                held,
+                Some(slot) if !crate::service::state::is_relayed(slot) && !slot.is_outbound()
+            );
+            if !replaces_accepted_direct {
+                let accepted_direct = peers
+                    .values()
+                    .filter(|s| {
+                        matches!(s, PeerSlot::Nat(_))
+                            && !crate::service::state::is_relayed(s)
+                            && !s.is_outbound()
+                    })
+                    .count();
+                let cap =
+                    crate::service::peer_pool::max_direct_inbound(self.inner.config.max_connections);
+                if accepted_direct >= cap {
+                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                        format!("#3124: accepted direct inbound cap reached ({cap})"),
+                    )));
+                }
+            }
+
+            peers.insert(
+                peer_id,
+                PeerSlot::Nat(super::state::NatSlot {
+                    conn: super::state::NatTransport::Observed(session),
+                    sink,
+                    remote,
+                    // This node ACCEPTED the connection. Beyond the direction itself, this is what
+                    // keeps the ephemeral source port out of `dial_addr` and the peer out of the
+                    // outbound diversity occupancy scan.
+                    is_outbound: false,
+                    method,
+                }),
+            )
+        };
+
+        // Newest-wins supersede, outside the lock. An `Observed` slot holds no transport to drop, so
+        // the displaced session would otherwise survive with its owner un-notified (#71);
+        // `retire_slot` fires that owner's notice instead.
+        if let Some(stale) = superseded {
+            super::state::retire_slot(stale).await;
+        }
+
+        Ok(peer_id)
+    }
+
     /// Attach (or replace) the broadcast sink of an already-registered `dig-nat` peer (**#69**).
     ///
     /// The dialer path ([`Self::adopt_nat_connection`]) is a published signature that cannot grow a

@@ -324,6 +324,20 @@ pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
     reserving_a_quarter(max_connections)
 }
 
+/// **dig_ecosystem#3124** — how many ACCEPTED direct connections may hold pool slots at once.
+///
+/// Inbound peers must not be able to fill the pool. Every slot an accepted connection holds is one
+/// the maintenance loop cannot use to dial a peer of THIS node's choosing, so an unbounded accepted
+/// tier lets anyone who can complete a handshake decide this node's entire peer set — the eclipse
+/// [`max_relayed_inbound`] already guards on the relayed path, reachable here without a relay at all.
+///
+/// Deliberately the SAME reserved quarter as the relayed cap rather than a new constant: both answer
+/// the one question "how much of the pool may the other side choose", and two derivations would drift.
+/// The caps are counted separately, so the two inbound tiers cannot pool their budgets.
+pub(crate) fn max_direct_inbound(max_connections: usize) -> usize {
+    reserving_a_quarter(max_connections)
+}
+
 /// `n` less a reserved quarter (at least one) — the ecosystem's single "leave room for the other
 /// tier" derivation. `reserving_a_quarter(8) == 6`.
 fn reserving_a_quarter(n: usize) -> usize {

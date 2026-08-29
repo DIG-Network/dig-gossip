@@ -37,6 +37,9 @@ use std::sync::Arc;
 use dig_gossip::{GossipHandle, GossipService, PeerPoolConfig};
 use dig_nat::TraversalKind;
 use dig_tls::BindingPolicy;
+
+/// Opcode 223 — PROFILE_ROOT_ANNOUNCE, an ordinary broadcast every pool peer should receive.
+const PROFILE_ROOT_ANNOUNCE: u8 = 223;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A plausible ephemeral SOURCE address for an accepted TCP connection — a high port the peer does
@@ -228,9 +231,12 @@ async fn a_direct_inbound_peer_is_counted_still_served_and_reached_by_a_broadcas
     );
 
     // (c) REACHED — the peer's own owner receives the broadcast bytes.
-    let payload = b"con-3124-direct-inbound".to_vec();
+    let payload = vec![0xC3u8; 64];
     handle
-        .broadcast(dig_gossip::MessageType::Announcement, payload.clone())
+        .broadcast_local(
+            dig_gossip::DigMessage::new(PROFILE_ROOT_ANNOUNCE, None, payload.clone().into()),
+            None,
+        )
         .await
         .expect("broadcast");
     let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), broadcasts.recv())
@@ -317,12 +323,12 @@ async fn a_direct_inbound_peer_is_typed_direct_inbound_and_is_not_dialable() {
     // `via` — Direct for the peer under test, and NOT a constant across the pool.
     assert_eq!(
         inbound.via,
-        dig_gossip::Via::Direct,
+        dig_gossip::nat::peer_record::Via::Direct,
         "a direct inbound peer is reached directly; typing it Relayed mislabels its data path"
     );
     assert_eq!(
         relayed.via,
-        dig_gossip::Via::Relay,
+        dig_gossip::nat::peer_record::Via::Relay,
         "control: the relayed slot reports Relay, so Direct above is a measured value"
     );
 

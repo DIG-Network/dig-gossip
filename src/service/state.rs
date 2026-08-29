@@ -445,8 +445,23 @@ impl PeerSlot {
     /// skip-connected keys ([`ServiceState::connected_pool_keys`]) and the public
     /// [`ConnectedPoolPeer::dial_addr`](crate::service::peer_pool::ConnectedPoolPeer::dial_addr), so
     /// the two can never drift apart.
+    /// A `dig-nat` slot this node ACCEPTED reports `None` for a second, independent reason
+    /// (**dig_ecosystem#3124**): its `remote` is the peer's EPHEMERAL SOURCE PORT, chosen by the
+    /// peer's kernel for one connection, not the port it listens on. Only a slot this node DIALED has
+    /// a `remote` this node picked, and therefore one the peer answers at.
+    ///
+    /// The two reasons do not collapse into one. A relayed slot is undialable in EITHER direction
+    /// because of its tier; an accepted direct slot is undialable because of its direction. Deriving
+    /// dialability from the tier alone is what would make a direct inbound peer look reachable at a
+    /// port nothing is bound to.
+    ///
+    /// The direction clause is scoped to [`PeerSlot::Nat`] deliberately: `Live` and `Stub` slots keep
+    /// the behaviour they have today, so this narrows nothing that was already relied upon.
     pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
         if is_relayed(self) {
+            return None;
+        }
+        if matches!(self, PeerSlot::Nat(n) if !n.is_outbound) {
             return None;
         }
         Some(self.remote())
