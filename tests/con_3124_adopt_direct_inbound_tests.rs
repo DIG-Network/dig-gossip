@@ -492,13 +492,21 @@ async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
 /// The fixture fills BOTH tiers, which is the only arrangement that can see the defect: a fixture
 /// holding one tier is bounded by that tier's own cap and passes either way — which is exactly why
 /// the suite could not see this.
+///
+/// # Why the mixture is 4 + 2 rather than 5 + 1
+///
+/// The shared bound is charged on TWO code paths, and a fixture that probes only one of them goes
+/// green when the other is deleted — measured: an earlier 5 + 1 arrangement survived removing the
+/// direct path's charge entirely, because its seventh adoption was relayed. At 4 + 2 NEITHER tier is
+/// at its own cap, so a seventh peer of EITHER tier can only be refused by the shared budget, and
+/// both refusals are asserted.
 #[tokio::test]
 async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
     let (svc, handle, _dir) = running_handle().await;
     let mut held = Vec::new();
 
-    // Five accepted DIRECT peers — the direct tier at its own cap.
-    for i in 0..5usize {
+    // Four accepted DIRECT peers — one short of the direct tier's own cap of 5.
+    for i in 0..4usize {
         let (responder, peer_id, initiator) =
             authenticated_inbound_connection([100 + i as u8; 32], [140 + i as u8; 32]).await;
         handle
@@ -514,24 +522,38 @@ async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
         held.push((responder, initiator));
     }
 
-    // One accepted RELAYED circuit — well inside the relayed tier's own cap of 6, and the sixth and
-    // last slot of the shared inbound budget.
-    let (relay_responder, relay_id, _r) = authenticated_inbound_connection([120; 32], [121; 32]).await;
-    handle
-        .adopt_relayed_inbound_handle(
-            relay_id,
-            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
-            dig_gossip::ObservedSession::new(relay_responder.closed_handle(), never_superseded()),
-            None,
-        )
-        .await
-        .expect("the relayed tier is far from its own cap");
+    // Held so a session is never dropped mid-fixture, which would let the peer be reaped.
+    let mut relays = Vec::new();
+    // Two accepted RELAYED circuits — well inside the relayed tier's own cap of 6, and the fifth and
+    // sixth slots of the shared inbound budget.
+    for (i, seeds) in [([120u8; 32], [121u8; 32]), ([124; 32], [125; 32])]
+        .into_iter()
+        .enumerate()
+    {
+        let (relay_responder, relay_id, _r) =
+            authenticated_inbound_connection(seeds.0, seeds.1).await;
+        handle
+            .adopt_relayed_inbound_handle(
+                relay_id,
+                SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+                dig_gossip::ObservedSession::new(
+                    relay_responder.closed_handle(),
+                    never_superseded(),
+                ),
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("relayed circuit {i} is far from the relayed cap: {e:?}"));
+        relays.push(relay_responder);
+    }
     assert_eq!(handle.peer_count().await, 6, "six accepted peers are held");
 
-    // A SEVENTH accepted peer of either tier is refused by the shared budget, and — the whole point —
-    // refused as FILTERED rather than by running the pool out of slots.
+    // A seventh accepted peer of EITHER tier is refused by the shared budget — and refused as
+    // FILTERED rather than by running the pool out of slots, which is the regression itself. Both
+    // tiers are probed because the budget is charged on two code paths, and one probe cannot see the
+    // other path being deleted.
     let (next_responder, next_id, _n) = authenticated_inbound_connection([122; 32], [123; 32]).await;
-    let err = handle
+    let relayed_err = handle
         .adopt_relayed_inbound_handle(
             next_id,
             SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
@@ -539,10 +561,29 @@ async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
             None,
         )
         .await
-        .expect_err("the shared inbound budget refuses a seventh accepted peer");
+        .expect_err("the shared budget refuses a seventh accepted peer arriving over a relay");
     assert!(
-        matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
-        "refused by a BUDGET, not by MaxConnectionsReached — got {err:?}"
+        matches!(relayed_err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused by a BUDGET, not by MaxConnectionsReached — got {relayed_err:?}"
+    );
+
+    let (direct_responder, direct_id, _d) =
+        authenticated_inbound_connection([126; 32], [127; 32]).await;
+    let direct_err = handle
+        .adopt_direct_inbound_handle(
+            direct_id,
+            // Its own /16, and the direct tier is one below its own cap, so NOTHING but the shared
+            // budget can refuse this.
+            inbound_source_in_group(70),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(direct_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect_err("the shared budget refuses a seventh accepted peer arriving directly");
+    assert!(
+        matches!(direct_err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused by a BUDGET, not by MaxConnectionsReached — got {direct_err:?}"
     );
 
     // The reserve the caps exist to protect is measurably still there: TWO slots for peers this node
