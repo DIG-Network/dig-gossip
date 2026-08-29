@@ -1978,10 +1978,17 @@ impl GossipHandle {
     /// Refuses this node itself ([`GossipError::SelfConnection`]), a banned peer
     /// ([`GossipError::PeerBanned`]), a full pool ([`GossipError::MaxConnectionsReached`]), a relayed
     /// tier, a peer already holding a DIALABLE slot (an accepted connection never demotes a peer this
-    /// node can reach at a known address to one it cannot), and more than
-    /// [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) accepted direct peers.
+    /// node can reach at a known address to one it cannot), and three separate occupancy bounds:
+    /// more than [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) accepted
+    /// DIRECT peers, more than [`max_inbound_total`](crate::service::peer_pool::max_inbound_total)
+    /// accepted peers of BOTH inbound tiers together (the bound that actually reserves room for this
+    /// node's own dialing — the per-tier caps sum to the whole pool on their own), and more than
+    /// [`max_direct_inbound_per_group`](crate::service::peer_pool::max_direct_inbound_per_group)
+    /// accepted direct peers sharing one `/16` source group (identities are free on this path, so a
+    /// pool-wide count alone lets one host take the tier).
+    ///
     /// No OUTBOUND diversity budget is charged: this node dialed nothing, so it occupies no outbound
-    /// group.
+    /// group. The `/16` bound above is the inbound analogue, not a reuse of INT-006.
     ///
     /// Re-adoption by the same peer is newest-wins and free, for the same reasons as
     /// [`Self::adopt_nat_connection`]; the displaced slot's owner is notified (#71).
@@ -2042,18 +2049,12 @@ impl GossipHandle {
             // peer, so re-adopting one is free while converting a relayed slot into an accepted direct
             // one is net-new occupancy and is charged. Exempting every held slot would make the cap a
             // formality: any peer admitted by another path could then be converted for nothing.
-            let replaces_accepted_direct = matches!(
-                held,
-                Some(slot) if !crate::service::state::is_relayed(slot) && !slot.is_outbound()
-            );
+            let replaces_accepted_direct =
+                matches!(held, Some(slot) if crate::service::state::is_accepted_direct(slot));
             if !replaces_accepted_direct {
                 let accepted_direct = peers
                     .values()
-                    .filter(|s| {
-                        matches!(s, PeerSlot::Nat(_))
-                            && !crate::service::state::is_relayed(s)
-                            && !s.is_outbound()
-                    })
+                    .filter(|s| crate::service::state::is_accepted_direct(s))
                     .count();
                 let cap = crate::service::peer_pool::max_direct_inbound(
                     self.inner.config.max_connections,
@@ -2063,6 +2064,49 @@ impl GossipHandle {
                         format!("#3124: accepted direct inbound cap reached ({cap})"),
                     )));
                 }
+            }
+
+            // The AGGREGATE inbound budget, charged by BOTH inbound entry points. The two per-tier
+            // caps above each permit a reserved quarter and so, counted separately, sum to the whole
+            // pool — 6 direct + 2 relayed fills a max_connections of 8 and leaves this node nothing to
+            // dial with. A slot ALREADY occupying this budget converts between tiers for free; only
+            // net-new accepted occupancy is charged.
+            let occupies_inbound_budget =
+                matches!(held, Some(slot) if crate::service::state::is_accepted_inbound(slot));
+            if !occupies_inbound_budget {
+                let accepted_inbound = peers
+                    .values()
+                    .filter(|s| crate::service::state::is_accepted_inbound(s))
+                    .count();
+                let cap =
+                    crate::service::peer_pool::max_inbound_total(self.inner.config.max_connections);
+                if accepted_inbound >= cap {
+                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                        format!("#3124: total accepted inbound cap reached ({cap})"),
+                    )));
+                }
+            }
+
+            // Per-SOURCE-GROUP bound. Identities are free on this path, so a pool-wide cap alone lets
+            // ONE host mint one leaf per slot and take the whole accepted tier. The peer's own held
+            // slot is excluded rather than exempted: a re-adoption must not be able to buy a group
+            // slot it does not already hold, and it never counts itself as an occupant.
+            let group = crate::util::ip_address::subnet_group(&remote.ip());
+            let same_group = peers
+                .iter()
+                .filter(|(pid, s)| {
+                    **pid != peer_id
+                        && crate::service::state::is_accepted_direct(s)
+                        && crate::util::ip_address::subnet_group(&s.remote().ip()) == group
+                })
+                .count();
+            let group_cap = crate::service::peer_pool::max_direct_inbound_per_group(
+                self.inner.config.max_connections,
+            );
+            if same_group >= group_cap {
+                return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                    format!("#3124: accepted direct inbound /16 group cap reached ({group_cap})"),
+                )));
             }
 
             peers.insert(
@@ -2086,6 +2130,28 @@ impl GossipHandle {
         if let Some(stale) = superseded {
             super::state::retire_slot(stale).await;
         }
+
+        // INT-001: a pool member participates in Plumtree like any connected peer (starts eager).
+        if let Ok(mut pt) = self.inner.plumtree.lock() {
+            pt.add_peer(peer_id);
+        }
+        self.inner
+            .total_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The admission LEDGER, not an announcement. `PeerPool::publish` is the only production path
+        // that creates a peer's `ActivityRecord` (`record_admission`); `begin_activity` refuses to
+        // create one, and `activity_of` silently DROPS a recordless peer before the displacement
+        // planner sees it. A slot admitted without this call therefore counts toward `connected` and
+        // sits in `cyclable` while being incapable of ever being the victim — so displacement pressure
+        // would land entirely on peers this node chose, and the only un-cyclable slots in the pool
+        // would be the ones a stranger opened. That inverts NC-12; both sibling adoption paths publish
+        // here for the same reason.
+        self.inner
+            .pool
+            .publish(crate::service::peer_pool::PoolEvent::PeerAdded {
+                peer_id,
+                addr: remote,
+            });
 
         Ok(peer_id)
     }
@@ -2196,6 +2262,25 @@ impl GossipHandle {
                 if accepted_relayed >= cap {
                     return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
                         format!("#870: accepted relayed circuit cap reached ({cap})"),
+                    )));
+                }
+            }
+
+            // The AGGREGATE inbound budget (dig_ecosystem#3124), shared with the direct inbound entry
+            // point. Charged HERE too, or the two tiers simply refill each other's reserve from the
+            // other side and the pool is again fillable entirely by peers this node did not choose.
+            let occupies_inbound_budget =
+                matches!(held, Some(slot) if crate::service::state::is_accepted_inbound(slot));
+            if !occupies_inbound_budget {
+                let accepted_inbound = peers
+                    .values()
+                    .filter(|s| crate::service::state::is_accepted_inbound(s))
+                    .count();
+                let cap =
+                    crate::service::peer_pool::max_inbound_total(self.inner.config.max_connections);
+                if accepted_inbound >= cap {
+                    return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
+                        format!("#3124: total accepted inbound cap reached ({cap})"),
                     )));
                 }
             }
@@ -3354,6 +3439,19 @@ impl GossipHandle {
     #[doc(hidden)]
     pub fn __tracked_pool_activity_count_for_tests(&self) -> usize {
         self.inner.pool.tracked_peer_count()
+    }
+
+    /// dig_ecosystem#3124 test hook: stamp work as STARTED over `peer_id`, returning whether the pool
+    /// holds a usefulness record for it at all.
+    ///
+    /// Exposed because "this slot can never be displaced" has no other observable form from outside
+    /// the crate. A peer admitted without `PoolEvent::PeerAdded` has no record, so `begin_activity`
+    /// refuses it and `activity_of` drops it before the planner ever weighs it — the slot counts as
+    /// connected and is structurally un-evictable. A test that only counted records could not tell a
+    /// record that exists from one the planner can actually use.
+    #[doc(hidden)]
+    pub fn __begin_pool_activity_for_tests(&self, peer_id: PeerId, now: u64) -> bool {
+        self.inner.pool.begin_activity(peer_id, now)
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.

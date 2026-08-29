@@ -331,11 +331,55 @@ pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
 /// tier lets anyone who can complete a handshake decide this node's entire peer set — the eclipse
 /// [`max_relayed_inbound`] already guards on the relayed path, reachable here without a relay at all.
 ///
-/// Deliberately the SAME reserved quarter as the relayed cap rather than a new constant: both answer
-/// the one question "how much of the pool may the other side choose", and two derivations would drift.
-/// The caps are counted separately, so the two inbound tiers cannot pool their budgets.
+/// A reserved quarter again — but of the INBOUND budget ([`max_inbound_total`]), not of the pool.
+///
+/// Applying the reserve to the pool a second time is what made the two inbound caps fail to compose:
+/// `max_direct_inbound == max_relayed_inbound == max_inbound_total` leaves the direct cap unable to
+/// ever bind, and — before the aggregate bound existed — let the two tiers sum to the whole pool.
+/// Taking the direct tier's share OUT of the inbound budget keeps every cap load-bearing and reserves
+/// room on the tier a NAT'd peer has no alternative to: a peer that can only be reached through a
+/// relay cannot instead arrive directly, so a flood of direct accepts must not be able to deny it.
+///
+/// `max_direct_inbound(8) == 5`: at most five accepted direct peers, at most six accepted peers
+/// overall, and never fewer than two slots left for a peer THIS node dials.
 pub(crate) fn max_direct_inbound(max_connections: usize) -> usize {
+    reserving_a_quarter(max_inbound_total(max_connections))
+}
+
+/// **dig_ecosystem#3124** — how many ACCEPTED connections of ANY inbound tier may hold pool slots at
+/// once, direct and relayed counted TOGETHER.
+///
+/// # Why an aggregate bound exists at all
+///
+/// [`max_direct_inbound`] and [`max_relayed_inbound`] are each a reserved quarter and were counted
+/// separately, which bounds each tier's size and NEITHER tier's share of the sum: at the default
+/// `max_connections = 8` that is `6 + 2 = 8`, a pool filled entirely by peers the other side chose.
+/// The reserve every one of these caps is written to protect only exists if the two tiers draw from
+/// ONE budget, so this is the bound the per-tier caps sit under rather than beside.
+///
+/// The same reserved quarter again, for the same reason the per-tier caps share it: one rule with
+/// several applications cannot drift the way several constants can. `max_inbound_total(8) == 6`, so
+/// at least two slots are always free for a peer THIS node dials, whatever mixture arrives.
+pub(crate) fn max_inbound_total(max_connections: usize) -> usize {
     reserving_a_quarter(max_connections)
+}
+
+/// **dig_ecosystem#3124** — how many ACCEPTED DIRECT peers may share one `/16` source group.
+///
+/// # Why the pool-wide cap is not enough
+///
+/// A pool-wide inbound bound answers "how many strangers", not "how many strangers from ONE place",
+/// and on this path identities are free: any host can mint arbitrarily many CA-signed leaves locally
+/// (`crate::nat`), so one machine can present one identity per slot and occupy the entire accepted
+/// tier by itself. That is the eclipse INT-006 bounds on the outbound side, reachable inbound without
+/// dialing anything — and [`crate::service::state::outbound_diversity_conflict`] deliberately does
+/// not apply here, because an inbound peer occupies no OUTBOUND group.
+///
+/// A quarter of the accepted-direct tier, at least two — two so a genuine pair of nodes behind one
+/// NAT is never refused, a quarter so no single group can crowd the tier. `== 2` at the default 8,
+/// `== 8` at 50.
+pub(crate) fn max_direct_inbound_per_group(max_connections: usize) -> usize {
+    (max_direct_inbound(max_connections).div_ceil(4)).max(2)
 }
 
 /// `n` less a reserved quarter (at least one) — the ecosystem's single "leave room for the other

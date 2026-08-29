@@ -561,6 +561,27 @@ pub(crate) fn is_relayed(slot: &PeerSlot) -> bool {
     matches!(slot, PeerSlot::Nat(n) if matches!(n.method, dig_nat::TraversalKind::Relayed))
 }
 
+/// Whether a slot is a `dig-nat` peer whose connection this node ACCEPTED, of EITHER inbound tier
+/// (**dig_ecosystem#3124**).
+///
+/// This is the occupancy the aggregate inbound bound
+/// ([`max_inbound_total`](crate::service::peer_pool::max_inbound_total)) is counted over, and it is
+/// deliberately tier-BLIND: the whole point of the aggregate bound is that a direct accepted slot and
+/// a relayed accepted one cost the same reserve, so counting them by one predicate is what stops the
+/// two tiers pooling their budgets. Scoped to [`PeerSlot::Nat`] because those are exactly the slots
+/// the two inbound entry points create; `Live` and `Stub` slots keep the accounting they have today.
+pub(crate) fn is_accepted_inbound(slot: &PeerSlot) -> bool {
+    matches!(slot, PeerSlot::Nat(n) if !n.is_outbound)
+}
+
+/// Whether a slot is an accepted DIRECT peer — the per-tier occupancy
+/// [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) and the per-`/16` bound
+/// [`max_direct_inbound_per_group`](crate::service::peer_pool::max_direct_inbound_per_group) are
+/// counted over (**dig_ecosystem#3124**).
+pub(crate) fn is_accepted_direct(slot: &PeerSlot) -> bool {
+    is_accepted_inbound(slot) && !is_relayed(slot)
+}
+
 /// **#1703 item 2** — whether a peer slot is provably DEPARTED and safe for the reaper to evict.
 ///
 /// A slot is departed only when we can PROVE its transport is gone from a cheap synchronous check:

@@ -48,6 +48,18 @@ fn inbound_source_addr() -> SocketAddr {
     "[2001:db8::5]:54321".parse().expect("inbound source addr")
 }
 
+/// An ephemeral inbound SOURCE address in a DISTINCT `/16` group per `n`.
+///
+/// `subnet_group` keys an IPv6 address on its first FOUR bytes, so varying the second hextet is what
+/// puts each peer in a group of its own. Fixtures exercising a POOL-WIDE bound must use this rather
+/// than one shared address, or the per-group bound fires first and the pool-wide bound is never the
+/// thing under test.
+fn inbound_source_in_group(n: u16) -> SocketAddr {
+    format!("[2001:{n:x}::5]:54321")
+        .parse()
+        .expect("inbound source addr in its own /16 group")
+}
+
 fn addr(s: &str) -> SocketAddr {
     s.parse().expect("socket addr")
 }
@@ -411,8 +423,8 @@ async fn a_relayed_tier_is_refused_by_the_direct_inbound_entry_point() {
 #[tokio::test]
 async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
     let (svc, handle, _dir) = running_handle().await;
-    // max_connections = 8 → a reserved quarter leaves 6 accepted-direct slots.
-    let cap = 6usize;
+    // max_connections = 8 → inbound budget 6, of which the direct tier may hold 5.
+    let cap = 5usize;
 
     let mut held = Vec::new();
     for i in 0..cap {
@@ -421,7 +433,9 @@ async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
         handle
             .adopt_direct_inbound_handle(
                 peer_id,
-                inbound_source_addr(),
+                // A group of its own, so THIS fixture measures the pool-wide cap and the per-group
+                // fixture below measures the per-group one. One shared source would conflate them.
+                inbound_source_in_group(i as u16 + 1),
                 TraversalKind::Direct,
                 dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
                 None,
@@ -441,7 +455,7 @@ async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
     let err = handle
         .adopt_direct_inbound_handle(
             extra_id,
-            inbound_source_addr(),
+            inbound_source_in_group(90),
             TraversalKind::Direct,
             dig_gossip::ObservedSession::new(extra_responder.closed_handle(), never_superseded()),
             None,
@@ -463,6 +477,389 @@ async fn accepted_direct_inbound_peers_cannot_fill_the_pool() {
         .adopt_nat_connection(dialed)
         .await
         .expect("the quarter reserved for outbound dialing is still free");
+
+    svc.stop().await.expect("stop");
+}
+
+/// **The two inbound caps must COMPOSE — the regression this fixture exists to hold down.**
+///
+/// `max_direct_inbound` and `max_relayed_inbound` were each a reserved quarter of `max_connections`
+/// and were counted SEPARATELY, so they bounded each tier's size and neither tier's share of the sum:
+/// at `max_connections = 8` that is `6 + 2 = 8`, and the eighth adoption failed with
+/// `MaxConnectionsReached` having left this node no slot at all to dial with. That is strictly worse
+/// than before the direct tier existed, when the relayed cap alone held inbound to 6 of 8.
+///
+/// The fixture fills BOTH tiers, which is the only arrangement that can see the defect: a fixture
+/// holding one tier is bounded by that tier's own cap and passes either way — which is exactly why
+/// the suite could not see this.
+#[tokio::test]
+async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
+    let (svc, handle, _dir) = running_handle().await;
+    let mut held = Vec::new();
+
+    // Five accepted DIRECT peers — the direct tier at its own cap.
+    for i in 0..5usize {
+        let (responder, peer_id, initiator) =
+            authenticated_inbound_connection([100 + i as u8; 32], [140 + i as u8; 32]).await;
+        handle
+            .adopt_direct_inbound_handle(
+                peer_id,
+                inbound_source_in_group(i as u16 + 1),
+                TraversalKind::Direct,
+                dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("direct inbound {i} is within the direct cap: {e:?}"));
+        held.push((responder, initiator));
+    }
+
+    // One accepted RELAYED circuit — well inside the relayed tier's own cap of 6, and the sixth and
+    // last slot of the shared inbound budget.
+    let (relay_responder, relay_id, _r) = authenticated_inbound_connection([120; 32], [121; 32]).await;
+    handle
+        .adopt_relayed_inbound_handle(
+            relay_id,
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+            dig_gossip::ObservedSession::new(relay_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect("the relayed tier is far from its own cap");
+    assert_eq!(handle.peer_count().await, 6, "six accepted peers are held");
+
+    // A SEVENTH accepted peer of either tier is refused by the shared budget, and — the whole point —
+    // refused as FILTERED rather than by running the pool out of slots.
+    let (next_responder, next_id, _n) = authenticated_inbound_connection([122; 32], [123; 32]).await;
+    let err = handle
+        .adopt_relayed_inbound_handle(
+            next_id,
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+            dig_gossip::ObservedSession::new(next_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect_err("the shared inbound budget refuses a seventh accepted peer");
+    assert!(
+        matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused by a BUDGET, not by MaxConnectionsReached — got {err:?}"
+    );
+
+    // The reserve the caps exist to protect is measurably still there: TWO slots for peers this node
+    // chooses. Asserting both is what distinguishes "a bound fired" from "a bound fired in the right
+    // place" — one free slot would satisfy a fixture that only dialed once.
+    for (i, seed) in [130u8, 131].into_iter().enumerate() {
+        let (dialed, _s) = loopback_nat_conn(
+            [seed; 32],
+            // DISTINCT /16 groups: two dialed peers in one group would be refused by INT-006, and
+            // the fixture would read that as "the reserve is not there".
+            addr(&format!("[2001:a{}::7]:9445", i + 1)),
+            TraversalKind::Direct,
+        );
+        handle
+            .adopt_nat_connection(dialed)
+            .await
+            .unwrap_or_else(|e| panic!("reserved outbound slot {i} is free: {e:?}"));
+    }
+    assert_eq!(
+        handle.peer_count().await,
+        8,
+        "the pool is full only once THIS node has used its reserve"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **One host must not be able to take the accepted-direct tier by minting identities.**
+///
+/// Certificates are free here — `dig-nat` mints CA-signed leaves locally — so a pool-wide count alone
+/// bounds "how many strangers", never "how many strangers from ONE place". Without a per-source bound
+/// a single machine presents one identity per slot and occupies the whole accepted tier, which is the
+/// eclipse INT-006 bounds outbound, reachable inbound without dialing anything.
+///
+/// The control is the load-bearing half: a peer from a DIFFERENT `/16` is admitted at the very moment
+/// the crowded group is refused, so the refusal is measurably keyed on the SOURCE GROUP and not on the
+/// pool-wide count that the previous fixture already covers.
+#[tokio::test]
+async fn one_source_group_cannot_take_the_accepted_direct_tier() {
+    let (svc, handle, _dir) = running_handle().await;
+    // max_direct_inbound(8) == 5 → a quarter, at least two, is 2 per /16.
+    let group_cap = 2usize;
+    let crowded = 7u16;
+    let mut held = Vec::new();
+
+    for i in 0..group_cap {
+        let (responder, peer_id, initiator) =
+            authenticated_inbound_connection([150 + i as u8; 32], [170 + i as u8; 32]).await;
+        handle
+            .adopt_direct_inbound_handle(
+                peer_id,
+                // Same /16 group, DIFFERENT address within it: a bound keyed on the full address
+                // rather than on the group would pass this fixture while a /16 flood walked through.
+                addr(&format!("[2001:{crowded:x}::{}]:54321", i + 1)),
+                TraversalKind::Direct,
+                dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("peer {i} is within the per-group cap: {e:?}"));
+        held.push((responder, initiator));
+    }
+
+    let (crowd_responder, crowd_id, _c) = authenticated_inbound_connection([160; 32], [161; 32]).await;
+    let err = handle
+        .adopt_direct_inbound_handle(
+            crowd_id,
+            addr(&format!("[2001:{crowded:x}::9]:54321")),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(crowd_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect_err("a third peer from one /16 is refused");
+    assert!(
+        matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused as filtered, got {err:?}"
+    );
+
+    // CONTROL — the pool is nowhere near its pool-wide cap of 5, so a peer from ANOTHER group is
+    // admitted at the same moment. Without this the refusal above is indistinguishable from "the pool
+    // is full".
+    let (other_responder, other_id, _o) = authenticated_inbound_connection([162; 32], [163; 32]).await;
+    handle
+        .adopt_direct_inbound_handle(
+            other_id,
+            inbound_source_in_group(crowded + 1),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(other_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect("a peer from a different /16 is admitted while the crowded group is refused");
+
+    svc.stop().await.expect("stop");
+}
+
+/// **An accepted connection never displaces a slot this node can DIAL** — the `:2028` branch, which
+/// no earlier fixture reached because every one of them used a fresh identity holding no slot at all.
+///
+/// The control is a peer holding a NON-dialable slot, superseded successfully by the same call in the
+/// same fixture. Without it the refusal reads as "a held identity is refused", which is a different
+/// and much broader rule — and deleting the branch under test would still leave a green suite.
+#[tokio::test]
+async fn an_accepted_connection_never_supersedes_a_dialable_slot() {
+    let (svc, handle, _dir) = running_handle().await;
+
+    // The peer under test already holds a slot this node DIALED, at an address it answers on.
+    let (responder, dialed_id, _i) = authenticated_inbound_connection([180; 32], [181; 32]).await;
+    let dialed_at = addr("[2001:db8:3::11]:9445");
+    let (outbound, _s) = loopback_nat_conn(dialed_id.to_bytes(), dialed_at, TraversalKind::Direct);
+    handle
+        .adopt_nat_connection(outbound)
+        .await
+        .expect("the dialed slot is adopted first");
+
+    let err = handle
+        .adopt_direct_inbound_handle(
+            dialed_id,
+            inbound_source_in_group(1),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect_err("an accepted connection does not demote a dialable peer");
+    assert!(
+        matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused as filtered, got {err:?}"
+    );
+
+    // The refusal PRESERVED the dial address — the thing the branch protects. Asserting only the
+    // error would pass against a version that refused after already replacing the slot.
+    assert!(
+        handle
+            .connected_pool_peers_detailed()
+            .iter()
+            .any(|p| p.peer_id == dialed_id && p.dial_addr == Some(dialed_at)),
+        "the dialable slot survives the refused adoption, still dialable at the address this node picked"
+    );
+
+    // CONTROL — a peer holding a NON-dialable (relayed, accepted) slot IS superseded by the same
+    // call, so the refusal above is keyed on DIALABILITY and not on holding a slot.
+    let (relay_responder, relay_id, _r) = authenticated_inbound_connection([182; 32], [183; 32]).await;
+    handle
+        .adopt_relayed_inbound_handle(
+            relay_id,
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+            dig_gossip::ObservedSession::new(relay_responder.closed_handle(), || {}),
+            None,
+        )
+        .await
+        .expect("relayed inbound adopted");
+    let (upgrade_responder, _u_id, _u) = authenticated_inbound_connection([184; 32], [185; 32]).await;
+    handle
+        .adopt_direct_inbound_handle(
+            relay_id,
+            inbound_source_in_group(2),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(upgrade_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect("an undialable held slot is superseded, so the refusal above is not 'held'");
+    assert_eq!(
+        handle
+            .connected_pool_peers_detailed()
+            .iter()
+            .find(|p| p.peer_id == relay_id)
+            .map(|p| p.via),
+        Some(dig_gossip::nat::peer_record::Via::Direct),
+        "the superseded peer is now typed direct"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **Holding a slot exempts an adoption only from a budget it ALREADY occupies** — the `:2045` branch.
+///
+/// Replacing that predicate with a blanket `held.is_some()` is the bypass the sibling relayed path
+/// warns about in the same words: any peer admitted by another route could then convert into an
+/// accepted direct one for nothing, and the cap becomes a formality. No earlier fixture could tell the
+/// two apart, because none ever offered an identity that already held a slot.
+///
+/// Both directions are asserted in one fixture, because either alone is satisfied by a wrong version:
+/// the re-adoption alone passes under a blanket exemption, and the conversion alone passes under no
+/// exemption at all.
+#[tokio::test]
+async fn converting_a_held_slot_is_charged_but_re_adopting_the_same_tier_is_free() {
+    let (svc, handle, _dir) = running_handle().await;
+    let mut held = Vec::new();
+
+    // One accepted RELAYED circuit, adopted FIRST so it is inside the shared inbound budget.
+    let (relay_responder, relay_id, _r) = authenticated_inbound_connection([190; 32], [191; 32]).await;
+    handle
+        .adopt_relayed_inbound_handle(
+            relay_id,
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+            dig_gossip::ObservedSession::new(relay_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect("relayed inbound adopted");
+
+    // Fill the accepted-DIRECT tier to its cap of 5.
+    let mut direct_ids = Vec::new();
+    for i in 0..5usize {
+        let (responder, peer_id, initiator) =
+            authenticated_inbound_connection([200 + i as u8; 32], [210 + i as u8; 32]).await;
+        handle
+            .adopt_direct_inbound_handle(
+                peer_id,
+                inbound_source_in_group(i as u16 + 1),
+                TraversalKind::Direct,
+                dig_gossip::ObservedSession::new(responder.closed_handle(), || {}),
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("direct inbound {i} is within the direct cap: {e:?}"));
+        direct_ids.push(peer_id);
+        held.push((responder, initiator));
+    }
+
+    // CHARGED — the relayed peer holds a slot, but NOT one in the direct tier's budget, so converting
+    // it is net-new occupancy on a tier that is full. A blanket exemption admits this.
+    let (convert_responder, _c_id, _c) = authenticated_inbound_connection([220; 32], [221; 32]).await;
+    let err = handle
+        .adopt_direct_inbound_handle(
+            relay_id,
+            inbound_source_in_group(60),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(convert_responder.closed_handle(), || {}),
+            None,
+        )
+        .await
+        .expect_err("converting a relayed slot into an accepted direct one is charged the direct cap");
+    assert!(
+        matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused as filtered, got {err:?}"
+    );
+    assert_eq!(
+        handle
+            .connected_pool_peers_detailed()
+            .iter()
+            .find(|p| p.peer_id == relay_id)
+            .map(|p| p.via),
+        Some(dig_gossip::nat::peer_record::Via::Relay),
+        "the refused conversion left the relayed slot exactly as it was"
+    );
+
+    // FREE — an identity that ALREADY occupies the direct tier re-adopts at the same full cap, in the
+    // same group it already holds. Removing the exemption entirely breaks this.
+    let readopted = direct_ids[0];
+    let (again_responder, _a_id, _a) = authenticated_inbound_connection([222; 32], [223; 32]).await;
+    handle
+        .adopt_direct_inbound_handle(
+            readopted,
+            inbound_source_in_group(1),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(again_responder.closed_handle(), || {}),
+            None,
+        )
+        .await
+        .expect("re-adopting a peer already in the direct tier is free");
+    assert_eq!(
+        handle.peer_count().await,
+        6,
+        "newest-wins replaced the slot rather than adding one"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **An accepted direct peer must be CYCLABLE — the admission ledger, not the announcement.**
+///
+/// `PeerPool::publish(PeerAdded)` is the only production path that creates a peer's activity record
+/// (`record_admission`); `begin_activity` refuses to create one and `activity_of` silently drops a
+/// recordless peer. A slot admitted without it counts toward `connected` and appears in `cyclable`
+/// while being structurally incapable of being displaced — so every eviction lands on a peer this node
+/// chose, and the only un-cyclable slots in the pool are the ones a stranger opened.
+///
+/// The record is observed through `tracked_peer_count`, with a peer admitted by a SIBLING path held
+/// beside it so the count cannot pass by being "all peers" or "none".
+#[tokio::test]
+async fn an_accepted_direct_peer_is_recorded_as_admitted_and_can_be_displaced() {
+    let (svc, handle, _dir) = running_handle().await;
+    assert_eq!(
+        handle.__tracked_pool_activity_count_for_tests(),
+        0,
+        "control: no peer is tracked before any adoption, so a later 1 is a measured change"
+    );
+
+    let (responder, peer_id, _i) = authenticated_inbound_connection([230; 32], [231; 32]).await;
+    handle
+        .adopt_direct_inbound_handle(
+            peer_id,
+            inbound_source_in_group(1),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect("direct inbound adopted");
+    assert_eq!(
+        handle.__tracked_pool_activity_count_for_tests(),
+        1,
+        "the accepted peer holds an activity record, so displacement can see it at all"
+    );
+
+    // The record is what makes the peer BUSYABLE, and therefore weighable against other candidates:
+    // `begin_activity` returns false for a peer with no record, which is the observable form of "this
+    // slot can never be the victim".
+    assert!(
+        handle.__begin_pool_activity_for_tests(peer_id, 1_700_000_000),
+        "work over an accepted peer is stamped; a recordless slot would silently refuse and sort as \
+         permanently un-displaceable"
+    );
 
     svc.stop().await.expect("stop");
 }
