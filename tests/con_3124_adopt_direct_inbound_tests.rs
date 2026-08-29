@@ -552,7 +552,8 @@ async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
     // FILTERED rather than by running the pool out of slots, which is the regression itself. Both
     // tiers are probed because the budget is charged on two code paths, and one probe cannot see the
     // other path being deleted.
-    let (next_responder, next_id, _n) = authenticated_inbound_connection([122; 32], [123; 32]).await;
+    let (next_responder, next_id, _n) =
+        authenticated_inbound_connection([122; 32], [123; 32]).await;
     let relayed_err = handle
         .adopt_relayed_inbound_handle(
             next_id,
@@ -647,7 +648,8 @@ async fn one_source_group_cannot_take_the_accepted_direct_tier() {
         held.push((responder, initiator));
     }
 
-    let (crowd_responder, crowd_id, _c) = authenticated_inbound_connection([160; 32], [161; 32]).await;
+    let (crowd_responder, crowd_id, _c) =
+        authenticated_inbound_connection([160; 32], [161; 32]).await;
     let err = handle
         .adopt_direct_inbound_handle(
             crowd_id,
@@ -666,7 +668,8 @@ async fn one_source_group_cannot_take_the_accepted_direct_tier() {
     // CONTROL — the pool is nowhere near its pool-wide cap of 5, so a peer from ANOTHER group is
     // admitted at the same moment. Without this the refusal above is indistinguishable from "the pool
     // is full".
-    let (other_responder, other_id, _o) = authenticated_inbound_connection([162; 32], [163; 32]).await;
+    let (other_responder, other_id, _o) =
+        authenticated_inbound_connection([162; 32], [163; 32]).await;
     handle
         .adopt_direct_inbound_handle(
             other_id,
@@ -727,7 +730,8 @@ async fn an_accepted_connection_never_supersedes_a_dialable_slot() {
 
     // CONTROL — a peer holding a NON-dialable (relayed, accepted) slot IS superseded by the same
     // call, so the refusal above is keyed on DIALABILITY and not on holding a slot.
-    let (relay_responder, relay_id, _r) = authenticated_inbound_connection([182; 32], [183; 32]).await;
+    let (relay_responder, relay_id, _r) =
+        authenticated_inbound_connection([182; 32], [183; 32]).await;
     handle
         .adopt_relayed_inbound_handle(
             relay_id,
@@ -737,7 +741,8 @@ async fn an_accepted_connection_never_supersedes_a_dialable_slot() {
         )
         .await
         .expect("relayed inbound adopted");
-    let (upgrade_responder, _u_id, _u) = authenticated_inbound_connection([184; 32], [185; 32]).await;
+    let (upgrade_responder, _u_id, _u) =
+        authenticated_inbound_connection([184; 32], [185; 32]).await;
     handle
         .adopt_direct_inbound_handle(
             relay_id,
@@ -777,7 +782,8 @@ async fn converting_a_held_slot_is_charged_but_re_adopting_the_same_tier_is_free
     let mut held = Vec::new();
 
     // One accepted RELAYED circuit, adopted FIRST so it is inside the shared inbound budget.
-    let (relay_responder, relay_id, _r) = authenticated_inbound_connection([190; 32], [191; 32]).await;
+    let (relay_responder, relay_id, _r) =
+        authenticated_inbound_connection([190; 32], [191; 32]).await;
     handle
         .adopt_relayed_inbound_handle(
             relay_id,
@@ -809,7 +815,8 @@ async fn converting_a_held_slot_is_charged_but_re_adopting_the_same_tier_is_free
 
     // CHARGED — the relayed peer holds a slot, but NOT one in the direct tier's budget, so converting
     // it is net-new occupancy on a tier that is full. A blanket exemption admits this.
-    let (convert_responder, _c_id, _c) = authenticated_inbound_connection([220; 32], [221; 32]).await;
+    let (convert_responder, _c_id, _c) =
+        authenticated_inbound_connection([220; 32], [221; 32]).await;
     let err = handle
         .adopt_direct_inbound_handle(
             relay_id,
@@ -819,7 +826,9 @@ async fn converting_a_held_slot_is_charged_but_re_adopting_the_same_tier_is_free
             None,
         )
         .await
-        .expect_err("converting a relayed slot into an accepted direct one is charged the direct cap");
+        .expect_err(
+            "converting a relayed slot into an accepted direct one is charged the direct cap",
+        );
     assert!(
         matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
         "refused as filtered, got {err:?}"
