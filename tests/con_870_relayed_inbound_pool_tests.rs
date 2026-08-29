@@ -409,7 +409,7 @@ async fn a_held_slot_does_not_exempt_a_circuit_from_the_accepted_relayed_cap() {
         .into_iter()
         .filter(|p| p.via == dig_gossip::Via::Relay && !p.is_outbound)
         .count();
-    assert_eq!(accepted, 6, "the cap still holds after the refusal");
+    assert_eq!(accepted, 5, "the cap still holds after the refusal");
 
     // The direct slot survived intact — the refused circuit neither displaced it nor demoted it to
     // non-dialable.

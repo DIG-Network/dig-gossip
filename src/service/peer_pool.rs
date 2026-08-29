@@ -342,7 +342,7 @@ pub(crate) fn max_relayed_outbound(target_outbound_count: usize) -> usize {
 /// the #870 direct-dial floor, so the reserve is ONE rule with several applications rather than
 /// several constants that can drift apart.
 pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
-    reserving_a_quarter(max_inbound_total(max_connections))
+    a_reserved_share_of(max_inbound_total(max_connections))
 }
 
 /// **dig_ecosystem#3124** — how many ACCEPTED direct connections may hold pool slots at once.
@@ -365,7 +365,7 @@ pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
 /// overall. [`max_relayed_inbound`] is derived the same way from the same budget, so the reservation
 /// runs in BOTH directions — see the discussion there.
 pub(crate) fn max_direct_inbound(max_connections: usize) -> usize {
-    reserving_a_quarter(max_inbound_total(max_connections))
+    a_reserved_share_of(max_inbound_total(max_connections))
 }
 
 /// **dig_ecosystem#3124** — how many ACCEPTED connections of ANY inbound tier may hold pool slots at
@@ -424,6 +424,28 @@ pub(crate) fn max_direct_inbound_per_group(max_connections: usize) -> usize {
 /// tier" derivation. `reserving_a_quarter(8) == 6`.
 fn reserving_a_quarter(n: usize) -> usize {
     n.saturating_sub((n / 4).max(1))
+}
+
+/// ONE inbound tier's share of the inbound budget: a reserved quarter of it, but never ZERO while
+/// the budget can hold a peer at all.
+///
+/// The floor is the half of the reservation that a plain [`reserving_a_quarter`] cannot express.
+/// Applying the quarter twice — once to reach the inbound budget, once to reach a tier's share of it
+/// — collapses to `0` for every `max_connections <= 3`, because `reserving_a_quarter(1) == 0`. A cap
+/// of zero does not RESERVE a tier's room, it DENIES the tier outright: at `max_connections = 2`
+/// every relayed circuit this node serves was refused with
+/// `accepted relayed circuit cap reached (0)`, which is the same starvation the symmetric derivation
+/// exists to prevent, merely inflicted on the other side.
+///
+/// One slot is the smallest cap that leaves a tier reachable, and it costs the sibling tier nothing
+/// it is entitled to: the aggregate [`max_inbound_total`] is charged on the same path, so two tiers
+/// each floored at `1` still cannot exceed the shared budget — whichever peer arrives first takes the
+/// single slot, and neither tier is closed by construction. Clamped to the budget so a budget of zero
+/// stays zero.
+fn a_reserved_share_of(inbound_budget: usize) -> usize {
+    reserving_a_quarter(inbound_budget)
+        .max(1)
+        .min(inbound_budget)
 }
 
 /// A connected pool member as PEER SELECTION sees it: who it is, how it is reached, which side
@@ -1117,6 +1139,39 @@ pub async fn run_maintenance_pass<D: Dialer>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Neither inbound tier may be CLOSED by the reservation that is meant to protect it.** The
+    /// share is a reserved quarter of the inbound budget, and taking a quarter twice reaches zero for
+    /// every small pool — which refuses the tier outright instead of reserving room for its sibling.
+    /// Asserted at every `max_connections` where the budget is non-empty, in BOTH directions, plus
+    /// the aggregate that keeps the floor honest: two floored tiers still cannot outgrow the budget
+    /// they share.
+    #[test]
+    fn neither_inbound_tier_is_ever_capped_at_zero_while_the_budget_holds_a_peer() {
+        for max_connections in 0..=64usize {
+            let total = max_inbound_total(max_connections);
+            let direct = max_direct_inbound(max_connections);
+            let relayed = max_relayed_inbound(max_connections);
+
+            assert_eq!(direct, relayed, "the two tiers are derived symmetrically");
+            assert!(direct <= total, "a tier cannot exceed the shared inbound budget");
+            if total == 0 {
+                assert_eq!(direct, 0, "an empty inbound budget grants no tier a slot");
+            } else {
+                assert!(
+                    direct >= 1,
+                    "max_connections={max_connections}: a non-empty inbound budget must leave                      each tier at least one slot, not deny it"
+                );
+            }
+        }
+
+        // The two configurations that produced the regression and the one the suites pin.
+        assert_eq!(max_relayed_inbound(2), 1, "a two-slot pool still serves a circuit");
+        assert_eq!(max_relayed_inbound(3), 1);
+        assert_eq!(max_relayed_inbound(8), 5);
+        assert_eq!(max_direct_inbound(8), 5);
+        assert_eq!(max_inbound_total(8), 6);
+    }
 
     fn addr(n: u16) -> SocketAddr {
         format!("127.0.0.1:{n}").parse().unwrap()
