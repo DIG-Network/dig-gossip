@@ -2110,9 +2110,33 @@ set. Three bounds hold that, and they are ordered deliberately:
    slot occupies the pool without being charged here, so this reserve is a guarantee about the accepted
    `dig-nat` tiers and MUST NOT be read as one about the pool as a whole.
 2. At most `max_direct_inbound(max_connections)` accepted DIRECT peers, and at most
-   `max_relayed_inbound(max_connections)` accepted RELAYED circuits — each a reserved quarter of the
-   INBOUND budget of clause 1, not of the pool. **The two tiers MUST be derived symmetrically from the
-   shared budget**: that is the only arrangement in which neither tier can consume the whole of it, and
+   `max_relayed_inbound(max_connections)` accepted RELAYED circuits. Both caps are the SAME function of
+   the INBOUND budget of clause 1, never of the pool: a reserved quarter of that budget, FLOORED at one
+   slot whenever the budget can hold a peer at all, and clamped to the budget. Writing
+   `b = max_inbound_total(max_connections)`, with integer division and saturating subtraction:
+
+   ```
+   max_direct_inbound(mc) = max_relayed_inbound(mc) = min(max(b − max(b / 4, 1), 1), b)
+   ```
+
+   **The floor is normative, not a rounding detail.** Applying the quarter twice — once to reach `b`,
+   once to reach a tier's share of it — yields ZERO for every `max_connections <= 3`, and a cap of zero
+   does not RESERVE a tier's room, it CLOSES the tier: every circuit is refused with
+   `accepted relayed circuit cap reached (0)`, which is the same starvation the symmetric derivation
+   exists to prevent, merely inflicted on the other side. An implementation MUST NOT emit a tier cap of
+   zero while `b >= 1`.
+
+   **The floor cannot over-admit**, because clause 1's aggregate is charged on the same path: two tiers
+   each floored at 1 against a budget of 1 still admit exactly one accepted peer, first-come. The clamp
+   keeps a zero budget at zero, so at `max_connections <= 1` — where `b == 0` — both tiers are 0 and no
+   accepted peer is admitted at all. `b <= max_connections − 1` for every `max_connections >= 1`, so a
+   slot for this node's own dialing survives at every configuration.
+
+   Worked values: at `max_connections = 2` the budget is 1 and each tier is 1; at `3` the budget is 2
+   and each tier is 1; at `8` the budget is 6 and each tier is 5; at `16` the budget is 12 and each tier
+   is 9.
+
+   **The two tiers MUST be derived symmetrically from the shared budget**: that is the only arrangement in which neither tier can consume the whole of it, and
    it is a security property rather than a symmetry preference. A cap taken from `max_connections`
    instead equals the aggregate, which makes it vacuous as a bound AND lets its tier deny the other
    tier entirely. It matters most on the relayed tier, which cannot be source-bounded at all — a
@@ -2201,13 +2225,18 @@ The registration is normatively:
   the peer answers at; offering it to a dialer produces a guaranteed failure and risks evicting the
   working circuit already carrying that peer's traffic. Non-dialability belongs to the TIER, not the
   direction.
-- **Bounded.** At most `max_relayed_inbound = max_inbound_total − max(max_inbound_total/4, 1)` accepted
-  circuits (**5** at `max_connections = 8`, where the inbound budget is 6), enforced under the same
+- **Bounded.** At most `max_relayed_inbound(max_connections)` accepted circuits — a reserved quarter of
+  the INBOUND budget, floored at one slot while that budget can hold a peer at all and clamped to it,
+  exactly as clause 2 of the accepted-peer caps defines it for BOTH inbound tiers (**5** at
+  `max_connections = 8`, where the inbound budget is 6; **1** at `max_connections = 2`, where the budget
+  is 1 — the floor, without which this cap would be 0 and would close the tier), enforced under the same
   `peers`-lock hold as the insert, so a single relay cannot fill the pool with peers of its own choosing
   (eclipse by introduction). The reserved quarter is the same derivation as `max_relayed_outbound` and
-  the direct-dial floor, applied to the shared INBOUND budget rather than to `max_connections` — taken
-  from `max_connections` it equals that budget, which makes it vacuous and lets the relayed tier deny
-  the direct inbound tier entirely (see clause 2 of the accepted-peer caps). The cap
+  the direct-dial floor, applied to the shared INBOUND budget rather than to `max_connections` — and
+  then floored, which those outbound caps do not need because they take their quarter of
+  `max_connections` once rather than twice. Taken from `max_connections` it equals that budget, which
+  makes it vacuous and lets the relayed tier deny the direct inbound tier entirely (see clause 2 of the
+  accepted-peer caps). The cap
   counts slots that are themselves accepted circuits — relayed and INBOUND; a relayed OUTBOUND peer
   MUST NOT consume it, or a node that dials out over relays refuses legitimate circuits while under
   its own cap.

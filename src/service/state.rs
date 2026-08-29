@@ -575,9 +575,10 @@ pub(crate) fn is_accepted_inbound(slot: &PeerSlot) -> bool {
 }
 
 /// Whether a slot is an accepted DIRECT peer — the per-tier occupancy
-/// [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) and the per-`/16` bound
+/// [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) and the per-SOURCE-GROUP bound
 /// [`max_direct_inbound_per_group`](crate::service::peer_pool::max_direct_inbound_per_group) are
-/// counted over (**dig_ecosystem#3124**).
+/// counted over (**dig_ecosystem#3124**). The source group is an IPv4 `/16` or an IPv6 `/48`, as
+/// [`inbound_source_group`](crate::util::ip_address::inbound_source_group) derives it.
 pub(crate) fn is_accepted_direct(slot: &PeerSlot) -> bool {
     is_accepted_inbound(slot) && !is_relayed(slot)
 }
