@@ -21,7 +21,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.30.0"
+version = "0.31.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -108,7 +108,7 @@ dig-peer-protocol = { version = "0.7", default-features = false }
 # chia-bls-omitted-from-the-cascade-list defect this crate is fixing), so pinning 0.19 would import
 # the very split we are closing. `NodeCert::generate_signed` now takes a `chia_bls::SecretKey` on
 # 0.36.1, which is the breaking surface reaching this crate.
-dig-nat = "0.20"
+dig-nat = "0.21"
 # The canonical DIG mTLS certificate crate (L00). dig-gossip's dig-nat peer transport now presents a
 # CA-signed `dig_tls::NodeCert` (peer_id ↔ BLS-G1 binding, chained to the shipped DigNetwork CA), the
 # self-signed→CA-signed cutover. dig-tls is L00 (no DIG deps), so dig-gossip (L20) → dig-tls is a valid

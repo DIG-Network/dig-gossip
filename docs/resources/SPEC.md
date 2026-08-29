@@ -2068,6 +2068,40 @@ through the relay — MUST be registered through `GossipHandle::adopt_relayed_in
 `GossipHandle::adopt_relayed_inbound_handle`. A node serving a peer over such a circuit and reporting
 `connected_peers = 0` is a defect: the pool is what every subsystem reads to answer "am I connected".
 
+**Every ACCEPTED connection is a pool member, including a DIRECT one (#3124).** The rule above is not
+about relays; it is about direction. A node that ACCEPTS a direct mTLS connection and serves the peer
+MUST register it through `GossipHandle::adopt_direct_inbound_handle`, which takes
+`(peer_id, remote, method, ObservedSession, Option<NatBroadcastSink>)`. Reporting such a peer as
+unconnected is the same defect as for a circuit, on the far more common path.
+
+The direct-inbound entry point is SEPARATE from the other four, and MUST NOT be replaced by any of
+them, because each carries a fact that is false for an accepted direct peer:
+
+- A slot adopted through `adopt_relayed_inbound_handle` is `TraversalKind::Relayed`. `Via` and both
+  relayed caps derive from that tier, so a directly-connected peer would be reported as
+  relay-tunnelled and charged against the budget bounding relay-chosen peers.
+- A slot adopted through `adopt_nat_connection` is `is_outbound = true`, charging the INT-006 /16 and
+  INT-007 AS **outbound** diversity budgets for a peer this node never dialed. An accepted slot MUST
+  be `is_outbound = false` and MUST occupy no outbound diversity group.
+- `adopt_direct_inbound_handle` MUST refuse `TraversalKind::Relayed`; a circuit accounted against the
+  direct tier would escape the relayed cap.
+
+**DIALABILITY IS A PROPERTY OF THE TIER *AND* THE DIRECTION (#3124).** A `dig-nat` slot's `remote` is
+a dial target only when THIS node chose it. An accepted connection's `remote` is the peer's EPHEMERAL
+SOURCE PORT — valid for that one connection, and bound to nothing — so a slot this node accepted MUST
+report `dial_addr = None` regardless of its traversal tier, and MUST NOT appear in
+`dialable_pool_peers()`. It is still reported as `session_addr` for observability. The two reasons a
+slot is undialable are independent and MUST NOT be collapsed: a relayed slot is undialable in either
+direction because of its tier, an accepted slot because of its direction.
+
+**Accepted DIRECT peers are CAPPED (#3124).** At most `max_direct_inbound(max_connections)` — the same
+reserved quarter as `max_relayed_inbound`, counted separately so the two inbound tiers cannot pool
+their budgets — may hold slots at once. Every slot an accepted connection holds is one the maintenance
+loop cannot spend dialing a peer of this node's own choosing, so an unbounded accepted tier would let
+anyone able to complete a handshake choose this node's entire peer set. An accepted connection also
+MUST NOT supersede a slot this node can DIAL: that would trade a peer reachable at a known address for
+one reachable only while the peer keeps its connection open, at the peer's initiative.
+
 **Registration MUST NOT cost the caller the session (#1871).** `adopt_relayed_inbound` takes the
 connection by value, and `dig_nat::PeerSession` is neither `Clone` nor splittable, so a node whose L7
 serve loop needs `&mut PeerSession` cannot use that entry point without ceasing to serve the peer —
