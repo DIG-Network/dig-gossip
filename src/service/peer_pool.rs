@@ -315,13 +315,34 @@ pub(crate) fn max_relayed_outbound(target_outbound_count: usize) -> usize {
 ///
 /// A relay introduces circuits to a reservation holder, so — left ungated — a single misbehaving
 /// relay could occupy the node's entire connection budget with peers it chose, an eclipse by
-/// introduction rather than by dialing. Bounding accepted circuits at `max_connections` less a
-/// reserved quarter keeps at least one slot per four for peers reached any other way.
+/// introduction rather than by dialing.
 ///
-/// Derived identically to [`max_relayed_outbound`] and the #870 direct-dial floor, so the reserve is
-/// ONE rule with three applications rather than three constants that can drift apart.
+/// A reserved quarter of the INBOUND budget ([`max_inbound_total`]), exactly as
+/// [`max_direct_inbound`] takes the other tier's share out of the same budget. **The two inbound
+/// tiers are derived symmetrically, and that symmetry is the security property**, not a tidiness
+/// preference: taking each tier's cap out of the shared aggregate is the only arrangement in which
+/// NEITHER tier can consume the whole of it.
+///
+/// Applying the reserve to `max_connections` here instead — one level up, where the aggregate is also
+/// taken — made this cap equal to [`max_inbound_total`] for every input, with two consequences. It was
+/// **vacuous**: the aggregate is charged immediately after it on the same path with an equivalent
+/// exemption, so no state existed in which this cap changed the outcome. And it made the reservation
+/// **one-way**: the direct tier was held to 5 of 6 so a circuit always had a slot, while the relayed
+/// tier was held to 6 of 6, so six circuits — an ordinary load for a NAT'd node, and free for anyone
+/// who can open circuits through this node's relay — left the direct tier ZERO. That is a live denial
+/// of the very path #3124 exists to register, and the relayed tier is the one that can never be
+/// source-bounded: a circuit's `remote` is the relay endpoint, so
+/// [`crate::service::state::outbound_diversity_conflict`] returns `None` for it by construction and
+/// [`max_direct_inbound_per_group`] has no analogue on that tier.
+///
+/// `max_relayed_inbound(8) == 5`, against an aggregate of 6: a full relayed tier still leaves a slot
+/// for a direct accept, and a full direct tier still leaves one for a circuit.
+///
+/// Derived identically to [`max_direct_inbound`] and, one level up, to [`max_relayed_outbound`] and
+/// the #870 direct-dial floor, so the reserve is ONE rule with several applications rather than
+/// several constants that can drift apart.
 pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
-    reserving_a_quarter(max_connections)
+    reserving_a_quarter(max_inbound_total(max_connections))
 }
 
 /// **dig_ecosystem#3124** — how many ACCEPTED direct connections may hold pool slots at once.
@@ -341,7 +362,8 @@ pub(crate) fn max_relayed_inbound(max_connections: usize) -> usize {
 /// relay cannot instead arrive directly, so a flood of direct accepts must not be able to deny it.
 ///
 /// `max_direct_inbound(8) == 5`: at most five accepted direct peers, at most six accepted peers
-/// overall, and never fewer than two slots left for a peer THIS node dials.
+/// overall. [`max_relayed_inbound`] is derived the same way from the same budget, so the reservation
+/// runs in BOTH directions — see the discussion there.
 pub(crate) fn max_direct_inbound(max_connections: usize) -> usize {
     reserving_a_quarter(max_inbound_total(max_connections))
 }
@@ -358,13 +380,29 @@ pub(crate) fn max_direct_inbound(max_connections: usize) -> usize {
 /// ONE budget, so this is the bound the per-tier caps sit under rather than beside.
 ///
 /// The same reserved quarter again, for the same reason the per-tier caps share it: one rule with
-/// several applications cannot drift the way several constants can. `max_inbound_total(8) == 6`, so
-/// at least two slots are always free for a peer THIS node dials, whatever mixture arrives.
+/// several applications cannot drift the way several constants can. `max_inbound_total(8) == 6`,
+/// leaving two of the eight slots to the peers this node itself reaches — whatever mixture of the two
+/// ACCEPTED tiers arrives.
+///
+/// # Exactly which slots this budget counts, and which it does not
+///
+/// This bound is charged over [`crate::service::state::is_accepted_inbound`], which is scoped to
+/// `PeerSlot::Nat` — the two adoption entry points, and only those. It is therefore a reserve
+/// **against the accepted `dig-nat` tiers**, and it is deliberately NOT a whole-pool guarantee: an
+/// inbound Chia-protocol WebSocket peer is inserted as a `Stub`/`Live` slot by the listener, which
+/// bounds itself against `max_connections` alone, so a pool filled that way can leave this reserve
+/// with nothing behind it. `MaxConnectionsReached` is what bounds that path today.
+///
+/// Stated deliberately rather than by omission, because the narrower claim is the TRUE one and the
+/// broader one ("two slots are free whatever arrives") would be false the moment a reader relied on
+/// it. Extending the aggregate to charge the listener is a change to this crate's most reachable
+/// inbound path and belongs to its own unit of work, not to #3124.
 pub(crate) fn max_inbound_total(max_connections: usize) -> usize {
     reserving_a_quarter(max_connections)
 }
 
-/// **dig_ecosystem#3124** — how many ACCEPTED DIRECT peers may share one `/16` source group.
+/// **dig_ecosystem#3124** — how many ACCEPTED DIRECT peers may share one SOURCE GROUP: an IPv4 `/16`
+/// or an IPv6 `/48`, as [`crate::util::ip_address::inbound_source_group`] derives it.
 ///
 /// # Why the pool-wide cap is not enough
 ///

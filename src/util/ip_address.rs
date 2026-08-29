@@ -66,6 +66,72 @@ pub fn subnet_group(ip: &IpAddr) -> u32 {
     }
 }
 
+/// The SOURCE group of an INBOUND peer: an IPv4 `/16`, or an IPv6 `/48` (**dig_ecosystem#3124**).
+///
+/// # Why this is not [`subnet_group`]
+///
+/// The two functions answer opposite questions and a coarse group is conservative for exactly one of
+/// them. [`subnet_group`] bounds this node's OWN dialing (INT-006): a coarse group can only make the
+/// dial set more diverse, so erring wide errs safe. This one REFUSES a peer, and in that direction a
+/// group wider than the unit an attacker actually controls is a denial primitive — it lets whoever
+/// holds `max_direct_inbound_per_group` addresses inside the group lock out every other host in it.
+///
+/// [`subnet_group`]'s IPv6 branch keys on the first four bytes, a `/32`. **An IPv6 `/32` is an RIR
+/// allocation to a hosting provider, not a site** — DigitalOcean is `2604:a880::/32`, Linode
+/// `2600:3c00::/32`, Vultr `2001:19f0::/32`, Hetzner `2a01:4f8::/32`. Reused as an inbound refusal
+/// key it caps a default node at two accepted direct peers from an ENTIRE PROVIDER worldwide, and two
+/// cheap rented hosts at that provider deny direct-inbound registration to every DIG node there.
+/// CLAUDE.md §5.2 makes IPv6 the preferred family for peer communication, so that is the common case
+/// on this path rather than an edge of it.
+///
+/// # Why `/48`
+///
+/// A `/48` is the end-SITE unit of IPv6 allocation (RFC 6177 / RIPE-690): it is what a provider hands
+/// to one customer, so it is the smallest prefix an attacker can be assumed to control in full and the
+/// largest one an honest operator's whole site fits inside. It is thus the closest IPv6 analogue of
+/// the IPv4 `/16` this bound already uses — wide enough that a genuine multi-homed site groups
+/// together, narrow enough that "same provider" buys an attacker nothing. Customers given a `/56`
+/// group under their own `/48` and are unaffected.
+///
+/// IPv4 keeps its `/16`: the v4 analogue of the provider problem does not arise, an attacker must sit
+/// inside the victim's own `/16`, and the outbound cap has used this width since INT-006.
+///
+/// An IPv4-mapped IPv6 address is canonicalized first ([`canonical_ip`]) for the same reason it is
+/// there — otherwise the same routable network dodges its group by presenting itself as mapped-v6.
+///
+/// The two families are returned as DISTINCT variants rather than as one integer, so a v4 `/16` key
+/// can never collide with the low bits of a v6 `/48` key and silently pool two unrelated sources into
+/// one group.
+pub fn inbound_source_group(ip: &IpAddr) -> InboundSourceGroup {
+    match canonical_ip(ip) {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            InboundSourceGroup::V4Slash16(((o[0] as u32) << 8) | (o[1] as u32))
+        }
+        IpAddr::V6(v6) => {
+            let o = v6.octets();
+            let mut key: u64 = 0;
+            for byte in &o[..6] {
+                key = (key << 8) | (*byte as u64);
+            }
+            InboundSourceGroup::V6Slash48(key)
+        }
+    }
+}
+
+/// The group key [`inbound_source_group`] produces, one variant per address family.
+///
+/// Separate variants rather than a single integer so the two families' key spaces cannot overlap:
+/// pooling an IPv4 `/16` with an IPv6 `/48` that happened to share low bits would refuse peers that
+/// share no network at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InboundSourceGroup {
+    /// The first two octets of an IPv4 address — a `/16`.
+    V4Slash16(u32),
+    /// The first six octets of an IPv6 address — a `/48`, the end-site allocation unit.
+    V6Slash48(u64),
+}
+
 /// Order `candidates` IPv6-first over the LOCAL host's reachable families, dropping any candidate of
 /// a family this host cannot originate on.
 ///

@@ -48,16 +48,16 @@ fn inbound_source_addr() -> SocketAddr {
     "[2001:db8::5]:54321".parse().expect("inbound source addr")
 }
 
-/// An ephemeral inbound SOURCE address in a DISTINCT `/16` group per `n`.
+/// An ephemeral inbound SOURCE address in a DISTINCT source group per `n`.
 ///
-/// `subnet_group` keys an IPv6 address on its first FOUR bytes, so varying the second hextet is what
-/// puts each peer in a group of its own. Fixtures exercising a POOL-WIDE bound must use this rather
-/// than one shared address, or the per-group bound fires first and the pool-wide bound is never the
-/// thing under test.
+/// `inbound_source_group` keys an IPv6 address on its first SIX bytes — a `/48`, the end-site
+/// allocation unit — so varying the second hextet puts each peer in a site of its own. Fixtures
+/// exercising a POOL-WIDE bound must use this rather than one shared address, or the per-group bound
+/// fires first and the pool-wide bound is never the thing under test.
 fn inbound_source_in_group(n: u16) -> SocketAddr {
     format!("[2001:{n:x}::5]:54321")
         .parse()
-        .expect("inbound source addr in its own /16 group")
+        .expect("inbound source addr in its own /48 group")
 }
 
 fn addr(s: &str) -> SocketAddr {
@@ -573,7 +573,7 @@ async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
     let direct_err = handle
         .adopt_direct_inbound_handle(
             direct_id,
-            // Its own /16, and the direct tier is one below its own cap, so NOTHING but the shared
+            // Its own source group, and the direct tier is one below its own cap, so NOTHING but the shared
             // budget can refuse this.
             inbound_source_in_group(70),
             TraversalKind::Direct,
@@ -593,7 +593,7 @@ async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
     for (i, seed) in [130u8, 131].into_iter().enumerate() {
         let (dialed, _s) = loopback_nat_conn(
             [seed; 32],
-            // DISTINCT /16 groups: two dialed peers in one group would be refused by INT-006, and
+            // DISTINCT outbound /16 groups: two dialed peers in one group would be refused by INT-006, and
             // the fixture would read that as "the reserve is not there".
             addr(&format!("[2001:a{}::7]:9445", i + 1)),
             TraversalKind::Direct,
@@ -619,13 +619,13 @@ async fn the_two_inbound_tiers_cannot_pool_their_budgets() {
 /// a single machine presents one identity per slot and occupies the whole accepted tier, which is the
 /// eclipse INT-006 bounds outbound, reachable inbound without dialing anything.
 ///
-/// The control is the load-bearing half: a peer from a DIFFERENT `/16` is admitted at the very moment
+/// The control is the load-bearing half: a peer from a DIFFERENT source group is admitted at the very moment
 /// the crowded group is refused, so the refusal is measurably keyed on the SOURCE GROUP and not on the
 /// pool-wide count that the previous fixture already covers.
 #[tokio::test]
 async fn one_source_group_cannot_take_the_accepted_direct_tier() {
     let (svc, handle, _dir) = running_handle().await;
-    // max_direct_inbound(8) == 5 → a quarter, at least two, is 2 per /16.
+    // max_direct_inbound(8) == 5 → a quarter, at least two, is 2 per source group.
     let group_cap = 2usize;
     let crowded = 7u16;
     let mut held = Vec::new();
@@ -636,8 +636,8 @@ async fn one_source_group_cannot_take_the_accepted_direct_tier() {
         handle
             .adopt_direct_inbound_handle(
                 peer_id,
-                // Same /16 group, DIFFERENT address within it: a bound keyed on the full address
-                // rather than on the group would pass this fixture while a /16 flood walked through.
+                // Same /48 site, DIFFERENT address within it: a bound keyed on the full address
+                // rather than on the group would pass this fixture while a site flood walked through.
                 addr(&format!("[2001:{crowded:x}::{}]:54321", i + 1)),
                 TraversalKind::Direct,
                 dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
@@ -659,7 +659,7 @@ async fn one_source_group_cannot_take_the_accepted_direct_tier() {
             None,
         )
         .await
-        .expect_err("a third peer from one /16 is refused");
+        .expect_err("a third peer from one source group is refused");
     assert!(
         matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
         "refused as filtered, got {err:?}"
@@ -679,7 +679,7 @@ async fn one_source_group_cannot_take_the_accepted_direct_tier() {
             None,
         )
         .await
-        .expect("a peer from a different /16 is admitted while the crowded group is refused");
+        .expect("a peer from a different source group is admitted while the crowded group is refused");
 
     svc.stop().await.expect("stop");
 }
@@ -903,13 +903,232 @@ async fn an_accepted_direct_peer_is_recorded_as_admitted_and_can_be_displaced() 
     );
 
     // The record is what makes the peer BUSYABLE, and therefore weighable against other candidates:
-    // `begin_activity` returns false for a peer with no record, which is the observable form of "this
-    // slot can never be the victim".
+    // `peer_activity_guard` returns `None` for a peer with no record, which is the observable form of
+    // "this slot can never be the victim". The guard is the BALANCED public entry point — it decrements
+    // `in_flight` on drop, so observing the record here cannot itself pin the peer as un-displaceable.
     assert!(
-        handle.__begin_pool_activity_for_tests(peer_id, 1_700_000_000),
+        handle.peer_activity_guard(peer_id).is_some(),
         "work over an accepted peer is stamped; a recordless slot would silently refuse and sort as \
          permanently un-displaceable"
     );
 
     svc.stop().await.expect("stop");
+}
+
+/// **A full RELAYED tier must still leave the direct tier a slot** — the symmetric half of the
+/// reservation, and the one the suite could not see.
+///
+/// `max_relayed_inbound` and `max_inbound_total` were the same one-line body applied to the same
+/// argument, so they were EQUAL for every `max_connections`, while the direct tier was re-based one
+/// level down. Two consequences, and this fixture holds both down. The relayed cap was VACUOUS — the
+/// aggregate is charged immediately after it on the same path with an equivalent exemption, so no
+/// state existed in which the relayed cap changed the outcome. And the reservation ran ONE WAY: a
+/// full direct tier (5 of 6) always left a circuit a slot, while a full relayed tier (6 of 6) left
+/// the direct tier ZERO, so an ordinary NAT'd node serving six circuits silently stopped registering
+/// every direct inbound peer it accepted.
+///
+/// # Why this arrangement and not the existing 4 + 2 one
+///
+/// `the_two_inbound_tiers_cannot_pool_their_budgets` holds 4 direct + 2 relayed and STRUCTURALLY
+/// cannot see this: with four direct peers already held, "the direct tier was left nothing" is
+/// indistinguishable from "the shared budget is full", which is the behaviour that fixture asserts.
+/// The arrangement that sees it is ZERO direct + a full relayed tier — the direct tier's own cap of 5
+/// entirely unused, so the ONLY thing that can refuse the direct peer is the shared budget, and the
+/// only thing that can free it is the relayed tier not being allowed to take all of it.
+#[tokio::test]
+async fn a_full_relayed_tier_still_leaves_the_direct_tier_a_slot() {
+    let (svc, handle, _dir) = running_handle().await;
+
+    // Fill the relayed tier until it refuses, holding every session so none is reaped mid-fixture.
+    // The loop runs past the expected bound on purpose: hard-coding "adopt five" would pass against a
+    // build whose cap is six, since five is admitted either way.
+    let mut relays = Vec::new();
+    let mut refusal = None;
+    for i in 0..7usize {
+        let (responder, peer_id, _r) =
+            authenticated_inbound_connection([40 + i as u8; 32], [60 + i as u8; 32]).await;
+        match handle
+            .adopt_relayed_inbound_handle(
+                peer_id,
+                SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+                dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+                None,
+            )
+            .await
+        {
+            Ok(_) => relays.push(responder),
+            Err(e) => {
+                refusal = Some(e);
+                break;
+            }
+        }
+    }
+    let admitted_relayed = relays.len();
+    assert_eq!(
+        handle.peer_count().await,
+        admitted_relayed,
+        "control: every peer held is a relayed circuit, so the direct tier's own cap of 5 is wholly \
+         unused and cannot be what refuses the direct peer below"
+    );
+
+    // THE PROPERTY. A direct inbound peer, from a source group no held peer occupies, with zero
+    // accepted-direct peers held, is admitted even though the relayed tier is full.
+    let (responder, direct_id, _d) = authenticated_inbound_connection([90; 32], [91; 32]).await;
+    handle
+        .adopt_direct_inbound_handle(
+            direct_id,
+            inbound_source_in_group(200),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect(
+            "a full relayed tier must not deny the direct tier: the shared budget reserves a slot \
+             for each tier, and this node holds no accepted-direct peer at all",
+        );
+    assert_eq!(
+        handle.peer_count().await,
+        admitted_relayed + 1,
+        "the direct peer actually took a slot — asserting only the Ok would pass against a version \
+         that returned success without inserting"
+    );
+
+    // The bound, pinned from BOTH sides so it cannot drift silently: the relayed tier stops at 5 of
+    // the aggregate 6 (at-bound admitted), and the sixth circuit is refused by a BUDGET rather than
+    // by the pool running out of slots (one over refused). A cap tested only from below confirms
+    // itself.
+    assert_eq!(
+        admitted_relayed, 5,
+        "max_relayed_inbound(8) is a reserved quarter of the INBOUND budget, not of the pool: 5, so \
+         one of the aggregate 6 is always left to the other tier"
+    );
+    assert!(
+        matches!(refusal, Some(dig_gossip::GossipError::ConnectionFiltered(_))),
+        "the sixth circuit is refused by the relayed cap, not by MaxConnectionsReached — got \
+         {refusal:?}"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **Two SITES inside one hosting provider's IPv6 prefix are different source groups.**
+///
+/// The per-group bound originally borrowed `subnet_group`, the OUTBOUND diversity key, whose IPv6
+/// branch is the first four bytes — a `/32`. That width is conservative in its own job (a coarse group
+/// only makes this node's own dial set more diverse) and is a denial primitive in this one. An IPv6
+/// `/32` is an RIR allocation to a hosting PROVIDER — Vultr is `2001:19f0::/32` — so with a cap of 2
+/// a default node accepted at most two direct inbound peers from that provider WORLDWIDE, and two
+/// cheap rented hosts there denied direct-inbound registration to every other customer. §5.2 makes
+/// IPv6 the preferred family, so this is the common case rather than an edge of it.
+///
+/// The fixture is built to distinguish the fix from the defect rather than to restate the bound:
+/// `one_source_group_cannot_take_the_accepted_direct_tier` uses three addresses inside ONE `/48` and
+/// stays green under either keying, because a `/48` and a `/32` agree there. Only a second SITE in the
+/// SAME provider prefix separates them — refused under `/32`, admitted under `/48`.
+///
+/// Both sides are asserted in one fixture, so "the bound was widened" and "the bound was deleted"
+/// cannot look the same: site A is filled to its cap and a third peer THERE is still refused.
+#[tokio::test]
+async fn two_sites_in_one_ipv6_provider_prefix_are_different_source_groups() {
+    let (svc, handle, _dir) = running_handle().await;
+    // Vultr's real RIR allocation, chosen so the /32-vs-/48 distinction is the one under test.
+    // 2001:19f0:1000::/48 and 2001:19f0:2000::/48 are two customers of one provider.
+    let site_a = "2001:19f0:1000";
+    let site_b = "2001:19f0:2000";
+    let group_cap = 2usize;
+    let mut held = Vec::new();
+
+    for i in 0..group_cap {
+        let (responder, peer_id, initiator) =
+            authenticated_inbound_connection([200 + i as u8; 32], [210 + i as u8; 32]).await;
+        handle
+            .adopt_direct_inbound_handle(
+                peer_id,
+                addr(&format!("[{site_a}::{}]:54321", i + 1)),
+                TraversalKind::Direct,
+                dig_gossip::ObservedSession::new(responder.closed_handle(), never_superseded()),
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("peer {i} at site A is within the per-group cap: {e:?}"));
+        held.push((responder, initiator));
+    }
+
+    // ONE OVER, at site A: the bound still fires at SITE granularity, so this is a re-calibration and
+    // not a removal.
+    let (crowd_responder, crowd_id, _c) =
+        authenticated_inbound_connection([220; 32], [221; 32]).await;
+    let err = handle
+        .adopt_direct_inbound_handle(
+            crowd_id,
+            addr(&format!("[{site_a}::9]:54321")),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(crowd_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect_err("a third peer from ONE /48 site is still refused");
+    assert!(
+        matches!(err, dig_gossip::GossipError::ConnectionFiltered(_)),
+        "refused as filtered, got {err:?}"
+    );
+
+    // THE PROPERTY. A peer at a DIFFERENT site inside the SAME provider /32 is admitted at the very
+    // same moment. Under the old /32 keying this address shares site A's group and is refused, so
+    // this assertion is what separates the two calibrations.
+    let (other_responder, other_id, _o) =
+        authenticated_inbound_connection([222; 32], [223; 32]).await;
+    handle
+        .adopt_direct_inbound_handle(
+            other_id,
+            addr(&format!("[{site_b}::1]:54321")),
+            TraversalKind::Direct,
+            dig_gossip::ObservedSession::new(other_responder.closed_handle(), never_superseded()),
+            None,
+        )
+        .await
+        .expect(
+            "a different /48 site is a different source group, even inside one provider's /32: \
+             otherwise two rented hosts lock out every other customer of that provider",
+        );
+    assert_eq!(
+        handle.peer_count().await,
+        3,
+        "the pool is nowhere near its direct cap of 5, so neither outcome above can be the pool-wide \
+         bound firing"
+    );
+
+    svc.stop().await.expect("stop");
+}
+
+/// **The IPv4 source group is unchanged at a `/16`.**
+///
+/// The inbound key is family-aware, so the v6 re-calibration must not have moved v4 with it: an
+/// attacker inside the victim's own `/16` is the v4 threat model and the width INT-006 has always
+/// used. Two addresses sharing a `/16` but nothing narrower must still group together, and a
+/// neighbouring `/16` must not.
+#[test]
+fn the_ipv4_inbound_source_group_is_still_a_slash_16() {
+    use dig_gossip::util::ip_address::inbound_source_group;
+    let a: std::net::IpAddr = "203.0.113.7".parse().expect("v4");
+    let b: std::net::IpAddr = "203.0.42.9".parse().expect("v4");
+    let other: std::net::IpAddr = "203.1.113.7".parse().expect("v4");
+    assert_eq!(
+        inbound_source_group(&a),
+        inbound_source_group(&b),
+        "one /16 is one group"
+    );
+    assert_ne!(
+        inbound_source_group(&a),
+        inbound_source_group(&other),
+        "a neighbouring /16 is a different group"
+    );
+    // An IPv4-mapped v6 presentation must not dodge its own group.
+    let mapped: std::net::IpAddr = "::ffff:203.0.113.7".parse().expect("mapped");
+    assert_eq!(
+        inbound_source_group(&mapped),
+        inbound_source_group(&a),
+        "a mapped-v6 presentation shares the /16 of its plain-v4 twin"
+    );
 }

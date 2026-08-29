@@ -124,7 +124,7 @@ async fn running_handle() -> (GossipService, GossipHandle, tempfile::TempDir) {
     let dir = common::test_temp_dir();
     let _ = common::generate_test_certs(dir.path());
     let mut cfg = common::test_gossip_config(dir.path());
-    cfg.max_connections = 8; // → max_relayed_inbound = 6
+    cfg.max_connections = 8; // → max_inbound_total = 6 → max_relayed_inbound = 5
     cfg.target_outbound_count = 8; // → max_relayed_outbound = 6
     cfg.peer_pool = Some(PeerPoolConfig {
         min_peers: 1,
@@ -279,7 +279,7 @@ async fn accepted_relayed_circuits_do_not_consume_the_relayed_outbound_cap() {
     let (svc, handle, _dir) = running_handle().await;
 
     let mut keep_alive = Vec::new();
-    for i in 0..6u8 {
+    for i in 0..5u8 {
         let (conn, s) = loopback_nat_conn(
             [100 + i; 32],
             accepted_relayed_remote(),
@@ -300,23 +300,28 @@ async fn accepted_relayed_circuits_do_not_consume_the_relayed_outbound_cap() {
     handle
         .adopt_nat_connection(outbound)
         .await
-        .expect("the outbound relayed budget is untouched by six accepted circuits");
+        .expect("the outbound relayed budget is untouched by a full accepted-relayed tier");
     keep_alive.push(s);
 
     svc.stop().await.expect("stop");
     drop(keep_alive);
 }
 
-/// **The accepted-relayed bound, from BOTH sides.** `max_relayed_inbound(8) == 6`: the sixth circuit
-/// is admitted and the seventh is refused, so a relay cannot fill this node's whole pool with
+/// **The accepted-relayed bound, from BOTH sides.** `max_relayed_inbound(8) == 5`: the fifth circuit
+/// is admitted and the sixth is refused, so a relay cannot fill this node's whole pool with
 /// circuits it introduced. Asserted at the bound and one over — a bound tested only from below
 /// confirms nothing about where it is.
+///
+/// The cap is a reserved quarter of the INBOUND budget (`max_inbound_total(8) == 6`), not of the
+/// pool. Taken from the pool it equalled the aggregate, which left the relayed tier able to consume
+/// the whole shared budget and the DIRECT inbound tier nothing — see
+/// `a_full_relayed_tier_still_leaves_the_direct_tier_a_slot` in the #3124 suite.
 #[tokio::test]
 async fn accepted_relayed_circuits_are_bounded_and_the_bound_is_where_it_says() {
-    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 6
+    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 5
 
     let mut keep_alive = Vec::new();
-    for i in 0..6u8 {
+    for i in 0..5u8 {
         let (conn, s) = loopback_nat_conn(
             [50 + i; 32],
             accepted_relayed_remote(),
@@ -325,7 +330,7 @@ async fn accepted_relayed_circuits_are_bounded_and_the_bound_is_where_it_says() 
         handle
             .adopt_relayed_inbound(conn)
             .await
-            .unwrap_or_else(|e| panic!("circuit {i} is at or under the cap of 6: {e:?}"));
+            .unwrap_or_else(|e| panic!("circuit {i} is at or under the cap of 5: {e:?}"));
         keep_alive.push(s);
     }
 
@@ -333,7 +338,7 @@ async fn accepted_relayed_circuits_are_bounded_and_the_bound_is_where_it_says() 
     let err = handle
         .adopt_relayed_inbound(over)
         .await
-        .expect_err("the seventh accepted circuit exceeds the cap");
+        .expect_err("the sixth accepted circuit exceeds the cap");
     assert!(matches!(err, GossipError::ConnectionFiltered(_)), "{err:?}");
     keep_alive.push(s);
 
@@ -359,17 +364,17 @@ async fn accepted_relayed_circuits_are_bounded_and_the_bound_is_where_it_says() 
 /// authenticated identity as a circuit. Iterated over distinct peers, that fills `max_connections`
 /// with relay-introduced circuits — exactly the eclipse the reserved quarter exists to prevent.
 ///
-/// The fixture is the reviewer's probe: six circuits AT the cap, a seventh peer admitted DIRECTLY (so
+/// The fixture is the reviewer's probe: five circuits AT the cap, a further peer admitted DIRECTLY (so
 /// the pool is under `max_connections` and the map would not grow), then that same peer re-offered as
 /// a circuit. The direct peer is the control — it must still be dialable, which also pins the second
 /// half of the defect: a peer could otherwise demote its own direct, dialable slot to a non-dialable
 /// relayed one at will.
 #[tokio::test]
 async fn a_held_slot_does_not_exempt_a_circuit_from_the_accepted_relayed_cap() {
-    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 6
+    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 5
 
     let mut keep_alive = Vec::new();
-    for i in 0..6u8 {
+    for i in 0..5u8 {
         let (conn, s) = loopback_nat_conn(
             [60 + i; 32],
             accepted_relayed_remote(),
@@ -378,11 +383,11 @@ async fn a_held_slot_does_not_exempt_a_circuit_from_the_accepted_relayed_cap() {
         handle
             .adopt_relayed_inbound(conn)
             .await
-            .unwrap_or_else(|e| panic!("circuit {i} is at or under the cap of 6: {e:?}"));
+            .unwrap_or_else(|e| panic!("circuit {i} is at or under the cap of 5: {e:?}"));
         keep_alive.push(s);
     }
 
-    // A seventh peer arrives DIRECTLY: the pool holds 7 of 8, so `max_connections` is not the binding
+    // A further peer arrives DIRECTLY: the pool holds 6 of 8, so `max_connections` is not the binding
     // budget and the re-adoption below would not grow the map.
     let (direct, s_direct) =
         loopback_nat_conn([70; 32], addr("[2001:db8::30]:9445"), TraversalKind::Direct);
@@ -432,7 +437,7 @@ async fn a_held_slot_does_not_exempt_a_circuit_from_the_accepted_relayed_cap() {
 /// accepted-relayed budget can refuse this. That is what distinguishes it from the direct-slot case.
 #[tokio::test]
 async fn converting_a_relayed_outbound_slot_into_an_accepted_circuit_is_charged() {
-    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 6
+    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 5
 
     let mut keep_alive = Vec::new();
     let (outbound, s_out) = loopback_nat_conn(
@@ -446,7 +451,7 @@ async fn converting_a_relayed_outbound_slot_into_an_accepted_circuit_is_charged(
         .expect("relayed outbound adopted");
     keep_alive.push(s_out);
 
-    for i in 0..6u8 {
+    for i in 0..5u8 {
         let (conn, s) = loopback_nat_conn(
             [90 + i; 32],
             accepted_relayed_remote(),
@@ -455,7 +460,7 @@ async fn converting_a_relayed_outbound_slot_into_an_accepted_circuit_is_charged(
         handle
             .adopt_relayed_inbound(conn)
             .await
-            .unwrap_or_else(|e| panic!("circuit {i} is at or under the cap of 6: {e:?}"));
+            .unwrap_or_else(|e| panic!("circuit {i} is at or under the cap of 5: {e:?}"));
         keep_alive.push(s);
     }
 
@@ -477,12 +482,12 @@ async fn converting_a_relayed_outbound_slot_into_an_accepted_circuit_is_charged(
 /// dials out over relays refuses legitimate inbound circuits while under its own cap, and every
 /// inbound-only fixture stays green while it does so.
 ///
-/// One relayed OUTBOUND peer is held throughout, so the two counts differ by one: at five accepted
-/// circuits a direction-blind count reads 6 and refuses the sixth, which is at the bound and MUST be
+/// One relayed OUTBOUND peer is held throughout, so the two counts differ by one: at four accepted
+/// circuits a direction-blind count reads 5 and refuses the fifth, which is at the bound and MUST be
 /// admitted.
 #[tokio::test]
 async fn a_relayed_outbound_peer_does_not_consume_the_accepted_relayed_cap() {
-    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 6
+    let (svc, handle, _dir) = running_handle().await; // max_connections = 8 → cap 5
 
     let mut keep_alive = Vec::new();
     let (outbound, s_out) = loopback_nat_conn(
@@ -496,7 +501,7 @@ async fn a_relayed_outbound_peer_does_not_consume_the_accepted_relayed_cap() {
         .expect("relayed outbound adopted");
     keep_alive.push(s_out);
 
-    for i in 0..5u8 {
+    for i in 0..4u8 {
         let (conn, s) = loopback_nat_conn(
             [130 + i; 32],
             accepted_relayed_remote(),
@@ -505,16 +510,16 @@ async fn a_relayed_outbound_peer_does_not_consume_the_accepted_relayed_cap() {
         handle
             .adopt_relayed_inbound(conn)
             .await
-            .unwrap_or_else(|e| panic!("circuit {i} is under the cap of 6: {e:?}"));
+            .unwrap_or_else(|e| panic!("circuit {i} is under the cap of 5: {e:?}"));
         keep_alive.push(s);
     }
 
-    let (sixth, s6) =
+    let (fifth, s5) =
         loopback_nat_conn([140; 32], accepted_relayed_remote(), TraversalKind::Relayed);
-    handle.adopt_relayed_inbound(sixth).await.expect(
-        "five accepted circuits plus a relayed OUTBOUND peer leaves the sixth at the bound",
+    handle.adopt_relayed_inbound(fifth).await.expect(
+        "four accepted circuits plus a relayed OUTBOUND peer leaves the fifth at the bound",
     );
-    keep_alive.push(s6);
+    keep_alive.push(s5);
 
     svc.stop().await.expect("stop");
     drop(keep_alive);

@@ -21,7 +21,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.31.0"
+version = "0.32.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -132,7 +132,7 @@ dig-tls = "0.4"
 # IPv6-first candidate ordering and `dig_ip::LocalStack` supplies the local∩peer family INTERSECTION
 # so this crate never dials a family the LOCAL host cannot originate on. A leaf crate on crates.io
 # (single instance, no DIG deps), so it is depended on directly rather than vendored.
-dig-ip = "0.1"
+dig-ip = "0.1.2"
 # chia_streamable_macro needed directly because the proc-macro reads Cargo.toml for chia-protocol
 # and generates `chia_protocol::` paths at compile time.
 chia_streamable_macro = "0.36.1"

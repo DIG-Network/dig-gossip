@@ -1984,11 +1984,13 @@ impl GossipHandle {
     /// accepted peers of BOTH inbound tiers together (the bound that actually reserves room for this
     /// node's own dialing — the per-tier caps sum to the whole pool on their own), and more than
     /// [`max_direct_inbound_per_group`](crate::service::peer_pool::max_direct_inbound_per_group)
-    /// accepted direct peers sharing one `/16` source group (identities are free on this path, so a
-    /// pool-wide count alone lets one host take the tier).
+    /// accepted direct peers sharing one SOURCE GROUP — an IPv4 `/16` or an IPv6 `/48` (identities are
+    /// free on this path, so a pool-wide count alone lets one host take the tier).
     ///
     /// No OUTBOUND diversity budget is charged: this node dialed nothing, so it occupies no outbound
-    /// group. The `/16` bound above is the inbound analogue, not a reuse of INT-006.
+    /// group. The source-group bound above is the inbound analogue, not a reuse of INT-006 — it has
+    /// its own key ([`crate::util::ip_address::inbound_source_group`]) because a group wide enough to
+    /// be conservative when DIVERSIFYING this node's dials is a denial primitive when REFUSING peers.
     ///
     /// Re-adoption by the same peer is newest-wins and free, for the same reasons as
     /// [`Self::adopt_nat_connection`]; the displaced slot's owner is notified (#71).
@@ -2091,13 +2093,19 @@ impl GossipHandle {
             // ONE host mint one leaf per slot and take the whole accepted tier. The peer's own held
             // slot is excluded rather than exempted: a re-adoption must not be able to buy a group
             // slot it does not already hold, and it never counts itself as an occupant.
-            let group = crate::util::ip_address::subnet_group(&remote.ip());
+            // The group is an IPv4 /16 or an IPv6 /48 — deliberately NOT the outbound `subnet_group`,
+            // whose IPv6 branch keys on a /32. That width is safe when it makes this node's own dial
+            // set more diverse and is a denial primitive when it refuses a peer: an IPv6 /32 is a
+            // hosting provider's RIR allocation, so two rented hosts there would lock every other
+            // customer of that provider out of this bound. `inbound_source_group` carries the full
+            // reasoning.
+            let group = crate::util::ip_address::inbound_source_group(&remote.ip());
             let same_group = peers
                 .iter()
                 .filter(|(pid, s)| {
                     **pid != peer_id
                         && crate::service::state::is_accepted_direct(s)
-                        && crate::util::ip_address::subnet_group(&s.remote().ip()) == group
+                        && crate::util::ip_address::inbound_source_group(&s.remote().ip()) == group
                 })
                 .count();
             let group_cap = crate::service::peer_pool::max_direct_inbound_per_group(
@@ -2105,7 +2113,9 @@ impl GossipHandle {
             );
             if same_group >= group_cap {
                 return Err(GossipError::ConnectionFiltered(SafeText::from_untrusted(
-                    format!("#3124: accepted direct inbound /16 group cap reached ({group_cap})"),
+                    format!(
+                        "#3124: accepted direct inbound source group cap reached ({group_cap} per IPv4 /16, IPv6 /48)"
+                    ),
                 )));
             }
 
@@ -3439,19 +3449,6 @@ impl GossipHandle {
     #[doc(hidden)]
     pub fn __tracked_pool_activity_count_for_tests(&self) -> usize {
         self.inner.pool.tracked_peer_count()
-    }
-
-    /// dig_ecosystem#3124 test hook: stamp work as STARTED over `peer_id`, returning whether the pool
-    /// holds a usefulness record for it at all.
-    ///
-    /// Exposed because "this slot can never be displaced" has no other observable form from outside
-    /// the crate. A peer admitted without `PoolEvent::PeerAdded` has no record, so `begin_activity`
-    /// refuses it and `activity_of` drops it before the planner ever weighs it — the slot counts as
-    /// connected and is structurally un-evictable. A test that only counted records could not tell a
-    /// record that exists from one the planner can actually use.
-    #[doc(hidden)]
-    pub fn __begin_pool_activity_for_tests(&self, peer_id: PeerId, now: u64) -> bool {
-        self.inner.pool.begin_activity(peer_id, now)
     }
 
     /// Test helper: push a synthetic inbound event into the broadcast hub.
