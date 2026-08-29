@@ -445,8 +445,23 @@ impl PeerSlot {
     /// skip-connected keys ([`ServiceState::connected_pool_keys`]) and the public
     /// [`ConnectedPoolPeer::dial_addr`](crate::service::peer_pool::ConnectedPoolPeer::dial_addr), so
     /// the two can never drift apart.
+    /// A `dig-nat` slot this node ACCEPTED reports `None` for a second, independent reason
+    /// (**dig_ecosystem#3124**): its `remote` is the peer's EPHEMERAL SOURCE PORT, chosen by the
+    /// peer's kernel for one connection, not the port it listens on. Only a slot this node DIALED has
+    /// a `remote` this node picked, and therefore one the peer answers at.
+    ///
+    /// The two reasons do not collapse into one. A relayed slot is undialable in EITHER direction
+    /// because of its tier; an accepted direct slot is undialable because of its direction. Deriving
+    /// dialability from the tier alone is what would make a direct inbound peer look reachable at a
+    /// port nothing is bound to.
+    ///
+    /// The direction clause is scoped to [`PeerSlot::Nat`] deliberately: `Live` and `Stub` slots keep
+    /// the behaviour they have today, so this narrows nothing that was already relied upon.
     pub(crate) fn dial_addr(&self) -> Option<SocketAddr> {
         if is_relayed(self) {
+            return None;
+        }
+        if matches!(self, PeerSlot::Nat(n) if !n.is_outbound) {
             return None;
         }
         Some(self.remote())
@@ -544,6 +559,28 @@ fn subnet_group_of(slot: &PeerSlot) -> u32 {
 /// [`max_relayed_outbound`](crate::service::peer_pool::max_relayed_outbound) cap.
 pub(crate) fn is_relayed(slot: &PeerSlot) -> bool {
     matches!(slot, PeerSlot::Nat(n) if matches!(n.method, dig_nat::TraversalKind::Relayed))
+}
+
+/// Whether a slot is a `dig-nat` peer whose connection this node ACCEPTED, of EITHER inbound tier
+/// (**dig_ecosystem#3124**).
+///
+/// This is the occupancy the aggregate inbound bound
+/// ([`max_inbound_total`](crate::service::peer_pool::max_inbound_total)) is counted over, and it is
+/// deliberately tier-BLIND: the whole point of the aggregate bound is that a direct accepted slot and
+/// a relayed accepted one cost the same reserve, so counting them by one predicate is what stops the
+/// two tiers pooling their budgets. Scoped to [`PeerSlot::Nat`] because those are exactly the slots
+/// the two inbound entry points create; `Live` and `Stub` slots keep the accounting they have today.
+pub(crate) fn is_accepted_inbound(slot: &PeerSlot) -> bool {
+    matches!(slot, PeerSlot::Nat(n) if !n.is_outbound)
+}
+
+/// Whether a slot is an accepted DIRECT peer — the per-tier occupancy
+/// [`max_direct_inbound`](crate::service::peer_pool::max_direct_inbound) and the per-SOURCE-GROUP bound
+/// [`max_direct_inbound_per_group`](crate::service::peer_pool::max_direct_inbound_per_group) are
+/// counted over (**dig_ecosystem#3124**). The source group is an IPv4 `/16` or an IPv6 `/48`, as
+/// [`inbound_source_group`](crate::util::ip_address::inbound_source_group) derives it.
+pub(crate) fn is_accepted_direct(slot: &PeerSlot) -> bool {
+    is_accepted_inbound(slot) && !is_relayed(slot)
 }
 
 /// **#1703 item 2** — whether a peer slot is provably DEPARTED and safe for the reaper to evict.

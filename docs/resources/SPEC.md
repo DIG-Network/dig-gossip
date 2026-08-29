@@ -2068,6 +2068,112 @@ through the relay — MUST be registered through `GossipHandle::adopt_relayed_in
 `GossipHandle::adopt_relayed_inbound_handle`. A node serving a peer over such a circuit and reporting
 `connected_peers = 0` is a defect: the pool is what every subsystem reads to answer "am I connected".
 
+**Every ACCEPTED connection is a pool member, including a DIRECT one (#3124).** The rule above is not
+about relays; it is about direction. A node that ACCEPTS a direct mTLS connection and serves the peer
+MUST register it through `GossipHandle::adopt_direct_inbound_handle`, which takes
+`(peer_id, remote, method, ObservedSession, Option<NatBroadcastSink>)`. Reporting such a peer as
+unconnected is the same defect as for a circuit, on the far more common path.
+
+The direct-inbound entry point is SEPARATE from the other four, and MUST NOT be replaced by any of
+them, because each carries a fact that is false for an accepted direct peer:
+
+- A slot adopted through `adopt_relayed_inbound_handle` is `TraversalKind::Relayed`. `Via` and both
+  relayed caps derive from that tier, so a directly-connected peer would be reported as
+  relay-tunnelled and charged against the budget bounding relay-chosen peers.
+- A slot adopted through `adopt_nat_connection` is `is_outbound = true`, charging the INT-006 /16 and
+  INT-007 AS **outbound** diversity budgets for a peer this node never dialed. An accepted slot MUST
+  be `is_outbound = false` and MUST occupy no outbound diversity group.
+- `adopt_direct_inbound_handle` MUST refuse `TraversalKind::Relayed`; a circuit accounted against the
+  direct tier would escape the relayed cap.
+
+**DIALABILITY IS A PROPERTY OF THE TIER *AND* THE DIRECTION (#3124).** A `dig-nat` slot's `remote` is
+a dial target only when THIS node chose it. An accepted connection's `remote` is the peer's EPHEMERAL
+SOURCE PORT — valid for that one connection, and bound to nothing — so a slot this node accepted MUST
+report `dial_addr = None` regardless of its traversal tier, and MUST NOT appear in
+`dialable_pool_peers()`. It is still reported as `session_addr` for observability. The two reasons a
+slot is undialable are independent and MUST NOT be collapsed: a relayed slot is undialable in either
+direction because of its tier, an accepted slot because of its direction.
+
+**Accepted peers are CAPPED IN AGGREGATE, not per tier (#3124).** Every slot an accepted connection
+holds is one the maintenance loop cannot spend dialing a peer of this node's own choosing, so an
+unbounded accepted tier would let anyone able to complete a handshake choose this node's entire peer
+set. Three bounds hold that, and they are ordered deliberately:
+
+1. At most `max_inbound_total(max_connections)` ACCEPTED peers of BOTH inbound tiers TOGETHER. This is
+   the bound that reserves room for this node's own dialing, and BOTH `dig-nat` adoption entry points
+   MUST charge it. Two per-tier caps counted separately bound each tier's size and NEITHER tier's share
+   of the sum — at `max_connections = 8` a reserved quarter each is `6 + 2 = 8`, a pool filled entirely
+   by peers the other side chose.
+
+   The budget counts ACCEPTED `dig-nat` slots and only those. An inbound Chia-protocol WebSocket peer
+   is a `Stub`/`Live` slot admitted by the listener, which is bounded by `max_connections` alone; such a
+   slot occupies the pool without being charged here, so this reserve is a guarantee about the accepted
+   `dig-nat` tiers and MUST NOT be read as one about the pool as a whole.
+2. At most `max_direct_inbound(max_connections)` accepted DIRECT peers, and at most
+   `max_relayed_inbound(max_connections)` accepted RELAYED circuits. Both caps are the SAME function of
+   the INBOUND budget of clause 1, never of the pool: a reserved quarter of that budget, FLOORED at one
+   slot whenever the budget can hold a peer at all, and clamped to the budget. Writing
+   `b = max_inbound_total(max_connections)`, with integer division and saturating subtraction:
+
+   ```
+   max_direct_inbound(mc) = max_relayed_inbound(mc) = min(max(b − max(b / 4, 1), 1), b)
+   ```
+
+   **The floor is normative, not a rounding detail.** Applying the quarter twice — once to reach `b`,
+   once to reach a tier's share of it — yields ZERO for every `max_connections <= 2`, and a cap of zero
+   does not RESERVE a tier's room, it CLOSES the tier: every circuit is refused with
+   `accepted relayed circuit cap reached (0)`, which is the same starvation the symmetric derivation
+   exists to prevent, merely inflicted on the other side. An implementation MUST NOT emit a tier cap of
+   zero while `b >= 1`.
+
+   **The floor cannot over-admit**, because clause 1's aggregate is charged on the same path: two tiers
+   each floored at 1 against a budget of 1 still admit exactly one accepted peer, first-come. The clamp
+   keeps a zero budget at zero, so at `max_connections <= 1` — where `b == 0` — both tiers are 0 and no
+   accepted peer is admitted at all. `b <= max_connections − 1` for every `max_connections >= 1`, so a
+   slot for this node's own dialing survives at every configuration.
+
+   Worked values: at `max_connections = 2` the budget is 1 and each tier is 1; at `3` the budget is 2
+   and each tier is 1; at `8` the budget is 6 and each tier is 5; at `16` the budget is 12 and each tier
+   is 9.
+
+   **The two tiers MUST be derived symmetrically from the shared budget**: that is the only arrangement in which neither tier can consume the whole of it, and
+   it is a security property rather than a symmetry preference. A cap taken from `max_connections`
+   instead equals the aggregate, which makes it vacuous as a bound AND lets its tier deny the other
+   tier entirely. It matters most on the relayed tier, which cannot be source-bounded at all — a
+   circuit's `remote` is the relay endpoint — so an aggregate it could exhaust alone would leave the
+   direct tier, where clause 3 does bound the source, with nothing. At `max_connections = 8` the
+   aggregate is 6 and each tier is 5, so a full tier of either kind still leaves the other a slot.
+3. At most `max_direct_inbound_per_group(max_connections)` accepted direct peers sharing one SOURCE
+   GROUP. A pool-wide count bounds how many strangers, never how many strangers from ONE place, and
+   identities on this path are free: any host mints CA-signed leaves locally. Without a per-source bound
+   a single machine presents one identity per slot and occupies the whole accepted tier — the eclipse
+   INT-006 bounds outbound, reachable inbound without dialing anything. The outbound `/16`//AS cap does
+   NOT apply here, because an accepted peer occupies no outbound group.
+
+   **The inbound source group is an IPv4 `/16` or an IPv6 `/48`, and MUST NOT be the outbound
+   `subnet_group` key.** The two answer opposite questions. A group WIDER than the network unit an
+   attacker controls is conservative when it diversifies this node's own dialing and is a DENIAL
+   PRIMITIVE when it refuses a peer, because whoever holds the cap's worth of addresses inside the group
+   locks out every other host in it. The outbound key groups IPv6 on its first four bytes, a `/32`,
+   which is an RIR allocation to a hosting PROVIDER: reused here it would cap a node at two accepted
+   direct peers from an entire provider worldwide, and since IPv6 is the preferred family for peer
+   communication that is the common case. A `/48` is the end-site allocation unit (RFC 6177), so it is
+   the smallest prefix an attacker may be assumed to control in full and the IPv6 analogue of the IPv4
+   `/16` this bound uses. An IPv4-mapped IPv6 source MUST be canonicalized to IPv4 first, or the same
+   routable network dodges its group by changing presentation.
+
+**An accepted connection MUST be recorded as ADMITTED (#3124).** Admission publishes
+`PoolEvent::PeerAdded`, which is what creates the peer's usefulness record. A slot admitted without one
+counts as connected and appears cyclable while being incapable of ever being chosen as a displacement
+victim, so all displacement pressure falls on peers this node chose and the only un-cyclable slots are
+the ones a stranger opened.
+
+An accepted connection also MUST NOT supersede a slot this node can DIAL: that would trade a peer
+reachable at a known address for one reachable only while the peer keeps its connection open, at the
+peer's initiative. Holding a slot exempts an adoption ONLY from a budget that slot ALREADY occupies; a
+blanket exemption for any held slot makes every cap above a formality, because a peer admitted by one
+path could then be converted into another tier for nothing.
+
 **Registration MUST NOT cost the caller the session (#1871).** `adopt_relayed_inbound` takes the
 connection by value, and `dig_nat::PeerSession` is neither `Clone` nor splittable, so a node whose L7
 serve loop needs `&mut PeerSession` cannot use that entry point without ceasing to serve the peer —
@@ -2119,10 +2225,18 @@ The registration is normatively:
   the peer answers at; offering it to a dialer produces a guaranteed failure and risks evicting the
   working circuit already carrying that peer's traffic. Non-dialability belongs to the TIER, not the
   direction.
-- **Bounded.** At most `max_relayed_inbound = max_connections − max(max_connections/4, 1)` accepted
-  circuits (**6** at `max_connections = 8`), enforced under the same `peers`-lock hold as the insert, so
-  a single relay cannot fill the pool with peers of its own choosing (eclipse by introduction). The
-  reserved quarter is the same derivation as `max_relayed_outbound` and the direct-dial floor. The cap
+- **Bounded.** At most `max_relayed_inbound(max_connections)` accepted circuits — a reserved quarter of
+  the INBOUND budget, floored at one slot while that budget can hold a peer at all and clamped to it,
+  exactly as clause 2 of the accepted-peer caps defines it for BOTH inbound tiers (**5** at
+  `max_connections = 8`, where the inbound budget is 6; **1** at `max_connections = 2`, where the budget
+  is 1 — the floor, without which this cap would be 0 and would close the tier), enforced under the same
+  `peers`-lock hold as the insert, so a single relay cannot fill the pool with peers of its own choosing
+  (eclipse by introduction). The reserved quarter is the same derivation as `max_relayed_outbound` and
+  the direct-dial floor, applied to the shared INBOUND budget rather than to `max_connections` — and
+  then floored, which those outbound caps do not need because they take their quarter of
+  `max_connections` once rather than twice. Taken from `max_connections` it equals that budget, which
+  makes it vacuous and lets the relayed tier deny the direct inbound tier entirely (see clause 2 of the
+  accepted-peer caps). The cap
   counts slots that are themselves accepted circuits — relayed and INBOUND; a relayed OUTBOUND peer
   MUST NOT consume it, or a node that dials out over relays refuses legitimate circuits while under
   its own cap.
