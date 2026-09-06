@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.32.2] - 2026-09-06
+
+### Bug Fixes
+- **release:** Stop advertising an unclaimed crates.io name in release notes (#88)
+
 ## [0.32.1] - 2026-09-04
 
 ### Documentation
