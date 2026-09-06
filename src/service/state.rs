@@ -744,6 +744,16 @@ pub struct ServiceState {
     /// Cumulative inbound bytes. Same caveat as `bytes_sent`.
     pub bytes_received: AtomicU64,
 
+    /// **`dig_ecosystem#2709`** — cumulative count of inbound connections that fell back to
+    /// [`peer_id_for_host_fallback`] because the remote TLS leaf certificate could not be
+    /// captured (Windows SChannel / macOS SecureTransport hiding the peer cert even for a
+    /// legitimate mTLS session — CON-009). Before this counter existed the ONLY signal was a
+    /// `tracing::warn!` that no integration test installs a subscriber for, so the branch was
+    /// silently taken with no way for a test — or an operator — to tell which identity scheme a
+    /// running node is actually using. Never decremented; incremented from both
+    /// `handle_inbound_native_inner` and `handle_inbound_rustls_inner` in `connection/listener.rs`.
+    pub host_fallback_identity_uses: AtomicU64,
+
     /// Cumulative successful `connect` completions (stubs + live). Monotonically
     /// increasing -- never decremented on disconnect. Used by `GossipStats::total_connections`.
     pub total_connections: AtomicU64,
@@ -877,6 +887,122 @@ pub fn peer_id_for_addr(addr: SocketAddr) -> PeerId {
     PeerId::from(b)
 }
 
+/// Derive a **host-only** fallback identity for a real inbound peer whose TLS leaf certificate
+/// could not be captured (`dig_ecosystem#2709` / CON-009).
+///
+/// **Not to be confused with [`peer_id_for_addr`] above** — that function is a stub/test utility,
+/// deliberately keyed on the FULL `SocketAddr` (IP **and** port) so unit tests can construct many
+/// distinct fake peers on the same loopback IP by varying only the port (see
+/// `outbound_diversity_tests`, `connect_stub_inner`, and every `con_*`/`dsc_*` integration test
+/// that spins up several local listeners). This function is for the opposite situation: a REAL
+/// inbound TCP connection on Windows (SChannel) or macOS (SecureTransport), where
+/// `peer_certificate()` sometimes returns `None` even for a legitimate mutual-TLS session, and
+/// `connection/listener.rs` needs SOME identity to run the ban/reputation/newest-wins checks
+/// against.
+///
+/// Using the full-address scheme there was the bug: an inbound TCP connection's SOURCE PORT is
+/// ephemeral and chosen by the OS fresh on every connection, so keying identity on it made a ban
+/// evadable for free — reconnect, get a new port, get a new `PeerId`, walk straight past
+/// [`ServiceState::banned`]. This function drops the port entirely and hashes only the remote IP.
+///
+/// **Residual weakness, stated explicitly (the ticket's own framing — prefer whichever keeps a
+/// ban enforceable):** the identity is now per-HOST, not per-CERTIFICATE. Two genuinely different
+/// peers behind the same IP (carrier-grade NAT, a shared VPN egress, two processes on one LAN
+/// host reaching us through one router) collapse to the SAME `PeerId` under this fallback — a ban
+/// or reputation score on one is shared with the other. That is weaker than the SPKI-derived
+/// identity every other path uses, but it is a STRICT IMPROVEMENT over the address+port scheme it
+/// replaces, under which no ban ever survived a single reconnect, by construction, with zero
+/// attacker effort, on every affected platform. The residual weakness is closed entirely only by
+/// actually capturing the peer certificate on SChannel/Security.framework, or by requiring the
+/// `rustls` backend for inbound on these platforms (rustls already requests + captures the peer
+/// cert on every platform — see `rustls_inbound.rs`); both are bigger changes than this ticket's
+/// scope.
+///
+/// Every call site MUST increment [`ServiceState::host_fallback_identity_uses`] alongside calling
+/// this function, so the fallback has a signal a test can assert on (and an operator can query)
+/// beyond a `tracing::warn!` no integration test installs a subscriber for.
+pub fn peer_id_for_host_fallback(addr: SocketAddr) -> PeerId {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    addr.ip().hash(&mut h); // IP ONLY — the port is the entire defect this function fixes.
+    let x = h.finish();
+    let mut b = [0u8; 32];
+    b[..8].copy_from_slice(&x.to_le_bytes());
+    // Bytes 8..16 intentionally left zero: `peer_id_for_addr` uses this range for the port, and
+    // leaving it visibly zero here is the fastest way for a reader diffing the two functions to
+    // see that nothing in this scheme encodes the port.
+    match addr.ip() {
+        std::net::IpAddr::V4(v4) => b[16..20].copy_from_slice(&v4.octets()),
+        std::net::IpAddr::V6(v6) => {
+            let o = v6.octets();
+            b[16..32].copy_from_slice(&o[..16]);
+        }
+    }
+    PeerId::from(b)
+}
+
+#[cfg(test)]
+mod peer_id_for_host_fallback_tests {
+    //! `dig_ecosystem#2709` — the two properties that distinguish a correct fix from the two
+    //! nearest wrong ones: (1) ignoring ONLY the port (not collapsing to a constant regardless of
+    //! IP — the "ignore everything" over-correction would also let two DIFFERENT peers ban-evade
+    //! each other, a worse regression), and (2) actually reachable from a Linux CI host, which the
+    //! real call site is NOT (it sits behind `cfg!(target_os = "windows") ||
+    //! cfg!(target_vendor = "apple")`, so a test that only drove the real accept path would never
+    //! execute on this repo's Linux CI at all).
+
+    use super::peer_id_for_host_fallback;
+
+    /// **The property under test:** the same remote IP reconnecting from a fresh ephemeral source
+    /// port MUST still produce the SAME `PeerId` — this is what makes a ban survive a reconnect.
+    /// Before the fix (calling `peer_id_for_addr`, which hashes the whole `SocketAddr`) this was
+    /// false for every one of these pairs.
+    #[test]
+    fn same_ip_different_port_yields_the_same_identity() {
+        let first: SocketAddrType = "203.0.113.9:51000".parse().unwrap();
+        let reconnect: SocketAddrType = "203.0.113.9:60999".parse().unwrap();
+        assert_ne!(
+            first.port(),
+            reconnect.port(),
+            "the fixture must actually vary the port — an identical pair would prove nothing"
+        );
+        assert_eq!(
+            peer_id_for_host_fallback(first),
+            peer_id_for_host_fallback(reconnect),
+            "reconnecting from a new ephemeral source port on the SAME host must yield the SAME \
+             fallback identity, or a ban trivially evades by reconnecting"
+        );
+
+        // IPv6 gets the identical property — the fallback is reached on the same platforms
+        // regardless of address family.
+        let v6_first: SocketAddrType = "[2001:db8::1]:51000".parse().unwrap();
+        let v6_reconnect: SocketAddrType = "[2001:db8::1]:60999".parse().unwrap();
+        assert_eq!(
+            peer_id_for_host_fallback(v6_first),
+            peer_id_for_host_fallback(v6_reconnect)
+        );
+    }
+
+    /// **The over-correction guard:** a fix that ignored the WHOLE address (not just the port)
+    /// would also pass the test above — trivially, since a constant collapses everything. This
+    /// pins the other half: two DIFFERENT remote IPs MUST still get DIFFERENT identities, or the
+    /// fallback stops distinguishing peers at all (worse than the bug it fixes — every stranger
+    /// on this fallback path would share one ban).
+    #[test]
+    fn different_ip_yields_a_different_identity() {
+        let peer_a: SocketAddrType = "203.0.113.9:51000".parse().unwrap();
+        let peer_b: SocketAddrType = "198.51.100.4:51000".parse().unwrap();
+        assert_ne!(
+            peer_id_for_host_fallback(peer_a),
+            peer_id_for_host_fallback(peer_b),
+            "two genuinely different remote hosts must not collapse to the same fallback identity"
+        );
+    }
+
+    type SocketAddrType = std::net::SocketAddr;
+}
+
 impl ServiceState {
     /// Construct a fresh `ServiceState` in the `LC_CONSTRUCTED` lifecycle phase.
     ///
@@ -912,6 +1038,7 @@ impl ServiceState {
             messages_received: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
+            host_fallback_identity_uses: AtomicU64::new(0),
             total_connections: AtomicU64::new(0),
             peer_generation: AtomicU64::new(0),
             total_peers_received: AtomicU64::new(0),

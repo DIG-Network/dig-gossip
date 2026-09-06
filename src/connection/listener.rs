@@ -46,8 +46,10 @@
 //!   **vendored** [`native-tls`](../../../vendor/native-tls/README.dig-gossip.md) fork that sets
 //!   `CERT_REQUIRED` + Chia CA trust (Chia `server.py:67`). **Windows (SChannel)** and **macOS
 //!   (SecureTransport)** often hide the peer leaf from `peer_certificate()` even for legitimate
-//!   mutual TLS sessions, so we retain a **fallback** to [`peer_id_for_addr`] there (CON-002 / dev
-//!   ergonomics) while OpenSSL-backed production Linux gets strict SPKI binding.
+//!   mutual TLS sessions, so we retain a **fallback** to [`peer_id_for_host_fallback`] there
+//!   (CON-002 / dev ergonomics) while OpenSSL-backed production Linux gets strict SPKI binding.
+//!   `dig_ecosystem#2709`: the fallback hashes the remote IP only, never the ephemeral source
+//!   port — see that function's doc comment for the full rationale and its residual weakness.
 //!
 //! ## `software_version` sanitization (CON-003 / CON-008)
 //!
@@ -101,7 +103,7 @@ use crate::connection::outbound::network_id_handshake_string;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use crate::connection::outbound::spki_der_from_leaf_cert_der;
 use crate::service::state::{
-    apply_inbound_rate_limit_violation, peer_id_for_addr, record_live_peer_inbound_bytes,
+    apply_inbound_rate_limit_violation, peer_id_for_host_fallback, record_live_peer_inbound_bytes,
     record_live_peer_outbound_bytes, LiveSlot, PeerSlot, ServiceState, StubPeer,
 };
 use crate::types::peer::{
@@ -196,8 +198,9 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
 /// # Errors
 ///
 /// - [`ClientError::MissingHandshake`] — the remote did not present a client certificate, or the
-///   OS TLS stack cannot expose it. On **Windows** the caller may fall back to [`peer_id_for_addr`]
-///   (see [`handle_inbound_native_inner`]); on **OpenSSL** backends anonymous clients fail earlier.
+///   OS TLS stack cannot expose it. On **Windows** the caller may fall back to
+///   [`peer_id_for_host_fallback`] (see [`handle_inbound_native_inner`]); on **OpenSSL** backends
+///   anonymous clients fail earlier.
 /// - [`ClientError::Io`] — the leaf cert DER could not be extracted or parsed.
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 fn remote_spki_from_native_tls_stream(
@@ -271,11 +274,22 @@ async fn handle_inbound_native(
 /// The map keeps exactly one slot per `peer_id` (`HashMap::insert` replaces, never grows), so it
 /// stays bounded by the count of distinct authenticated identities even under reconnect churn.
 ///
+/// **This safety argument does NOT extend to a [`peer_id_for_host_fallback`]-derived identity**
+/// (`dig_ecosystem#2709`, Windows SChannel / macOS SecureTransport hiding the peer leaf): that
+/// value proves nothing about key ownership, so treating a collision there as "the same
+/// authenticated peer reconnecting" would let ANY second, unauthenticated connection from the
+/// same host evict an existing incumbent with zero proof it is the same peer. `is_host_fallback`
+/// below is how the caller tells this function which case applies; see its refusal branch.
+///
 /// # Errors
 ///
 /// Returns [`ClientError::Io`] with a specific `ErrorKind` for each rejection reason.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
-async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<(), ClientError> {
+async fn precheck_inbound_peer(
+    state: &ServiceState,
+    peer_id: PeerId,
+    is_host_fallback: bool,
+) -> Result<(), ClientError> {
     // Self-connection guard — Chia `full_node_server.py` drops connections to self.
     if peer_id == state.config.peer_id {
         return Err(ClientError::Io(std::io::Error::new(
@@ -305,8 +319,33 @@ async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<
         )));
     }
 
-    // No duplicate-PeerId reject: a restarted peer must be able to reconnect (#1691). The stale slot
-    // is superseded at insert time under the mTLS-gated newest-wins policy documented above.
+    // `dig_ecosystem#2709`: a fallback (host-only, UNVERIFIED) identity must never be treated as
+    // "the same authenticated peer reconnecting" for supersede purposes -- that is precisely the
+    // property `negotiate_inbound_over_ws`'s insert doc claims universally and which only holds
+    // for an SPKI-verified `peer_id`. Refuse outright rather than admit-and-supersede: the
+    // incumbent keeps its slot untouched until it is naturally reaped (CON-004 keepalive
+    // failure), and the new connection is free to retry once that happens. This is the
+    // conservative choice named in the ticket ("prefer whichever keeps a ban enforceable") taken
+    // one step further -- a ban being enforceable and an incumbent being un-evictable by an
+    // unauthenticated latecomer are the same shape of guarantee, applied to two different maps.
+    if is_host_fallback {
+        let already_held = state
+            .peers
+            .lock()
+            .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?
+            .contains_key(&peer_id);
+        if already_held {
+            return Err(ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "inbound fallback identity already holds a live slot; refusing rather than \
+                 superseding it without certificate verification (dig_ecosystem#2709)",
+            )));
+        }
+    }
+
+    // No duplicate-PeerId reject for the VERIFIED (non-fallback) case: a restarted peer must be
+    // able to reconnect (#1691). The stale slot is superseded at insert time under the
+    // mTLS-gated newest-wins policy documented above.
     Ok(())
 }
 
@@ -360,25 +399,34 @@ async fn handle_inbound_rustls_inner(
 
     // Step 2: Derive PeerId from the captured client SPKI (CON-009 / API-005). rustls requires the
     // client cert, so a missing SPKI here is unexpected. On Windows/macOS keep the historical
-    // `peer_id_for_addr` dev fallback (parity with the native-tls path) so local development is not
-    // regressed; OpenSSL/Linux — the production target — always has the strict SPKI binding.
-    let peer_id = match crate::connection::rustls_inbound::remote_spki_from_rustls_stream(&tls) {
-        Ok(spki) => peer_id_from_tls_spki_der(&spki),
-        Err(e) => {
-            if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
-                tracing::warn!(
-                    target: "dig_gossip::listener",
-                    "no remote TLS leaf cert after rustls accept; using peer_id_for_addr fallback: {e}"
-                );
-                peer_id_for_addr(remote_addr)
-            } else {
-                return Err(e);
+    // dev fallback (parity with the native-tls path) so local development is not regressed;
+    // OpenSSL/Linux — the production target — always has the strict SPKI binding.
+    //
+    // `dig_ecosystem#2709`: the fallback is `peer_id_for_host_fallback`, NOT `peer_id_for_addr` —
+    // the latter hashes the ephemeral source PORT too, which made a ban evadable by reconnecting.
+    let (peer_id, peer_id_is_host_fallback) =
+        match crate::connection::rustls_inbound::remote_spki_from_rustls_stream(&tls) {
+            Ok(spki) => (peer_id_from_tls_spki_der(&spki), false),
+            Err(e) => {
+                if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
+                    state
+                        .host_fallback_identity_uses
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        target: "dig_gossip::listener",
+                        "no remote TLS leaf cert after rustls accept; using peer_id_for_host_fallback: {e}"
+                    );
+                    (peer_id_for_host_fallback(remote_addr), true)
+                } else {
+                    return Err(e);
+                }
             }
-        }
-    };
+        };
 
-    // Steps 3-4: self / ban guards (shared with the rustls path); reconnect uses newest-wins (#1691).
-    precheck_inbound_peer(&state, peer_id).await?;
+    // Steps 3-4: self / ban guards (shared with the rustls path); reconnect uses newest-wins (#1691)
+    // for a VERIFIED identity only -- a fallback identity is refused rather than superseding
+    // (dig_ecosystem#2709, see `precheck_inbound_peer`'s doc comment).
+    precheck_inbound_peer(&state, peer_id, peer_id_is_host_fallback).await?;
 
     // Step 6: WebSocket upgrade over the server rustls stream. The server-side stream cannot inhabit
     // the `#[non_exhaustive]` client `MaybeTlsStream`, so we hand the raw stream to `accept_async`
@@ -397,7 +445,7 @@ async fn handle_inbound_rustls_inner(
 ///
 /// 1. **TLS accept** — negotiate server-side TLS with the node's [`ChiaCertificate`].
 /// 2. **SPKI extraction** — read the remote peer's leaf certificate to derive [`PeerId`] (CON-009).
-///    Windows-only: may fall back to [`peer_id_for_addr`] when SChannel hides the leaf.
+///    Windows-only: may fall back to [`peer_id_for_host_fallback`] when SChannel hides the leaf.
 /// 3. **Self-connection guard** — reject if the derived `peer_id` matches our own
 ///    [`GossipConfig::peer_id`](crate::types::config::GossipConfig::peer_id).
 /// 4. **Ban check** — reject peers in the [`ServiceState::banned`] set.
@@ -431,25 +479,33 @@ async fn handle_inbound_native_inner(
     //
     // **OpenSSL (Linux, etc.):** vendored `native-tls` requires a client cert; missing SPKI after
     // a successful accept is unexpected. **Windows (SChannel):** `peer_certificate()` may be
-    // `None` even for legitimate Chia peers — keep the historical `peer_id_for_addr` fallback so
-    // CON-002 integration tests and developer laptops keep working (see module TLS note above).
-    let peer_id = match remote_spki_from_native_tls_stream(&tls) {
-        Ok(spki) => peer_id_from_tls_spki_der(&spki),
+    // `None` even for legitimate Chia peers — keep the historical dev fallback so CON-002
+    // integration tests and developer laptops keep working (see module TLS note above).
+    //
+    // `dig_ecosystem#2709`: the fallback is `peer_id_for_host_fallback`, NOT `peer_id_for_addr` —
+    // the latter hashes the ephemeral source PORT too, which made a ban evadable by reconnecting.
+    let (peer_id, peer_id_is_host_fallback) = match remote_spki_from_native_tls_stream(&tls) {
+        Ok(spki) => (peer_id_from_tls_spki_der(&spki), false),
         Err(e) => {
             if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
+                state
+                    .host_fallback_identity_uses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(
                     target: "dig_gossip::listener",
-                    "no remote TLS leaf cert after accept (non-OpenSSL native-tls); using peer_id_for_addr fallback: {e}"
+                    "no remote TLS leaf cert after accept (non-OpenSSL native-tls); using peer_id_for_host_fallback: {e}"
                 );
-                peer_id_for_addr(remote_addr)
+                (peer_id_for_host_fallback(remote_addr), true)
             } else {
                 return Err(e);
             }
         }
     };
 
-    // Steps 3-4: self / ban guards (shared with the native-tls path); reconnect uses newest-wins (#1691).
-    precheck_inbound_peer(&state, peer_id).await?;
+    // Steps 3-4: self / ban guards (shared with the native-tls path); reconnect uses newest-wins
+    // (#1691) for a VERIFIED identity only -- a fallback identity is refused rather than
+    // superseding (dig_ecosystem#2709, see `precheck_inbound_peer`'s doc comment).
+    precheck_inbound_peer(&state, peer_id, peer_id_is_host_fallback).await?;
 
     // Step 6: WebSocket upgrade over the now-established TLS stream.
     // We wrap the `native_tls` stream in `MaybeTlsStream::NativeTls` so the type matches

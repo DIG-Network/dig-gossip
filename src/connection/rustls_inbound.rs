@@ -11,7 +11,7 @@
 //! `chia-sdk-client`, never `native-tls`). So in dig-node's build the stock `native-tls` shipped,
 //! the server never asked for the client cert, `peer_certificate()` returned `None` on OpenSSL, and
 //! **every inbound gossip connection was dropped** — the #1062 EC2 e2e "strangers cannot connect"
-//! failure, masked on Windows/macOS by the `peer_id_for_addr` fallback.
+//! failure, masked on Windows/macOS by the `peer_id_for_host_fallback` fallback (`dig_ecosystem#2709`).
 //!
 //! rustls sidesteps the root cause entirely: the client-cert request is configured in pure Rust via
 //! a [`ClientCertVerifier`], so the behaviour is identical on every platform and needs no patch to
