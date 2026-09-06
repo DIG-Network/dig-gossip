@@ -125,11 +125,23 @@ jobs:
             DIG Network P2P gossip — peer discovery, connection management, and message routing with Plumtree, ERLAY, priority lanes, compact blocks, Dandelion++, and relay fallback.
 
             ### Installation
+
+            **`dig-gossip` is NOT published to crates.io.** The name is unclaimed and publication is
+            guarded off (see the `publish` job above) pending
+            [dig_ecosystem#2647](https://github.com/DIG-Network/dig_ecosystem/issues/2647) — a vendored
+            `native-tls` fork that enforces inbound mTLS client-certificate requirements, which
+            `cargo publish` would silently strip. Do **not** add
+            `dig-gossip = "${{ steps.extract_version.outputs.VERSION }}"` to a `Cargo.toml`: that form
+            resolves against crates.io, where this name does not belong to this project — anyone can
+            register it and publish arbitrary code under it.
+
+            Depend on this release via git instead:
             ```toml
             [dependencies]
-            dig-gossip = "${{ steps.extract_version.outputs.VERSION }}"
+            dig-gossip = { git = "https://github.com/DIG-Network/dig-gossip", tag = "${{ github.ref_name }}" }
             ```
 
             See the [README](https://github.com/DIG-Network/dig-gossip/blob/main/README.md) for usage instructions.
+            Tracking: [dig_ecosystem#2776](https://github.com/DIG-Network/dig_ecosystem/issues/2776).
           draft: false
           prerelease: false
