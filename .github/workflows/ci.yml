@@ -48,6 +48,14 @@ permissions:
 jobs:
   lint:
     name: Format, Clippy & Docs
+    # `--all-features` is INVALID here (dig_ecosystem#2756): `native-tls` and `rustls` are
+    # alternative TLS backends, never a pair — enabling both used to compile silently into a
+    # split-brain configuration (outbound dials over native-tls, inbound accepts over rustls,
+    # picked by two DIFFERENT call sites that disagree) and now hits the crate-level
+    # `compile_error!` in `src/lib.rs` instead. So clippy/doc run as TWO legs, one per backend,
+    # each carrying every OTHER feature (`relay`, `erlay`, `compact-blocks`, `dandelion`, `tor`)
+    # so lint coverage of non-TLS code is unchanged from the single `--all-features` invocation
+    # this replaces — only the TLS backend selection is now exclusive per leg.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -65,11 +73,31 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Check clippy (native-tls leg)
+        run: >-
+          cargo clippy --all-targets
+          --no-default-features
+          --features native-tls,relay,erlay,compact-blocks,dandelion,tor
+          -- -D warnings
 
-      - name: Check documentation
-        run: cargo doc --no-deps --all-features
+      - name: Check clippy (rustls leg)
+        run: >-
+          cargo clippy --all-targets
+          --no-default-features
+          --features rustls,relay,erlay,compact-blocks,dandelion,tor
+          -- -D warnings
+
+      - name: Check documentation (native-tls leg)
+        run: >-
+          cargo doc --no-deps
+          --no-default-features
+          --features native-tls,relay,erlay,compact-blocks,dandelion,tor
+
+      - name: Check documentation (rustls leg)
+        run: >-
+          cargo doc --no-deps
+          --no-default-features
+          --features rustls,relay,erlay,compact-blocks,dandelion,tor
 
   lock:
     name: Cargo.lock in sync

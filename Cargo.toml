@@ -277,7 +277,11 @@ dig-gossip = { path = ".", features = ["test-util"] }
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
 default = ["native-tls", "relay", "erlay", "compact-blocks", "dandelion"]
 
-# TLS backends — forwarded through dig-peer-protocol to chia-sdk-client.
+# TLS backends — forwarded through dig-peer-protocol to chia-sdk-client. ALTERNATIVES, never a
+# pair: enabling both is a compile error (`src/lib.rs`'s crate-level `compile_error!`,
+# `dig_ecosystem#2756`) because the crate has two call sites that would otherwise each silently
+# pick a different one of the two when both are on. `--all-features` enables both; use the
+# per-backend feature legs in `ci.yml` instead.
 native-tls = [
     "dig-peer-protocol/native-tls",
     "dep:native-tls",

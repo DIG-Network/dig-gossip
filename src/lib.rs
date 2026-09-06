@@ -78,6 +78,35 @@
 )]
 
 // =============================================================================
+// TLS backend exclusivity (STR-004 "TLS Backend Selection", dig_ecosystem#2756)
+// =============================================================================
+//
+// `native-tls` and `rustls` are ALTERNATIVE backends, never a pair: the two call sites that
+// pick a backend when both are enabled disagree with each other. `tls_connector_for_cert`
+// (connection/outbound.rs) prefers `native-tls` when both features are on; `accept_loop`
+// (connection/listener.rs) prefers `rustls`. A build with both features enabled would
+// therefore DIAL OUT over native-tls and ACCEPT INBOUND over rustls in the same running
+// service -- not a hypothetical, that is what `--all-features` silently produced before this
+// guard existed.
+//
+// `--all-features` (and `--all-targets --all-features`, which `cargo clippy`/`cargo doc`
+// default to) is the only way a normal invocation reaches this combination, so reject it at
+// compile time with a message that names the fix, rather than let it either compile into the
+// split-brain configuration above or fail later inside rustls's ambiguous-CryptoProvider
+// auto-detection (dig_ecosystem#2756 tracked this via `con_009_tests::test_rustls_mtls_connector`
+// panicking under `--all-features` while never running under either real CI configuration).
+#[cfg(all(feature = "native-tls", feature = "rustls"))]
+compile_error!(concat!(
+    "dig-gossip's `native-tls` and `rustls` features are ALTERNATIVE TLS backends and MUST NOT ",
+    "be enabled together (STR-004 \"TLS Backend Selection\"): the crate has no code path that ",
+    "runs both consistently -- outbound prefers native-tls, inbound prefers rustls, silently. ",
+    "Pick exactly one: `--features native-tls` (the default, OS-native TLS) OR ",
+    "`--no-default-features --features rustls,relay,erlay,compact-blocks,dandelion` (pure-Rust ",
+    "TLS, dig-node's inbound build). `--all-features` and `--all-targets --all-features` both ",
+    "enable the pair; use the crate's documented CI feature legs instead (see `ci.yml`)."
+));
+
+// =============================================================================
 // Modules
 // =============================================================================
 
