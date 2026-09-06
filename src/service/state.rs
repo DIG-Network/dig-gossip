@@ -754,6 +754,28 @@ pub struct ServiceState {
     /// `handle_inbound_native_inner` and `handle_inbound_rustls_inner` in `connection/listener.rs`.
     pub host_fallback_identity_uses: AtomicU64,
 
+    /// Fallback (unverified, host-only) identities with an inbound negotiation IN FLIGHT —
+    /// **`dig_ecosystem#90`**, the gate finding on `#2709`'s original fix.
+    ///
+    /// `precheck_inbound_peer`'s `already_held` refusal only ever consulted [`Self::peers`], which
+    /// stays untouched until `negotiate_inbound_over_ws`'s insert up to ~60s later — a TOCTOU window
+    /// in which a second fallback-identified connection for the SAME identity saw an empty map and
+    /// was wrongly admitted too. This side map is what a [`HostFallbackReservation`] occupies for
+    /// exactly that window, closing the gap without giving a reservation a seat in `peers` itself
+    /// (see that type's docs for why keeping the two maps separate is what lets a VERIFIED peer's
+    /// ordinary `peers` insert stay completely oblivious to any pending reservation).
+    ///
+    /// Deliberately NOT a `PeerSlot` variant: `peers` is read by every existing exhaustive match
+    /// (`peer_count`, `broadcast`, `get_connections`, the outbound-diversity scan, the departed-peer
+    /// reaper, ...), none of which should ever need to learn about a connection that has not
+    /// finished negotiating. A separate map means none of them do.
+    ///
+    /// Value = the reservation's token, drawn from the SAME counter as [`LiveSlot::generation`]
+    /// (`Self::next_peer_generation`) — used the identical way: to tell "my reservation" apart from
+    /// a later one for the same identity, so a guard can never release a reservation it did not
+    /// create.
+    host_fallback_reservations: Mutex<HashMap<PeerId, u64>>,
+
     /// Cumulative successful `connect` completions (stubs + live). Monotonically
     /// increasing -- never decremented on disconnect. Used by `GossipStats::total_connections`.
     pub total_connections: AtomicU64,
@@ -1003,6 +1025,331 @@ mod peer_id_for_host_fallback_tests {
     type SocketAddrType = std::net::SocketAddr;
 }
 
+/// RAII hold on a fallback (unverified, host-only) identity between `precheck_inbound_peer`
+/// admitting it and `negotiate_inbound_over_ws` promoting or abandoning it — **`dig_ecosystem#90`**,
+/// the gate finding on `#2709`'s original fix.
+///
+/// # The defect this closes
+///
+/// `precheck_inbound_peer`'s `already_held` check read [`ServiceState::peers`] once, immediately
+/// after the TLS handshake; the actual admission (`negotiate_inbound_over_ws`'s `peers.insert`)
+/// happened up to ~60s later (two `INBOUND_HANDSHAKE_TIMEOUT` reads) with zero re-check and no
+/// visibility into `is_host_fallback` at all. A second fallback-identified connection arriving in
+/// that window saw an empty (or unrelated) `peers` map and was wrongly admitted too — occupying the
+/// identity before the first connection ever finished negotiating, and holding it indefinitely by
+/// answering keepalive once negotiated, refusing every later LEGITIMATE reconnect under that same
+/// identity for as long as it stayed alive.
+///
+/// # Why a separate reservation, not just an earlier `peers` insert
+///
+/// Inserting a placeholder directly into `peers` would need a new [`PeerSlot`] variant, which every
+/// existing exhaustive match over that enum would have to learn about — `peer_count`, `broadcast`,
+/// `get_connections`, the outbound-diversity scan, the departed-peer reaper, and more, across
+/// several files. None of them have any business knowing about a connection that has not finished
+/// negotiating. [`ServiceState::host_fallback_reservations`] is a small side map instead, so a
+/// VERIFIED peer's ordinary, unconditional `peers` insert (unchanged by this type, see
+/// `negotiate_inbound_over_ws`) never even consults it — it cannot be blocked by a reservation it
+/// has no way to see. A verified identity therefore always outranks an unverified reservation,
+/// which is the one property [`Self::try_promote`] exists to preserve from the OTHER direction: a
+/// fallback session must never clobber a real peer that won the identity in the meantime.
+///
+/// (A collision between a fallback identity — [`peer_id_for_host_fallback`], a `DefaultHasher` of
+/// the IP with a deliberately-zeroed byte range — and a genuine SPKI-derived `peer_id` — a full
+/// SHA-256 of certificate key material — is not a live attack surface, only a correctness case this
+/// type still handles explicitly: see `peer_id_for_host_fallback`'s doc comment for the layout that
+/// makes it astronomically unlikely.)
+///
+/// # The one rule that makes every exit path correct
+///
+/// `Drop` removes `host_fallback_reservations[peer_id]` **if and only if it is still exactly
+/// `token`** — never unconditionally. One rule, applied uniformly, covers every case with no
+/// separate "was this promoted" flag to keep in sync:
+///
+/// * **Released without promotion** (the handshake failed, timed out, or the task panicked while
+///   holding this guard — any of these is an ordinary Rust `Drop` on unwind, so no exit path is
+///   special-cased): the entry is still `token` -> removed. The identity is free again.
+/// * **Promoted** ([`Self::try_promote`] already cleared the entry under the same lock before
+///   returning): the entry is already gone -> `Drop` no-ops.
+/// * **Lost the race to a verified peer** ([`Self::try_promote`] backed off without touching the
+///   reservation map at all): the entry is still `token` -> removed, exactly as the plain "released
+///   without promotion" case, because from the reservation's own point of view that is what
+///   happened — this session never got to keep the identity.
+pub(crate) struct HostFallbackReservation {
+    state: Arc<ServiceState>,
+    peer_id: PeerId,
+    token: u64,
+}
+
+impl HostFallbackReservation {
+    /// Reserve `peer_id` for a fallback identity, atomically with the `already_held` check against
+    /// [`ServiceState::peers`] — both run under one nested lock acquisition (`peers` always taken
+    /// FIRST, then `host_fallback_reservations`; the only other site that touches both,
+    /// [`Self::try_promote`], never holds them at once, so this order can never deadlock), closing
+    /// the exact TOCTOU window described in the type docs.
+    ///
+    /// Returns `None` when the identity is already held — by a live peer ([`ServiceState::peers`],
+    /// the existing, unchanged case) or by another reservation still in flight
+    /// (`host_fallback_reservations`, the new case) — so the caller can refuse with the same
+    /// `AlreadyExists` `precheck_inbound_peer` already used to return for the first case alone.
+    pub(crate) fn reserve(state: &Arc<ServiceState>, peer_id: PeerId) -> Option<Self> {
+        let peers = state.peers.lock().ok()?;
+        let mut reservations = state.host_fallback_reservations.lock().ok()?;
+        if peers.contains_key(&peer_id) || reservations.contains_key(&peer_id) {
+            return None;
+        }
+        let token = state.next_peer_generation();
+        reservations.insert(peer_id, token);
+        Some(Self {
+            state: Arc::clone(state),
+            peer_id,
+            token,
+        })
+    }
+
+    /// Swap this reservation for the negotiated `live` slot — but ONLY if no verified peer has since
+    /// taken `peer_id` in [`ServiceState::peers`] (the one way this identity can be occupied by
+    /// someone else: a SECOND fallback attempt for the same identity would already have failed at
+    /// [`Self::reserve`], since this reservation was holding it). Runs entirely synchronously, under
+    /// one `peers` lock acquisition, so the swap (or the decision to back off) is indivisible from
+    /// any other reader/writer of `peers`.
+    ///
+    /// Returns the `LiveSlot` back, UNCONSUMED, when it backed off. The caller must
+    /// [`retire_slot`] the returned value exactly as it would any other session this node lost —
+    /// this function only decides map state; it performs no teardown itself.
+    // `LiveSlot` is large (holds a `DigLink`, an `Arc<Mutex<PeerReputation>>`, etc.) and this is the
+    // rare, cold "backed off" path — matching `connection::listener`'s own crate-level allow for the
+    // identical lint (large `Err` payloads are the intended shape here, not an oversight): the
+    // caller needs the WHOLE `LiveSlot` back to `retire_slot` it, so boxing would only move the
+    // allocation rather than remove it.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn try_promote(self, live: LiveSlot) -> Result<(), LiveSlot> {
+        let Ok(mut peers) = self.state.peers.lock() else {
+            return Err(live);
+        };
+        if peers.contains_key(&self.peer_id) {
+            return Err(live);
+        }
+        peers.insert(self.peer_id, PeerSlot::Live(live));
+        Ok(())
+        // `self` drops here either way. Its `Drop` clears `host_fallback_reservations[peer_id]`
+        // (still exactly `self.token` — nothing else could have changed it; see the type docs).
+    }
+}
+
+impl Drop for HostFallbackReservation {
+    fn drop(&mut self) {
+        let Ok(mut reservations) = self.state.host_fallback_reservations.lock() else {
+            return;
+        };
+        if reservations.get(&self.peer_id) == Some(&self.token) {
+            reservations.remove(&self.peer_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_fallback_reservation_tests {
+    //! **`dig_ecosystem#90`** — the reservation primitive's own contract, in isolation from the
+    //! TLS/WebSocket plumbing that surrounds it in `connection/listener.rs`. See that file's
+    //! `host_fallback_reservation_precheck_tests` for the observable, call-site-level regression.
+
+    use super::*;
+    use dig_peer_protocol::{LinkOptions, NodeType};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream};
+
+    fn test_state() -> Arc<ServiceState> {
+        let tls = ChiaCertificate::generate().expect("chia-ssl cert");
+        Arc::new(ServiceState::new(GossipConfig::default(), tls).expect("ServiceState::new"))
+    }
+
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    /// A real (but otherwise unused) loopback `DigLink` — `LiveSlot::peer` has no lighter-weight
+    /// constructor, so this borrows the same technique `connection::keepalive::tests::link_pair`
+    /// already uses: a genuine WebSocket handshake over loopback TCP, discarding the far side.
+    async fn dummy_live_diglink() -> DigLink {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local_addr");
+        let server = async {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            let ws = accept_async(MaybeTlsStream::Plain(tcp))
+                .await
+                .expect("ws accept");
+            DigLink::from_websocket(ws, LinkOptions::default()).expect("server link")
+        };
+        let client = async {
+            let url = format!("ws://127.0.0.1:{}/", addr.port());
+            let (ws, _) = connect_async(url.as_str()).await.expect("ws connect");
+            DigLink::from_websocket(ws, LinkOptions::default()).expect("client link")
+        };
+        let ((server_link, _server_rx), (_client_link, _client_rx)) = tokio::join!(server, client);
+        server_link
+    }
+
+    async fn dummy_live_slot(state: &ServiceState, remote: SocketAddr) -> LiveSlot {
+        LiveSlot {
+            meta: StubPeer {
+                remote,
+                node_type: NodeType::FullNode,
+                is_outbound: false,
+            },
+            peer: dummy_live_diglink().await,
+            remote_protocol_version: "test".to_string(),
+            remote_software_version_sanitized: "test".to_string(),
+            reputation: Arc::new(Mutex::new(
+                crate::types::reputation::PeerReputation::default(),
+            )),
+            inbound_rate_limiter: Arc::new(Mutex::new(
+                crate::connection::inbound_limits::new_inbound_rate_limiter(1.0),
+            )),
+            traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(0))),
+            generation: state.next_peer_generation(),
+            keepalive_task: tokio::spawn(std::future::pending::<()>()).abort_handle(),
+        }
+    }
+
+    /// **The core property:** a second reservation attempt for the SAME identity, while the first
+    /// is still outstanding, is refused — even though `peers` is (and stays) completely empty. This
+    /// is exactly the window the pre-fix code left unguarded: it only ever consulted `peers`.
+    #[test]
+    fn a_second_reservation_for_the_same_identity_is_refused() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(addr(4001));
+
+        let first = HostFallbackReservation::reserve(&state, peer_id);
+        assert!(first.is_some(), "the first reservation must succeed");
+        assert!(
+            state.peers.lock().unwrap().is_empty(),
+            "a reservation must not itself occupy `peers`"
+        );
+
+        let second = HostFallbackReservation::reserve(&state, peer_id);
+        assert!(
+            second.is_none(),
+            "a second reservation for the SAME identity must be refused while the first is \
+             outstanding, or two fallback sessions could both proceed to negotiate under one \
+             identity"
+        );
+    }
+
+    /// A reservation is a TEMPORARY hold: dropping it without promoting frees the identity for a
+    /// new attempt (models a handshake failing, timing out, or the holding task panicking — `Drop`
+    /// does not distinguish those from an ordinary release).
+    #[test]
+    fn dropping_a_reservation_frees_the_identity() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(addr(4002));
+
+        let first = HostFallbackReservation::reserve(&state, peer_id).expect("first reservation");
+        drop(first);
+
+        assert!(
+            HostFallbackReservation::reserve(&state, peer_id).is_some(),
+            "releasing the first reservation must free the identity for a new attempt — a \
+             reservation must never become a permanent, self-inflicted lock"
+        );
+    }
+
+    /// A reservation refuses against a pre-existing `Live` (or `Stub`) incumbent exactly as
+    /// `precheck_inbound_peer`'s ORIGINAL check did — the new reservation map is additive, it does
+    /// not loosen the existing `peers`-based refusal.
+    #[test]
+    fn reservation_still_refused_against_an_existing_incumbent() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(addr(4003));
+
+        state.peers.lock().unwrap().insert(
+            peer_id,
+            PeerSlot::Stub(StubPeer {
+                remote: addr(4003),
+                node_type: NodeType::FullNode,
+                is_outbound: false,
+            }),
+        );
+
+        assert!(
+            HostFallbackReservation::reserve(&state, peer_id).is_none(),
+            "an existing (even test-stub) incumbent must still block a fallback reservation"
+        );
+    }
+
+    /// **Promotion, the expected path:** nothing else touched the identity, so `try_promote` installs
+    /// the real `Live` slot and releases the bookkeeping reservation in the same step.
+    #[tokio::test]
+    async fn try_promote_installs_the_live_slot_when_uncontested() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(addr(4004));
+
+        let reservation = HostFallbackReservation::reserve(&state, peer_id).expect("reserve");
+        let live = dummy_live_slot(&state, addr(4004)).await;
+
+        reservation
+            .try_promote(live)
+            .expect("promotion must succeed when nothing else touched the identity");
+
+        assert!(
+            matches!(
+                state.peers.lock().unwrap().get(&peer_id),
+                Some(PeerSlot::Live(_))
+            ),
+            "the identity must now hold the promoted Live slot"
+        );
+
+        // A brand-new reservation attempt now correctly fails via the ORIGINAL `peers` check (the
+        // identity is Live), proving the bookkeeping reservation itself was released, not merely
+        // shadowed by the Live slot.
+        assert!(
+            HostFallbackReservation::reserve(&state, peer_id).is_none(),
+            "the identity is occupied by the promoted Live slot"
+        );
+    }
+
+    /// **Requirement: a verified peer always outranks an unverified reservation.** If a real
+    /// (verified) connection has already taken `peer_id` in `peers` by the time this fallback
+    /// session finishes negotiating, `try_promote` must back off rather than clobber it — handing
+    /// the `LiveSlot` back so the caller can retire it, exactly like losing to any other incumbent.
+    #[tokio::test]
+    async fn try_promote_backs_off_when_a_verified_peer_already_won_the_identity() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(addr(4005));
+
+        let reservation = HostFallbackReservation::reserve(&state, peer_id).expect("reserve");
+
+        // Simulate a verified peer's ordinary, reservation-oblivious `peers` insert landing first —
+        // `negotiate_inbound_over_ws`'s verified path never even locks `host_fallback_reservations`,
+        // so this is exactly what that path does today, unmodified by this fix.
+        state.peers.lock().unwrap().insert(
+            peer_id,
+            PeerSlot::Stub(StubPeer {
+                remote: addr(4005),
+                node_type: NodeType::FullNode,
+                is_outbound: false,
+            }),
+        );
+
+        let live = dummy_live_slot(&state, addr(4005)).await;
+        let outcome = reservation.try_promote(live);
+        assert!(
+            outcome.is_err(),
+            "try_promote must back off, not overwrite, when the identity was won by someone else"
+        );
+        let _ = outcome.expect_err("checked above").peer.close().await;
+
+        assert!(
+            matches!(
+                state.peers.lock().unwrap().get(&peer_id),
+                Some(PeerSlot::Stub(_))
+            ),
+            "the winning (verified-path-shaped) slot must be UNTOUCHED by the losing fallback session"
+        );
+    }
+}
+
 impl ServiceState {
     /// Construct a fresh `ServiceState` in the `LC_CONSTRUCTED` lifecycle phase.
     ///
@@ -1039,6 +1386,7 @@ impl ServiceState {
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             host_fallback_identity_uses: AtomicU64::new(0),
+            host_fallback_reservations: Mutex::new(HashMap::new()),
             total_connections: AtomicU64::new(0),
             peer_generation: AtomicU64::new(0),
             total_peers_received: AtomicU64::new(0),
