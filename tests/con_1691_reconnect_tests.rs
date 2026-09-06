@@ -457,8 +457,7 @@ async fn reconnect_on_the_address_fallback_is_refused_not_superseded() {
 
     let after = server_h.__peer_ids_for_tests();
     assert_eq!(
-        after,
-        first,
+        after, first,
         "the original slot must be UNCHANGED -- same single entry, not superseded, not \
          duplicated -- the refused newcomer never got far enough to touch the peer map"
     );
