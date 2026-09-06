@@ -21,7 +21,7 @@
 
 [package]
 name = "dig-gossip"
-version = "0.32.2"
+version = "0.33.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Peer-to-peer networking and gossip for the DIG Network L2 blockchain"
@@ -271,7 +271,16 @@ rustls-pki-types = "1"
 # Self dev-dependency: enables the `test-util` feature for the crate's own test/doctest builds so
 # the cfg-gated test hooks (e.g. `__connect_stub_peer_with_direction`) are compiled for integration
 # tests WITHOUT leaking into the production library. Standard Cargo idiom for test-only lib features.
-dig-gossip = { path = ".", features = ["test-util"] }
+#
+# `default-features = false` (`dig_ecosystem#2756`): without it, this edge implicitly unions in
+# `default` (which includes `native-tls`) into EVERY build that touches a test/dev target,
+# regardless of what `--features`/`--no-default-features` the outer `cargo` invocation asked for —
+# so a `cargo clippy --all-targets --no-default-features --features rustls,...` still silently
+# carried native-tls along for the ride, tripping the native-tls+rustls exclusivity guard in
+# `src/lib.rs` on a command line that never asked for native-tls at all. This is also why the
+# `rustls-tests` CI job below uses `--lib` only rather than `--all-targets`: `--lib` never touches
+# dev-dependencies, so it never hit this edge.
+dig-gossip = { path = ".", default-features = false, features = ["test-util"] }
 
 [features]
 # STR-004 / SPEC Section 10.3 — production-shaped defaults (Tor remains opt-in via `tor`).
