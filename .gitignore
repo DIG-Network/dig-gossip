@@ -38,7 +38,6 @@ docs/prompt/chat.md
 # development-loop private and must never be tracked here.
 # CLAUDE.md is intentionally NOT ignored: this repo authors its own. Always run
 # `gitnexus analyze --skip-agents-md` here, or it re-injects its section into it.
-# See DIG-Network/dig_ecosystem#3177.
 /AGENTS.md
 /.claude/skills/gitnexus/
 /.claude/skills/generated/
