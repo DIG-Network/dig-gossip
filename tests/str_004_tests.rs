@@ -18,7 +18,14 @@
 //! 3. **`compact-blocks` wiring** — Uses Cargo 2.x style `dep:siphasher` (equivalent to legacy
 //!    optional-dep activation).
 //! 4. **Compile-matrix contract** — Shell `cargo check` invocations prove minimal TLS-only graphs,
-//!    rustls-only, per-feature toggles, `tor`, and `--all-features` all resolve on CI.
+//!    rustls-only, per-feature toggles, and `tor` all resolve on CI. `dig_ecosystem#2756`:
+//!    `native-tls` and `rustls` are ALTERNATIVE backends, never a pair — `--all-features` and the
+//!    bare `native-tls,rustls` combination both MUST fail to compile (the crate-level
+//!    `compile_error!` in `src/lib.rs`), not silently resolve to whichever backend one of the two
+//!    ambiguous call sites happens to prefer. (The third, neither-backend-enabled configuration
+//!    was found to have its own pre-existing, unrelated compile errors — see the note above
+//!    `test_check_native_tls_only_still_compiles_at_the_boundary` — and is deliberately NOT
+//!    asserted here.)
 //! 5. **Source-level cfg anchors** — `src/lib.rs`, `src/gossip/mod.rs`, and `src/privacy/mod.rs`
 //!    contain the `#[cfg(feature = …)]` patterns STR-004 calls out so optional code is not pulled
 //!    into unrelated builds.
@@ -86,6 +93,34 @@ fn assert_cargo_check(args: &[&str]) {
         args,
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// Run `cargo check` with the given extra arguments and assert it FAILS to compile, with
+/// `stderr` containing `expected_substring`.
+///
+/// Used by the TLS-exclusivity tests (`dig_ecosystem#2756`) to prove the crate-level
+/// `compile_error!` in `src/lib.rs` actually fires for the invalid feature combination, rather
+/// than merely asserting the combination is undocumented. Pins the failure to OUR message
+/// (not just "compilation failed for some reason"), so a regression that deletes the guard but
+/// leaves some OTHER unrelated error in place would still be caught.
+fn assert_cargo_check_fails(args: &[&str], expected_substring: &str) {
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(workspace_root());
+    cmd.arg("check");
+    cmd.args(args);
+    let out = cmd.output().expect("spawn cargo check");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "cargo check {args:?} was expected to FAIL (native-tls + rustls both enabled) but \
+         succeeded:\n{}\n{stderr}",
+        String::from_utf8_lossy(&out.stdout),
+    );
+    assert!(
+        stderr.contains(expected_substring),
+        "cargo check {args:?} failed, but not with the expected TLS-exclusivity message.\n\
+         expected substring: {expected_substring:?}\ngot stderr:\n{stderr}",
     );
 }
 
@@ -416,14 +451,64 @@ fn test_check_native_tls_tor() {
     assert_cargo_check(&["--no-default-features", "--features", "native-tls,tor"]);
 }
 
-/// **Row:** `test_check_all_features` -- every feature enabled simultaneously.
+/// **Row:** `test_check_all_features_rejects_conflicting_tls_backends` -- `dig_ecosystem#2756`.
 ///
-/// The superset build MUST compile without conflicts. This catches any mutual
-/// exclusion bugs between features (e.g. `native-tls` + `rustls` coexistence,
-/// `tor` + `dandelion` both enabling `privacy` module).
+/// `--all-features` enables BOTH `native-tls` and `rustls` at once, which are alternative TLS
+/// backends, never a pair (STR-004 "TLS Backend Selection"): `tls_connector_for_cert` (outbound)
+/// prefers native-tls when both are on, `accept_loop` (inbound) prefers rustls, silently and
+/// independently. A build that let this combination compile would dial out over one backend and
+/// accept inbound over the other in the same process. The crate-level `compile_error!` in
+/// `src/lib.rs` MUST reject it, not silently resolve to whichever call site wins.
+///
+/// This is the exact command a contributor reaches for out of habit, and the exact command the
+/// prior `cargo doc --all-features` / `cargo clippy --all-features` CI steps used to run — both
+/// are now split into per-backend legs in `ci.yml` for the same reason this must fail here.
 #[test]
-fn test_check_all_features() {
-    assert_cargo_check(&["--all-features"]);
+fn test_check_all_features_rejects_conflicting_tls_backends() {
+    assert_cargo_check_fails(&["--all-features"], "MUST NOT be enabled together");
+}
+
+/// **Row:** `test_check_native_tls_and_rustls_together_fails` -- the NARROW form of the test
+/// above, isolating the TLS pair from every other feature (`dig_ecosystem#2756`).
+///
+/// `--all-features` also enables `tor`, `relay`, `erlay`, `compact-blocks` and `dandelion`; a
+/// guard mistakenly keyed on the wrong feature pair (e.g. `tor` + `rustls`) would still fail this
+/// broader combination and read as correct. Enabling ONLY the two TLS backends together — none
+/// of the others — proves the `compile_error!` is keyed on `native-tls` + `rustls` specifically.
+#[test]
+fn test_check_native_tls_and_rustls_together_fails() {
+    assert_cargo_check_fails(
+        &["--no-default-features", "--features", "native-tls,rustls"],
+        "MUST NOT be enabled together",
+    );
+}
+
+// NOTE on the third configuration (neither TLS backend enabled): `src/discovery/node_discovery.rs`
+// and `src/service/gossip_service.rs` each carry a
+// `#[cfg(not(any(feature = "native-tls", feature = "rustls")))]` arm intended for API-001/API-002
+// unit tests that exercise config/lifecycle without a real TLS listener. `dig_ecosystem#2756`
+// tried adding `cargo check --no-default-features` as a fourth matrix leg here and found it does
+// NOT currently compile: `dig_peer_protocol::{Client, ClientState}` are feature-gated out,
+// `outbound::tls_connector_for_cert` / `connect_outbound_peer` are called unconditionally from
+// `gossip_handle.rs` with no matching cfg-guard at the call site, and
+// `IntroducerClient::query_peers` / `register_with_introducer` do not exist anywhere in the crate
+// (`IntroducerClient` is presently just `pub struct IntroducerClient;`). This is a real,
+// pre-existing, multi-file defect independent of the TLS-exclusivity fix in this file — tracked
+// separately (see the crate's own issue tracker) rather than fixed here, to keep this PR scoped
+// to #2756/#2709. Do not add a test asserting this configuration compiles until that lands.
+
+/// **Row:** `test_check_native_tls_only_still_compiles_at_the_boundary` -- `dig_ecosystem#2756`
+/// at-bound control.
+///
+/// Pairs with the two failing tests above: `native-tls` ALONE (already asserted by
+/// `test_check_native_tls_only_minimal_graph`) and `rustls` ALONE
+/// (`test_check_rustls_only_minimal_graph`) must each still compile cleanly — the guard rejects
+/// the PAIR, never a single backend. Restated here, colocated with the exclusivity tests, so a
+/// reader does not have to trust that the two pre-existing tests above still hold.
+#[test]
+fn test_check_native_tls_only_still_compiles_at_the_boundary() {
+    assert_cargo_check(&["--no-default-features", "--features", "native-tls"]);
+    assert_cargo_check(&["--no-default-features", "--features", "rustls"]);
 }
 
 // ---- Optional symbol smoke (proves gated re-exports resolve when features on) ----

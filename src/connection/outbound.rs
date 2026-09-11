@@ -93,8 +93,9 @@ pub struct OutboundConnectResult {
 /// authentication. This connector is passed to `connect_peer()`."
 /// SPEC §1.5 #3 — TLS mutual authentication via `chia-ssl`.
 ///
-/// **Feature gating:** matches dig-gossip STR-004 — prefer `native-tls` when both features are
-/// enabled (default CI graph).
+/// **Feature gating:** matches dig-gossip STR-004 — `native-tls` and `rustls` are alternative
+/// backends, never both at once; the crate-level `compile_error!` in `lib.rs` rejects a build
+/// enabling both, so this function is never asked to choose between them at runtime.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
 pub(crate) fn tls_connector_for_cert(cert: &ChiaCertificate) -> Result<Connector, ClientError> {
     #[cfg(feature = "native-tls")]

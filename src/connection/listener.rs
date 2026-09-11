@@ -46,8 +46,10 @@
 //!   **vendored** [`native-tls`](../../../vendor/native-tls/README.dig-gossip.md) fork that sets
 //!   `CERT_REQUIRED` + Chia CA trust (Chia `server.py:67`). **Windows (SChannel)** and **macOS
 //!   (SecureTransport)** often hide the peer leaf from `peer_certificate()` even for legitimate
-//!   mutual TLS sessions, so we retain a **fallback** to [`peer_id_for_addr`] there (CON-002 / dev
-//!   ergonomics) while OpenSSL-backed production Linux gets strict SPKI binding.
+//!   mutual TLS sessions, so we retain a **fallback** to [`peer_id_for_host_fallback`] there
+//!   (CON-002 / dev ergonomics) while OpenSSL-backed production Linux gets strict SPKI binding.
+//!   `dig_ecosystem#2709`: the fallback hashes the remote IP only, never the ephemeral source
+//!   port — see that function's doc comment for the full rationale and its residual weakness.
 //!
 //! ## `software_version` sanitization (CON-003 / CON-008)
 //!
@@ -101,8 +103,9 @@ use crate::connection::outbound::network_id_handshake_string;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use crate::connection::outbound::spki_der_from_leaf_cert_der;
 use crate::service::state::{
-    apply_inbound_rate_limit_violation, peer_id_for_addr, record_live_peer_inbound_bytes,
-    record_live_peer_outbound_bytes, LiveSlot, PeerSlot, ServiceState, StubPeer,
+    apply_inbound_rate_limit_violation, peer_id_for_host_fallback, record_live_peer_inbound_bytes,
+    record_live_peer_outbound_bytes, retire_slot, HostFallbackReservation, LiveSlot, PeerSlot,
+    ServiceState, StubPeer,
 };
 use crate::types::peer::{
     message_wire_len, metric_unix_timestamp_secs, peer_id_from_tls_spki_der,
@@ -119,6 +122,24 @@ use crate::types::peer::{
 /// but never completes the application-level handshake, tying up a slot in
 /// [`ServiceState::peers`](crate::service::state::ServiceState).
 const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Upper bound on how long a fallback-identity [`HostFallbackReservation`] may be held between
+/// `precheck_inbound_peer` creating it and `negotiate_inbound_over_ws` promoting or abandoning it —
+/// **`dig_ecosystem#90`**.
+///
+/// Covers the WebSocket upgrade (`accept_async_with_config`, which carries no timeout of its own)
+/// *plus* both [`INBOUND_HANDSHAKE_TIMEOUT`]-bounded reads inside `negotiate_inbound_over_ws`.
+/// Without this, a fallback-identified peer that simply never completed the WebSocket upgrade could
+/// hold its reservation open indefinitely — trading the ORIGINAL defect (an attacker occupying a
+/// *live* slot, at least bounded by `PEER_TIMEOUT_SECS` once negotiated) for a strictly worse one (an
+/// attacker occupying a *reservation* with no bound at all, requiring no completed negotiation).
+/// Applied only when a reservation exists: a verified peer's stall has no reservation to hold open,
+/// so it is unaffected (it still ties up one `inflight_handshakes` permit, exactly as it does today —
+/// a pre-existing, unrelated cost this fix does not change).
+///
+/// Generous relative to `2 * INBOUND_HANDSHAKE_TIMEOUT` (60s) to leave slack for the WS upgrade and
+/// the address-manager/relay bookkeeping in between, which are ordinarily sub-second.
+const HOST_FALLBACK_RESERVATION_TIMEOUT: Duration = Duration::from_secs(75);
 
 // ---------------------------------------------------------------------------
 // Inbound TLS (`native_tls::TlsAcceptor`) — used for **both** `native-tls` and `rustls` features.
@@ -196,8 +217,9 @@ fn native_tls_acceptor(cert: &ChiaCertificate) -> Result<TokioNativeTlsAcceptor,
 /// # Errors
 ///
 /// - [`ClientError::MissingHandshake`] — the remote did not present a client certificate, or the
-///   OS TLS stack cannot expose it. On **Windows** the caller may fall back to [`peer_id_for_addr`]
-///   (see [`handle_inbound_native_inner`]); on **OpenSSL** backends anonymous clients fail earlier.
+///   OS TLS stack cannot expose it. On **Windows** the caller may fall back to
+///   [`peer_id_for_host_fallback`] (see [`handle_inbound_native_inner`]); on **OpenSSL** backends
+///   anonymous clients fail earlier.
 /// - [`ClientError::Io`] — the leaf cert DER could not be extracted or parsed.
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 fn remote_spki_from_native_tls_stream(
@@ -271,11 +293,33 @@ async fn handle_inbound_native(
 /// The map keeps exactly one slot per `peer_id` (`HashMap::insert` replaces, never grows), so it
 /// stays bounded by the count of distinct authenticated identities even under reconnect churn.
 ///
+/// **This safety argument does NOT extend to a [`peer_id_for_host_fallback`]-derived identity**
+/// (`dig_ecosystem#2709`, Windows SChannel / macOS SecureTransport hiding the peer leaf): that
+/// value proves nothing about key ownership, so treating a collision there as "the same
+/// authenticated peer reconnecting" would let ANY second, unauthenticated connection from the
+/// same host evict an existing incumbent with zero proof it is the same peer. `is_host_fallback`
+/// below is how the caller tells this function which case applies; see its refusal branch.
+///
+/// # The reservation this function hands back (`dig_ecosystem#90`)
+///
+/// For a fallback identity, refusing here alone is not enough: this check runs once, right after
+/// the TLS handshake, while the actual admission (`negotiate_inbound_over_ws`'s `peers` insert)
+/// happens up to ~60s later. A [`HostFallbackReservation`] closes that window — see its own docs
+/// for the full defect and the fix. The caller MUST hold the returned guard until the connection
+/// either negotiates successfully (pass it to `negotiate_inbound_over_ws`, which promotes or
+/// abandons it) or fails for any other reason (dropping it releases the identity). The VERIFIED
+/// path returns `Ok(None)`: no reservation exists or is needed, because a verified `peer_id` cannot
+/// be raced by a third party lacking its private key (see the newest-wins argument above).
+///
 /// # Errors
 ///
 /// Returns [`ClientError::Io`] with a specific `ErrorKind` for each rejection reason.
 #[cfg(any(feature = "native-tls", feature = "rustls"))]
-async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<(), ClientError> {
+async fn precheck_inbound_peer(
+    state: &Arc<ServiceState>,
+    peer_id: PeerId,
+    is_host_fallback: bool,
+) -> Result<Option<HostFallbackReservation>, ClientError> {
     // Self-connection guard — Chia `full_node_server.py` drops connections to self.
     if peer_id == state.config.peer_id {
         return Err(ClientError::Io(std::io::Error::new(
@@ -305,9 +349,60 @@ async fn precheck_inbound_peer(state: &ServiceState, peer_id: PeerId) -> Result<
         )));
     }
 
-    // No duplicate-PeerId reject: a restarted peer must be able to reconnect (#1691). The stale slot
-    // is superseded at insert time under the mTLS-gated newest-wins policy documented above.
-    Ok(())
+    // `dig_ecosystem#2709` / `#90`: a fallback (host-only, UNVERIFIED) identity must never be
+    // treated as "the same authenticated peer reconnecting" for supersede purposes -- that is
+    // precisely the property `negotiate_inbound_over_ws`'s insert doc claims universally and which
+    // only holds for an SPKI-verified `peer_id`. Reserve the identity rather than admit-and-
+    // supersede: the incumbent (a live peer OR another in-flight reservation) keeps its hold
+    // untouched until it is naturally released (CON-004 keepalive failure for a live peer; `Drop`
+    // for a reservation whose connection never finished negotiating), and the new connection is
+    // free to retry once that happens. This is the conservative choice named in the ticket
+    // ("prefer whichever keeps a ban enforceable") taken one step further -- a ban being
+    // enforceable and an incumbent being un-evictable by an unauthenticated latecomer are the same
+    // shape of guarantee, applied across the two maps this identity's admission now touches.
+    if is_host_fallback {
+        return match HostFallbackReservation::reserve(state, peer_id) {
+            Some(reservation) => Ok(Some(reservation)),
+            None => Err(ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "inbound fallback identity already holds a live slot or an in-flight \
+                 reservation; refusing rather than superseding it without certificate \
+                 verification (dig_ecosystem#2709, dig_ecosystem#90)",
+            ))),
+        };
+    }
+
+    // No duplicate-PeerId reject for the VERIFIED (non-fallback) case: a restarted peer must be
+    // able to reconnect (#1691). The stale slot is superseded at insert time under the
+    // mTLS-gated newest-wins policy documented above.
+    Ok(None)
+}
+
+/// Run the remainder of an inbound connection's setup (WebSocket upgrade + Chia handshake
+/// negotiation), bounded by [`HOST_FALLBACK_RESERVATION_TIMEOUT`] exactly when `has_reservation` is
+/// `true` — see that constant's docs for why an unbounded wait here would reopen the
+/// `dig_ecosystem#90` gate finding one step earlier than the original defect. A verified connection
+/// (no reservation to hold open) runs unbounded, exactly as before this fix — its worst case is
+/// still tying up one `inflight_handshakes` permit, a pre-existing cost this function does not change.
+async fn run_bounded_by_reservation<F>(
+    has_reservation: bool,
+    remaining: F,
+) -> Result<(), ClientError>
+where
+    F: std::future::Future<Output = Result<(), ClientError>>,
+{
+    if !has_reservation {
+        return remaining.await;
+    }
+    tokio::time::timeout(HOST_FALLBACK_RESERVATION_TIMEOUT, remaining)
+        .await
+        .unwrap_or_else(|_elapsed| {
+            Err(ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "inbound fallback-identity reservation exceeded its deadline before negotiation \
+                 finished (dig_ecosystem#90)",
+            )))
+        })
 }
 
 /// Top-level wrapper for a single inbound connection attempt using the **rustls** acceptor (#1371).
@@ -360,35 +455,52 @@ async fn handle_inbound_rustls_inner(
 
     // Step 2: Derive PeerId from the captured client SPKI (CON-009 / API-005). rustls requires the
     // client cert, so a missing SPKI here is unexpected. On Windows/macOS keep the historical
-    // `peer_id_for_addr` dev fallback (parity with the native-tls path) so local development is not
-    // regressed; OpenSSL/Linux — the production target — always has the strict SPKI binding.
-    let peer_id = match crate::connection::rustls_inbound::remote_spki_from_rustls_stream(&tls) {
-        Ok(spki) => peer_id_from_tls_spki_der(&spki),
-        Err(e) => {
-            if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
-                tracing::warn!(
-                    target: "dig_gossip::listener",
-                    "no remote TLS leaf cert after rustls accept; using peer_id_for_addr fallback: {e}"
-                );
-                peer_id_for_addr(remote_addr)
-            } else {
-                return Err(e);
+    // dev fallback (parity with the native-tls path) so local development is not regressed;
+    // OpenSSL/Linux — the production target — always has the strict SPKI binding.
+    //
+    // `dig_ecosystem#2709`: the fallback is `peer_id_for_host_fallback`, NOT `peer_id_for_addr` —
+    // the latter hashes the ephemeral source PORT too, which made a ban evadable by reconnecting.
+    let (peer_id, peer_id_is_host_fallback) =
+        match crate::connection::rustls_inbound::remote_spki_from_rustls_stream(&tls) {
+            Ok(spki) => (peer_id_from_tls_spki_der(&spki), false),
+            Err(e) => {
+                if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
+                    state
+                        .host_fallback_identity_uses
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        target: "dig_gossip::listener",
+                        "no remote TLS leaf cert after rustls accept; using peer_id_for_host_fallback: {e}"
+                    );
+                    (peer_id_for_host_fallback(remote_addr), true)
+                } else {
+                    return Err(e);
+                }
             }
-        }
-    };
+        };
 
-    // Steps 3-4: self / ban guards (shared with the rustls path); reconnect uses newest-wins (#1691).
-    precheck_inbound_peer(&state, peer_id).await?;
+    // Steps 3-4: self / ban guards (shared with the rustls path); reconnect uses newest-wins (#1691)
+    // for a VERIFIED identity only -- a fallback identity gets a `HostFallbackReservation` instead
+    // of an unconditional admission (dig_ecosystem#2709 / #90, see `precheck_inbound_peer`'s doc
+    // comment).
+    let reservation = precheck_inbound_peer(&state, peer_id, peer_id_is_host_fallback).await?;
+    let has_reservation = reservation.is_some();
 
-    // Step 6: WebSocket upgrade over the server rustls stream. The server-side stream cannot inhabit
-    // the `#[non_exhaustive]` client `MaybeTlsStream`, so we hand the raw stream to `accept_async`
-    // and later build the `DigLink` via `DigLink::from_server_websocket` (see `negotiate_inbound_over_ws`).
-    let ws = accept_async_with_config(tls, Some(crate::connection::ws_config()))
-        .await
-        .map_err(ws_err)?;
-
-    // Step 7: Chia handshake negotiation, address-manager registration, peer insertion.
-    negotiate_inbound_over_ws(state, remote_addr, ws, peer_id).await
+    // Steps 6-7: WebSocket upgrade over the server rustls stream, then Chia handshake negotiation +
+    // address-manager registration + peer insertion — wrapped in one future so
+    // `run_bounded_by_reservation` can bound BOTH under the same reservation deadline (dig_ecosystem
+    // #90): the WS upgrade carries no timeout of its own, and a reservation must not be held open
+    // indefinitely by a peer that stalls there instead of at the Chia handshake. The server-side
+    // rustls stream cannot inhabit the `#[non_exhaustive]` client `MaybeTlsStream`, so we hand the
+    // raw stream to `accept_async` and later build the `DigLink` via `DigLink::from_server_websocket`
+    // (see `negotiate_inbound_over_ws`).
+    run_bounded_by_reservation(has_reservation, async move {
+        let ws = accept_async_with_config(tls, Some(crate::connection::ws_config()))
+            .await
+            .map_err(ws_err)?;
+        negotiate_inbound_over_ws(state, remote_addr, ws, peer_id, reservation).await
+    })
+    .await
 }
 
 /// Inner implementation of the inbound connection pipeline using `native_tls`.
@@ -397,7 +509,7 @@ async fn handle_inbound_rustls_inner(
 ///
 /// 1. **TLS accept** — negotiate server-side TLS with the node's [`ChiaCertificate`].
 /// 2. **SPKI extraction** — read the remote peer's leaf certificate to derive [`PeerId`] (CON-009).
-///    Windows-only: may fall back to [`peer_id_for_addr`] when SChannel hides the leaf.
+///    Windows-only: may fall back to [`peer_id_for_host_fallback`] when SChannel hides the leaf.
 /// 3. **Self-connection guard** — reject if the derived `peer_id` matches our own
 ///    [`GossipConfig::peer_id`](crate::types::config::GossipConfig::peer_id).
 /// 4. **Ban check** — reject peers in the [`ServiceState::banned`] set.
@@ -431,38 +543,52 @@ async fn handle_inbound_native_inner(
     //
     // **OpenSSL (Linux, etc.):** vendored `native-tls` requires a client cert; missing SPKI after
     // a successful accept is unexpected. **Windows (SChannel):** `peer_certificate()` may be
-    // `None` even for legitimate Chia peers — keep the historical `peer_id_for_addr` fallback so
-    // CON-002 integration tests and developer laptops keep working (see module TLS note above).
-    let peer_id = match remote_spki_from_native_tls_stream(&tls) {
-        Ok(spki) => peer_id_from_tls_spki_der(&spki),
+    // `None` even for legitimate Chia peers — keep the historical dev fallback so CON-002
+    // integration tests and developer laptops keep working (see module TLS note above).
+    //
+    // `dig_ecosystem#2709`: the fallback is `peer_id_for_host_fallback`, NOT `peer_id_for_addr` —
+    // the latter hashes the ephemeral source PORT too, which made a ban evadable by reconnecting.
+    let (peer_id, peer_id_is_host_fallback) = match remote_spki_from_native_tls_stream(&tls) {
+        Ok(spki) => (peer_id_from_tls_spki_der(&spki), false),
         Err(e) => {
             if cfg!(target_os = "windows") || cfg!(target_vendor = "apple") {
+                state
+                    .host_fallback_identity_uses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(
                     target: "dig_gossip::listener",
-                    "no remote TLS leaf cert after accept (non-OpenSSL native-tls); using peer_id_for_addr fallback: {e}"
+                    "no remote TLS leaf cert after accept (non-OpenSSL native-tls); using peer_id_for_host_fallback: {e}"
                 );
-                peer_id_for_addr(remote_addr)
+                (peer_id_for_host_fallback(remote_addr), true)
             } else {
                 return Err(e);
             }
         }
     };
 
-    // Steps 3-4: self / ban guards (shared with the native-tls path); reconnect uses newest-wins (#1691).
-    precheck_inbound_peer(&state, peer_id).await?;
+    // Steps 3-4: self / ban guards (shared with the native-tls path); reconnect uses newest-wins
+    // (#1691) for a VERIFIED identity only -- a fallback identity gets a `HostFallbackReservation`
+    // instead of an unconditional admission (dig_ecosystem#2709 / #90, see `precheck_inbound_peer`'s
+    // doc comment).
+    let reservation = precheck_inbound_peer(&state, peer_id, peer_id_is_host_fallback).await?;
+    let has_reservation = reservation.is_some();
 
-    // Step 6: WebSocket upgrade over the now-established TLS stream.
-    // We wrap the `native_tls` stream in `MaybeTlsStream::NativeTls` so the type matches
-    // what `DigLink::from_websocket` expects downstream.
-    let ws = accept_async_with_config(
-        MaybeTlsStream::NativeTls(tls),
-        Some(crate::connection::ws_config()),
-    )
+    // Steps 6-7: WebSocket upgrade over the now-established TLS stream, then Chia handshake
+    // negotiation + address-manager registration + peer insertion — wrapped in one future so
+    // `run_bounded_by_reservation` can bound BOTH under the same reservation deadline
+    // (dig_ecosystem#90; see that function's docs). We wrap the `native_tls` stream in
+    // `MaybeTlsStream::NativeTls` so the type matches what `DigLink::from_websocket` expects
+    // downstream.
+    run_bounded_by_reservation(has_reservation, async move {
+        let ws = accept_async_with_config(
+            MaybeTlsStream::NativeTls(tls),
+            Some(crate::connection::ws_config()),
+        )
+        .await
+        .map_err(ws_err)?;
+        negotiate_inbound_over_ws(state, remote_addr, ws, peer_id, reservation).await
+    })
     .await
-    .map_err(ws_err)?;
-
-    // Step 7: Chia handshake negotiation, address-manager registration, peer insertion.
-    negotiate_inbound_over_ws(state, remote_addr, ws, peer_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -646,16 +772,23 @@ where
 /// - `remote_addr` — the peer's TCP socket address.
 /// - `ws` — the WebSocket stream (already TLS-upgraded).
 /// - `peer_id` — the [`PeerId`] derived from the remote's TLS certificate SPKI.
+/// - `reservation` — `Some` iff `peer_id` is a fallback (unverified) identity, carrying the
+///   [`HostFallbackReservation`] [`precheck_inbound_peer`] created for it (`dig_ecosystem#90`).
+///   `None` for a verified `peer_id`, which needs no reservation (see that function's docs).
 ///
 /// # Errors
 ///
-/// Returns [`ClientError`] for handshake timeouts, validation failures, or WebSocket errors.
-/// The peer map is not modified if this function returns `Err`.
+/// Returns [`ClientError`] for handshake timeouts, validation failures, WebSocket errors, or —
+/// fallback identities only — losing the identity to a verified peer that connected first (see
+/// [`HostFallbackReservation::try_promote`]). The peer map is not modified if this function returns
+/// `Err`, EXCEPT that in the last case a verified peer's slot (which this session lost to) is left
+/// exactly as that peer installed it.
 async fn negotiate_inbound_over_ws<S>(
     state: Arc<ServiceState>,
     remote_addr: SocketAddr,
     mut ws: WebSocketStream<S>,
     peer_id: PeerId,
+    reservation: Option<HostFallbackReservation>,
 ) -> Result<(), ClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -802,44 +935,67 @@ where
         peer_for_keepalive.clone(),
     );
 
-    // Newest-wins (#1691): a same-`peer_id` reconnect supersedes any stale slot. `HashMap::insert`
-    // returns the prior slot (if any) — one slot per identity, so the map never grows on reconnect.
-    // The `peer_id` was authenticated by the completed mTLS handshake, so only the genuine
-    // key-holder can reach this replacement (see `precheck_inbound_peer`). The guard is scoped to
-    // this block so it is released before the `await` below (the std `MutexGuard` is not `Send`).
-    let superseded = {
-        let mut peers = state
-            .peers
-            .lock()
-            .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
-        peers.insert(
-            peer_id,
-            PeerSlot::Live(LiveSlot {
-                meta,
-                peer,
-                remote_protocol_version,
-                remote_software_version_sanitized,
-                reputation: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::types::reputation::PeerReputation::default(),
-                )),
-                inbound_rate_limiter: Arc::clone(&inbound_limiter),
-                traffic: std::sync::Arc::new(std::sync::Mutex::new(
-                    PeerConnectionWireMetrics::new(opened_at),
-                )),
-                generation,
-                keepalive_task,
-            }),
-        )
+    let live = LiveSlot {
+        meta,
+        peer,
+        remote_protocol_version,
+        remote_software_version_sanitized,
+        reputation: std::sync::Arc::new(std::sync::Mutex::new(
+            crate::types::reputation::PeerReputation::default(),
+        )),
+        inbound_rate_limiter: Arc::clone(&inbound_limiter),
+        traffic: std::sync::Arc::new(std::sync::Mutex::new(PeerConnectionWireMetrics::new(
+            opened_at,
+        ))),
+        generation,
+        keepalive_task,
     };
 
-    // Tear down the displaced session after releasing the peers lock (#1691): abort its keepalive so
-    // it cannot fire a ghost teardown against this newer slot, then close its WebSocket (dropping a
-    // `LiveSlot` does not close the socket — see `LiveSlot` docs). The generation guard in
-    // `disconnect_after_keepalive_failure` is the load-bearing invariant; this abort is the prompt
-    // first line of defence.
-    if let Some(PeerSlot::Live(stale)) = superseded {
-        stale.keepalive_task.abort();
-        let _ = stale.peer.close().await;
+    // Admission differs by identity kind (dig_ecosystem#90 — see `HostFallbackReservation`'s docs
+    // for the full reasoning): a VERIFIED identity keeps the unconditional newest-wins insert
+    // (#1691) it always had; a FALLBACK identity instead swaps its `HostFallbackReservation` for
+    // this `live` slot, but only if nothing has taken `peer_id` since the reservation was made.
+    let superseded = match reservation {
+        Some(reservation) => {
+            // The ONLY way `peer_id` could be occupied here is a VERIFIED peer connecting for the
+            // same identity in the meantime (a second fallback attempt would already have been
+            // refused at `precheck_inbound_peer` — this reservation was holding the identity). A
+            // verified identity always outranks an unverified reservation, so back off rather than
+            // clobber it: retire OUR OWN just-negotiated session exactly as we would any other slot
+            // displaced from under us, and report the failure like any other refusal.
+            if let Err(live) = reservation.try_promote(live) {
+                retire_slot(PeerSlot::Live(live)).await;
+                return Err(ClientError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "inbound fallback identity's reservation was displaced by a verified peer \
+                     before negotiation finished (dig_ecosystem#90)",
+                )));
+            }
+            None // Nothing "superseded" in the stale-incumbent sense — see `try_promote`'s docs.
+        }
+        None => {
+            // Verified path: unconditional newest-wins, unchanged by this fix. `HashMap::insert`
+            // returns the prior slot, if any — one slot per identity, so the map never grows on
+            // reconnect. The `peer_id` was authenticated by the completed mTLS handshake, so only
+            // the genuine key-holder can reach this replacement (see `precheck_inbound_peer`). This
+            // insert never consults `host_fallback_reservations` — a verified peer cannot be
+            // blocked by, and does not need to know about, any pending reservation.
+            let mut peers = state
+                .peers
+                .lock()
+                .map_err(|_| ClientError::Io(std::io::Error::from(std::io::ErrorKind::Other)))?;
+            peers.insert(peer_id, PeerSlot::Live(live))
+        }
+    };
+
+    // Tear down whatever this session displaced (#1691): abort its keepalive so it cannot fire a
+    // ghost teardown against this newer slot, then close its WebSocket (dropping a `LiveSlot` does
+    // not close the socket — see `LiveSlot` docs). `retire_slot` is a no-op for a `Stub`/`Nat`
+    // incumbent, so this is safe regardless of what the verified path's insert actually displaced.
+    // The generation guard in `disconnect_after_keepalive_failure` is the load-bearing invariant;
+    // this abort is the prompt first line of defence.
+    if let Some(stale) = superseded {
+        retire_slot(stale).await;
     }
 
     // --- Phase 9: Bridge inbound wire messages into the service broadcast channel ---
@@ -998,6 +1154,127 @@ pub(crate) async fn accept_loop(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod host_fallback_reservation_precheck_tests {
+    //! **`dig_ecosystem#90`** gate finding — the call-site-level regression for
+    //! `precheck_inbound_peer`'s TOCTOU: its `already_held` check ran once, right after the TLS
+    //! handshake, while the actual admission (`negotiate_inbound_over_ws`'s `peers.insert`)
+    //! happened up to ~60s later with no re-check and no `is_host_fallback` visibility at all. See
+    //! `crate::service::state`'s `host_fallback_reservation_tests` for the reservation primitive's
+    //! own contract in isolation; this module proves the property at the function this repo's gate
+    //! verdict actually named.
+    //!
+    //! Deliberately NOT gated on `target_os` (unlike `tests/con_1691_reconnect_tests.rs`'s platform
+    //! split — and BY DESIGN, not by oversight): `is_host_fallback` is a plain `bool` parameter to
+    //! `precheck_inbound_peer`, and this property holds or fails identically regardless of which
+    //! platform derives it in production. So it runs as an ordinary `#[cfg(test)]` unit test on
+    //! EVERY CI leg, Linux included — closing the exact blind spot the gate named: this repo's CI
+    //! has no Windows or macOS runner at all, so a test that could only trigger the fallback branch
+    //! over a real wire connection would never execute here.
+
+    use super::*;
+    use crate::types::config::GossipConfig;
+    // `listener.rs`'s own top-level `ChiaCertificate` import is gated
+    // `cfg(all(feature = "native-tls", not(feature = "rustls")))` (it names the native-tls-specific
+    // acceptor construction elsewhere in this file), so it is ABSENT under a rustls-only feature
+    // set. This module runs on every backend (its own doc comment above explains why), so it needs
+    // its own unconditional import rather than relying on `super::*`.
+    use dig_peer_protocol::ChiaCertificate;
+
+    fn test_state() -> Arc<ServiceState> {
+        let tls = ChiaCertificate::generate().expect("chia-ssl cert");
+        Arc::new(ServiceState::new(GossipConfig::default(), tls).expect("ServiceState::new"))
+    }
+
+    fn fallback_addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    /// **RED without the fix.** Pre-fix, `precheck_inbound_peer` only ever reads `state.peers` —
+    /// left deliberately EMPTY throughout this test, because the first "connection" never finishes
+    /// negotiating and so never reaches the (unconditional, ~60s-later) `peers.insert`. Both calls
+    /// therefore returned `Ok(())` pre-fix: nothing recorded that the first fallback connection was
+    /// still in flight, which is precisely the gap `dig_ecosystem#90`'s gate verdict identified.
+    ///
+    /// Post-fix, the first call hands back a `HostFallbackReservation` the caller must hold, and a
+    /// second precheck for the SAME identity is refused while that reservation is outstanding.
+    #[tokio::test]
+    async fn second_fallback_precheck_is_refused_while_first_reservation_is_outstanding() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(fallback_addr(4433));
+
+        let first = precheck_inbound_peer(&state, peer_id, true)
+            .await
+            .expect("the first fallback connection must be admitted");
+        assert!(
+            first.is_some(),
+            "a fallback identity precheck must hand back a reservation to hold across the \
+             remainder of negotiation, not just Ok(())"
+        );
+        assert!(
+            state.peers.lock().unwrap().is_empty(),
+            "the fixture must not have inserted a Live slot -- the refusal below must be \
+             attributable to the reservation ALONE, not to a pre-existing incumbent (that case is \
+             covered separately below)"
+        );
+
+        let second = precheck_inbound_peer(&state, peer_id, true).await;
+        assert!(
+            second.is_err(),
+            "a second connection under the SAME fallback identity must be refused while the \
+             first's reservation is outstanding -- even though `state.peers` is still completely \
+             empty, which is exactly the window dig_ecosystem#90's gate finding said was unguarded"
+        );
+    }
+
+    /// A reservation is a TEMPORARY hold, not a permanent one: releasing it (handshake failure,
+    /// timeout, or the holding task panicking -- `Drop` does not distinguish those) frees the
+    /// identity for a new attempt.
+    #[tokio::test]
+    async fn releasing_a_reservation_frees_the_identity_for_a_new_attempt() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(fallback_addr(4434));
+
+        let first = precheck_inbound_peer(&state, peer_id, true)
+            .await
+            .expect("first connection admitted");
+        drop(first); // the handshake "failed" -- the same effect as any `?` early return.
+
+        let second = precheck_inbound_peer(&state, peer_id, true).await;
+        assert!(
+            second.is_ok(),
+            "once the first reservation is released, a new attempt under the same identity must \
+             be admitted again -- a reservation must never become a permanent, self-inflicted lock"
+        );
+    }
+
+    /// The PRE-EXISTING case (`dig_ecosystem#2709`) is unchanged: a fallback precheck is still
+    /// refused against an already-`Live` incumbent, exactly as before this fix.
+    #[tokio::test]
+    async fn fallback_precheck_still_refused_against_a_live_incumbent() {
+        let state = test_state();
+        let peer_id = peer_id_for_host_fallback(fallback_addr(4435));
+
+        // A `Stub` slot exercises the SAME `contains_key` check a real `Live` slot would -- see
+        // `PeerSlot::Stub`'s own doc comment ("synthetic peer for unit testing").
+        state.peers.lock().unwrap().insert(
+            peer_id,
+            PeerSlot::Stub(StubPeer {
+                remote: fallback_addr(4435),
+                node_type: dig_peer_protocol::NodeType::FullNode,
+                is_outbound: false,
+            }),
+        );
+
+        let refused = precheck_inbound_peer(&state, peer_id, true).await;
+        assert!(
+            refused.is_err(),
+            "a fallback identity must still be refused against an existing incumbent, exactly as \
+             `dig_ecosystem#2709`'s original fix established"
+        );
     }
 }
 

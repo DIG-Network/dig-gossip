@@ -36,13 +36,16 @@
 //! acceptor requires a client cert: the vendored `native-tls` fork patches
 //! `src/imp/openssl.rs` alone, so OpenSSL-backed platforms get strict binding while **Windows
 //! (SChannel)** and **macOS (SecureTransport)** hide the peer leaf and fall back to
-//! `peer_id_for_addr(remote_addr)` — a deliberate, documented choice at
-//! `src/connection/listener.rs:437`.
+//! `peer_id_for_host_fallback(remote_addr)` (`dig_ecosystem#2709`) — a deliberate, documented
+//! choice in `src/connection/listener.rs`.
 //!
-//! That fallback embeds the peer's **ephemeral source port**, so a restarted client is a *different*
-//! key by construction and cannot be superseded. The newest-wins tests are therefore gated to the
-//! strict platforms, and [`reconnect_on_the_address_fallback_does_not_supersede`] pins the other
-//! side of the split so the divergence is asserted rather than merely skipped.
+//! That fallback is host-stable (IP only, no port — so a ban survives a reconnect, unlike the
+//! address+port scheme it replaces) but is explicitly NOT SPKI-verified, so
+//! `precheck_inbound_peer` REFUSES a fallback-identified reconnect while the incumbent's slot is
+//! still held rather than treating the collision as a verified newest-wins supersede. The
+//! newest-wins tests below are therefore gated to the strict platforms, and
+//! [`reconnect_on_the_address_fallback_is_refused_not_superseded`] pins the other side of the
+//! split so the divergence is asserted rather than merely skipped.
 //!
 //! ## Proof strategy (real wire, not a symmetric mock)
 //!
@@ -381,24 +384,39 @@ async fn stale_rate_limit_violation_does_not_ban_reconnect() {
 // The other side of the platform split — SChannel / SecureTransport
 // ============================================================================
 
-/// **The address fallback cannot supersede, and that is the documented behaviour.**
+/// **The address fallback neither supersedes NOR is silently admitted beside the incumbent —
+/// it is REFUSED (`dig_ecosystem#2709`).**
 ///
 /// Where the inbound acceptor cannot see the client leaf (Windows SChannel, macOS
-/// SecureTransport), `src/connection/listener.rs` falls back to `peer_id_for_addr(remote_addr)`.
-/// That key is derived from the peer's address *including its ephemeral source port*, so a
-/// restarted client presents a **different** key even though it presents the **same certificate** —
-/// newest-wins has nothing to match against and the stale slot survives beside the new one.
+/// SecureTransport), `src/connection/listener.rs` falls back to
+/// [`peer_id_for_host_fallback`](dig_gossip)-equivalent identity derivation. Two behaviours had to
+/// be weighed against each other and neither alone was acceptable:
+///
+/// - Keying on the full address (IP **and** ephemeral source port, the ORIGINAL behaviour this
+///   test used to pin) made a ban trivially evadable: a reconnect always looks like a brand-new
+///   peer, so no penalty or ban ever survives a single reconnect.
+/// - Keying on the IP alone (naively) would make a ban enforceable, but it would ALSO make
+///   `negotiate_inbound_over_ws`'s newest-wins supersede unsafe: that mechanism's own doc comment
+///   states its safety rests entirely on `peer_id` being SPKI-verified ("only the holder of the
+///   private key ... can complete the mTLS handshake"), which is precisely NOT true here — this
+///   is the fallback branch BECAUSE certificate verification failed. An IP-keyed identity with
+///   unconditional supersede would let ANY unauthenticated second connection from the same host
+///   evict an existing, possibly-legitimate incumbent.
+///
+/// The resolution: the identity IS host-stable (so a ban holds — see `con_007_tests` for the ban
+/// side), but `precheck_inbound_peer` REFUSES a fallback-identified connection outright when a
+/// live slot already exists under that identity, rather than admitting it (old behaviour: two
+/// slots survive) or letting it supersede (the unsafe alternative above). The incumbent is
+/// therefore never displaced by an unauthenticated newcomer, and the newcomer's failure is exactly
+/// as informative as reconnecting to a banned peer — the caller cannot tell the two apart, which
+/// is intentional: neither case gives an unauthenticated dialer information about *why* it failed.
 ///
 /// This test exists so the gate above is not a silent skip. Without it, the whole file would
-/// vanish on these platforms and a change to the fallback — say, keying on the IP alone, which
-/// would make an unauthenticated peer able to displace an incumbent by source address — would be
-/// invisible here. It pins the divergence rather than hiding it.
-///
-/// It deliberately asserts **two** slots rather than merely "not one": a fallback that started
-/// returning a constant would also fail the one-slot assertion, but for the opposite reason.
+/// vanish on these platforms and a regression that let the second connection displace or duplicate
+/// the first — reopening the exact hijack this refusal exists to prevent — would be invisible here.
 #[cfg(any(target_os = "windows", target_vendor = "apple"))]
 #[tokio::test]
-async fn reconnect_on_the_address_fallback_does_not_supersede() {
+async fn reconnect_on_the_address_fallback_is_refused_not_superseded() {
     let server_dir = common::test_temp_dir();
     let _ = common::generate_test_certs(server_dir.path());
     let (_server_svc, server_h) = service_from_dir(server_dir.path()).await;
@@ -419,25 +437,28 @@ async fn reconnect_on_the_address_fallback_does_not_supersede() {
         "the first inbound session registers one slot"
     );
 
-    // Abrupt teardown, so the slot is not reaped — same as the strict-platform tests.
+    // Abrupt teardown, so the slot is not reaped — same as the strict-platform tests. The
+    // incumbent's slot is now STALE (its keepalive will eventually notice), but still held.
     drop(client1_h);
     drop(client1_svc);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
+    // Same client identity, freshly reconnecting from a NEW ephemeral source port (the OS always
+    // assigns one) but the SAME source IP (loopback) — exactly the shape a ban-evading reconnect
+    // or an unauthenticated same-host newcomer would present on these platforms.
     let (_client2_svc, client2_h) = service_from_dir(client_dir.path()).await;
-    client2_h
-        .connect_to(bound)
-        .await
-        .expect("the reconnect is still accepted — it simply is not recognised as the same peer");
+    let reconnect_result = client2_h.connect_to(bound).await;
+    assert!(
+        reconnect_result.is_err(),
+        "the reconnect must be REFUSED while the fallback identity's slot is still held — a \
+         success here means an unauthenticated connection was allowed to either duplicate or \
+         (worse) supersede an incumbent it never proved ownership of: {reconnect_result:?}"
+    );
 
     let after = server_h.__peer_ids_for_tests();
     assert_eq!(
-        after.len(),
-        2,
-        "without SPKI binding the reconnect is a new identity, so the stale slot survives beside it"
-    );
-    assert!(
-        after.contains(&first[0]),
-        "the original slot is still present — the newcomer did not displace it"
+        after, first,
+        "the original slot must be UNCHANGED -- same single entry, not superseded, not \
+         duplicated -- the refused newcomer never got far enough to touch the peer map"
     );
 }
