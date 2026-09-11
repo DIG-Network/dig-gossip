@@ -198,6 +198,15 @@ fn test_cargo_toml_chia_crates_share_one_version_line() {
 /// `dig-peer-protocol` carries the chia line into this crate, so its major.minor is part of the
 /// same contract as the pins above: a 0.6 here alongside a 0.36.1 chia-protocol is incoherent,
 /// because 0.6 can only resolve chia-protocol 0.26.
+///
+/// **How to re-derive this literal at the next bump:** don't guess — check which `chia-*`
+/// versions the candidate `dig-peer-protocol` version resolves in `Cargo.lock` (its own
+/// `[[package]]` block lists `chia-sha2`, `chia-traits`, `chia_streamable_macro`) and confirm
+/// they match `LINE` in `test_cargo_toml_chia_crates_share_one_version_line` above. If they
+/// don't match, the pin move is incoherent and must be abandoned — do not edit this assertion
+/// to make it pass. `"0.9"` was verified this way: `dig-peer-protocol` 0.9.1 resolves
+/// `chia-sha2` / `chia-traits` / `chia_streamable_macro` all at 0.36.1, the same cohort
+/// `chia-protocol` is pinned to, so the pin move is coherent and `"0.9"` is correct here.
 #[test]
 fn test_cargo_toml_dig_peer_protocol_is_on_the_matching_line() {
     let manifest = load_cargo_toml();
@@ -205,7 +214,7 @@ fn test_cargo_toml_dig_peer_protocol_is_on_the_matching_line() {
     let dep = deps
         .get("dig-peer-protocol")
         .expect("dig-peer-protocol must be declared");
-    assert_eq!(dep_version(dep), "0.7");
+    assert_eq!(dep_version(dep), "0.9");
 }
 
 #[test]

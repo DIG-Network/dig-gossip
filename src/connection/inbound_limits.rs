@@ -35,7 +35,7 @@
 
 use std::collections::HashMap;
 
-use dig_peer_protocol::{DigMessage, OpcodeRateLimiter, OpcodeRateLimits, RateLimit};
+use dig_peer_protocol::{DigMessage, Direction, OpcodeRateLimiter, OpcodeRateLimits, RateLimit};
 
 use super::dig_rate_limiter::DigRateLimiter;
 use crate::types::dig_messages::DigMessageType;
@@ -78,18 +78,14 @@ impl InboundRateLimiter {
     /// Builds the gate for one inbound connection — a [`RESET_SECONDS`] window, every bound scaled
     /// by [`rate_limit_factor`](crate::types::config::GossipConfig::peer_options).
     ///
-    /// Only the DIG half is inbound-shaped today: [`DigRateLimiter`] takes `incoming = true`, so a
-    /// frame it refuses still charges its counter and a peer cannot free quota by being refused.
-    /// [`OpcodeRateLimiter`] as of `dig-peer-protocol` 0.5 exposes no such flag, so the Chia half
-    /// charges only frames it admits — a peer flooding past the Chia bound is refused each time but
-    /// does not ratchet itself further into the window.
-    ///
-    /// TODO(dig_ecosystem#2228): restore the inbound ratchet on the Chia half once
-    /// `dig-peer-protocol` 0.6.0 lands `Direction::Inbound`; `OpcodeRateLimits`' fields are private,
-    /// so there is no local substitute and this cannot be fixed from inside `dig-gossip`.
+    /// Both halves are inbound-shaped: [`DigRateLimiter`] takes `incoming = true`, and the Chia
+    /// half is built with [`Direction::Inbound`] (dig_ecosystem#2228, landed in `dig-peer-protocol`
+    /// 0.9), so a refused frame still charges its counter on both sides and a peer cannot free
+    /// quota by being refused.
     pub fn new(rate_limit_factor: f64) -> Self {
         Self {
             chia: OpcodeRateLimiter::new(
+                Direction::Inbound,
                 RESET_SECONDS,
                 rate_limit_factor,
                 OpcodeRateLimits::default(),

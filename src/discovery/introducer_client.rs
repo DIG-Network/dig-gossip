@@ -252,6 +252,7 @@ impl IntroducerClient {
             let reply = peer
                 .request_dig(
                     DigMessageType::RegisterPeer as u8,
+                    &[DigMessageType::RegisterAck as u8],
                     body.to_bytes()
                         .map_err(|e| DialError::Link(LinkError::from(e)))?
                         .into(),

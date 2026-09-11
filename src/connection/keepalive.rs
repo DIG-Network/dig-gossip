@@ -466,6 +466,7 @@ mod tests {
     //! [`DigLink`]'s inbound matcher: a symmetric in-memory double could not express a stolen frame.
 
     use super::*;
+    use chia_protocol::RespondPeers;
     use dig_peer_protocol::{LinkOptions, Streamable};
     use tokio::net::TcpListener;
     use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream};
@@ -506,8 +507,13 @@ mod tests {
     async fn probe_reaches_the_peer_application_despite_an_outstanding_correlated_waiter() {
         let ((a, _a_rx), (b, mut b_rx)) = link_pair().await;
 
-        // The peer starts ITS probe first, parking a waiter at correlation id 0.
-        let b_probe = tokio::spawn(async move { b.request_raw(RequestPeers::new()).await });
+        // The peer starts ITS probe first, parking a waiter at correlation id 0. `RequestPeers`
+        // completes with `RespondPeers` on the live wire, so that is the reply type named here
+        // (`dig-peer-protocol` 0.9 decoupled `request_raw`'s reply type param from its body type).
+        let b_probe =
+            tokio::spawn(
+                async move { b.request_raw::<RespondPeers, _>(RequestPeers::new()).await },
+            );
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         send_probe(&a).await.expect("probe sends");

@@ -18,7 +18,9 @@ mod common;
 
 use std::sync::Arc;
 
-use dig_gossip::{Admission, OpcodeRateLimiter, OpcodeRateLimits, RateLimit, V2_RATE_LIMITS};
+use dig_gossip::{
+    Admission, Direction, OpcodeRateLimiter, OpcodeRateLimits, RateLimit, V2_RATE_LIMITS,
+};
 use dig_gossip::{Bytes, DigMessage, ProtocolMessageTypes};
 
 use dig_gossip::{
@@ -53,8 +55,10 @@ fn test_separate_limiter_per_connection() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(1.0, 1_000_000.0, None),
     );
-    let mut a = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
-    let mut b = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut a =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut b =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
     let m = |t: ProtocolMessageTypes| DigMessage {
         msg_type: t as u8,
         id: None,
@@ -95,7 +99,8 @@ fn test_rate_limit_allows_normal_traffic() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(10.0, 1_000_000.0, None),
     );
-    let mut lim = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut lim =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
@@ -114,7 +119,8 @@ fn test_rate_limit_blocks_excess_traffic() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(2.0, 1_000_000.0, None),
     );
-    let mut lim = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut lim =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
@@ -149,14 +155,16 @@ fn test_rate_limit_blocks_oversized_message() {
         data: Bytes::new(vec![0u8; len]),
     };
 
-    let mut at_bound = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut at_bound =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
     assert_eq!(
         at_bound.admit(&handshake(MAX_SIZE)),
         Admission::Admitted,
         "a frame exactly at max_size must pass — otherwise the over-bound case proves nothing"
     );
 
-    let mut over_bound = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut over_bound =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
     assert_eq!(
         over_bound.admit(&handshake(MAX_SIZE + 1)),
         Admission::Unsendable,
@@ -201,8 +209,10 @@ fn test_rate_limit_factor_scaling() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(10.0, 1_000_000.0, None),
     );
-    let mut strict = OpcodeRateLimiter::new(60, 0.5, OpcodeRateLimits::from(&limits));
-    let mut loose = OpcodeRateLimiter::new(60, 1.0, OpcodeRateLimits::from(&limits));
+    let mut strict =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 0.5, OpcodeRateLimits::from(&limits));
+    let mut loose =
+        OpcodeRateLimiter::new(Direction::Inbound, 60, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
@@ -227,7 +237,8 @@ async fn test_rate_limit_window_reset() {
         ProtocolMessageTypes::Handshake,
         RateLimit::new(1.0, 1_000_000.0, None),
     );
-    let mut lim = OpcodeRateLimiter::new(2, 1.0, OpcodeRateLimits::from(&limits));
+    let mut lim =
+        OpcodeRateLimiter::new(Direction::Inbound, 2, 1.0, OpcodeRateLimits::from(&limits));
     let msg = DigMessage {
         msg_type: ProtocolMessageTypes::Handshake as u8,
         id: None,
