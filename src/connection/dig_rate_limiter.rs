@@ -150,7 +150,8 @@ mod tests {
     use std::{thread::sleep, time::Duration};
 
     use dig_peer_protocol::{
-        Bytes, DigMessage, OpcodeRateLimiter, OpcodeRateLimits, ProtocolMessageTypes, Streamable,
+        Bytes, DigMessage, Direction, OpcodeRateLimiter, OpcodeRateLimits, ProtocolMessageTypes,
+        Streamable,
     };
 
     use super::*;
@@ -206,7 +207,8 @@ mod tests {
         let opening_period = current_period(RESET);
 
         // Constructed at the START of the window.
-        let mut chia = OpcodeRateLimiter::new(RESET, 1.0, OpcodeRateLimits::default());
+        let mut chia =
+            OpcodeRateLimiter::new(Direction::Inbound, RESET, 1.0, OpcodeRateLimits::default());
         // Constructed ~1 s LATER, in the SAME window — the stagger is the discriminator.
         sleep(Duration::from_secs(1));
         let mut dig = limiter_of(true, RESET, 1.0);
