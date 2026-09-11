@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.32.3] - 2026-09-11
+
+### Chores
+- Strip gitnexus section from CLAUDE.md, untrack generated files (#93)- **deps:** Bump dig-peer-protocol 0.7 -> 0.9 (unit 2/3 of #3252) (#94)
+
 ## [0.32.2] - 2026-09-06
 
 ### Bug Fixes
