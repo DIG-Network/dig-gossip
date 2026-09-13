@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.33.0] - 2026-09-13
+
+### Features
+- DISTRIBUTOR_ANNOUNCE (opcode 226) wire, dig-peer-protocol 0.10 (#95)
+
 ## [0.32.3] - 2026-09-11
 
 ### Chores
