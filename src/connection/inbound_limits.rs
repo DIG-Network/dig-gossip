@@ -334,15 +334,14 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
     // - `freq` 6/min: at 32 novel launcher ids/frame this bounds a connection to 192 novel ids/min
     //   (192 wasted chain lookups/min/conn worst case) — well below the 20-100/min rows above,
     //   since a distributor set changes far less often than a holdings re-announce.
-    // REVERT-PROOF TEMPORARY REMOVAL (#3252) -- restored immediately after observing RED.
-    // m.insert(
-    //     crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE,
-    //     RateLimit::new(
-    //         6.0,
-    //         crate::service::distributor_announce::MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES as f64,
-    //         None,
-    //     ),
-    // );
+    m.insert(
+        crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE,
+        RateLimit::new(
+            6.0,
+            crate::service::distributor_announce::MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES as f64,
+            None,
+        ),
+    );
     m
 }
 
