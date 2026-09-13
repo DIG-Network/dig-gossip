@@ -42,16 +42,36 @@
 //!
 //! # The empty list is a positive statement
 //!
-//! An **empty** launcher-id list is distinct from not announcing at all: it says "my known set
-//! for this store is empty," not "I have nothing to say." A receiver MUST NOT read it as a
-//! clear or a retraction — union-with-empty is a no-op. An announce that could not say "I know
-//! of none" would have to say something false instead.
+//! An **empty** launcher-id list is distinct from not announcing at all: it is a real,
+//! decodable frame the sender chose to send, not the absence of one — silence and an empty
+//! frame are different signals. It is **not**, however, a guarantee that the sender knows of no
+//! distributors: a sender MAY omit known ids from any frame at any count (see "membership only,
+//! never completeness" above), so a sender that knows ids may still choose to send an empty
+//! frame. A receiver MUST NOT read an empty frame as a clear, a retraction, or a claim that the
+//! sender's known set is empty — union-with-empty is a no-op, exactly as with any other frame.
 //!
 //! # Hint, never authority
 //!
 //! Nothing this module produces may admit an entry, rank or order a candidate, or be a claim's
 //! authority. There is no remove operation of any kind: no retraction opcode, no tombstone, no
 //! `Remove` variant.
+//!
+//! # Silent choices this implementation pins
+//!
+//! Five points the wire layout alone does not settle, pinned here as normative so a second
+//! implementation matches this one rather than guessing:
+//!
+//! 1. **Duplicate launcher id within one frame** — accepted and deduped (both at decode-time
+//!    shape and at [`DistributorHintCache::union`] time); a duplicate is never a decode error.
+//! 2. **Trailing bytes after the last launcher id** — rejected; [`DistributorAnnounce::decode`]
+//!    returns `None` rather than silently ignoring the extra bytes.
+//! 3. **Launcher-id order within a frame** — not significant; a decoder MUST NOT infer anything
+//!    from the order ids appear on the wire (see "hints_for_store returns a deterministic,
+//!    receiver-computed order" below — that order is unrelated to wire order).
+//! 4. **All-zero `store_id` or launcher id** — accepted, with no sentinel meaning; the all-zero
+//!    32 bytes is an ordinary id like any other, never a wildcard, "none" or "unknown" marker.
+//! 5. **[`DigMessage::id`] is always `None`** — a distributor announce is a fire-and-forget
+//!    flood broadcast, never a correlated request/response.
 //!
 //! # Wire layout
 //!
@@ -305,14 +325,24 @@ impl DistributorHintCache {
         }
     }
 
-    /// The launcher ids currently retained for `store_id`, oldest first.
+    /// The launcher ids currently retained for `store_id`, sorted ascending byte-wise by
+    /// launcher id.
+    ///
+    /// This order is **deterministic and meaningless**: it exists only so two receivers that
+    /// retain the same set return the same sequence, and carries no preference, recency, trust
+    /// or ranking signal of any kind. **Arrival order is not observable through this API** —
+    /// see the module docs' "hint, never authority" rule, which this accessor must not violate
+    /// by leaking the order ids happened to arrive in.
     #[must_use]
     pub fn hints_for_store(&self, store_id: &[u8; 32]) -> Vec<[u8; 32]> {
-        self.order
+        let mut ids: Vec<[u8; 32]> = self
+            .order
             .iter()
             .filter(|(s, _)| s == store_id)
             .map(|(_, l)| *l)
-            .collect()
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Total retained hints across every store, for this peer.
@@ -502,6 +532,74 @@ mod tests {
             "the oldest entry must age out once capacity is exceeded"
         );
         assert!(cache.hints_for_store(&store).contains(&id(200)));
+    }
+
+    /// The ordering-leak regression: two receivers hearing the SAME set of ids in OPPOSITE
+    /// arrival order must return the SAME sequence from `hints_for_store`. Arrival order is not
+    /// observable through this API — only the deterministic byte-wise sort is.
+    #[test]
+    fn hints_for_store_is_the_same_regardless_of_arrival_order() {
+        let store = id(0xAB);
+        let a = id(0x01);
+        let b = id(0x02);
+        let c = id(0x03);
+
+        let mut forward = DistributorHintCache::new();
+        forward.union(&DistributorAnnounce::new(store, vec![a]).unwrap());
+        forward.union(&DistributorAnnounce::new(store, vec![b]).unwrap());
+        forward.union(&DistributorAnnounce::new(store, vec![c]).unwrap());
+
+        let mut reverse = DistributorHintCache::new();
+        reverse.union(&DistributorAnnounce::new(store, vec![c]).unwrap());
+        reverse.union(&DistributorAnnounce::new(store, vec![b]).unwrap());
+        reverse.union(&DistributorAnnounce::new(store, vec![a]).unwrap());
+
+        assert_eq!(
+            forward.hints_for_store(&store),
+            reverse.hints_for_store(&store)
+        );
+        assert_eq!(forward.hints_for_store(&store), vec![a, b, c]);
+    }
+
+    /// Pinned choice 1: a duplicate launcher id within one frame is accepted and deduped, both
+    /// by the cache (`union`) and observably via `hints_for_store` — never a decode/build error.
+    #[test]
+    fn duplicate_launcher_id_within_one_frame_is_accepted_and_deduped() {
+        let store = id(0x77);
+        let dup = id(0x09);
+        let announce = DistributorAnnounce::new(store, vec![dup, dup, id(0x0A)]).unwrap();
+        assert_eq!(
+            announce.launcher_ids.len(),
+            3,
+            "the frame itself carries the duplicate"
+        );
+
+        let mut cache = DistributorHintCache::new();
+        cache.union(&announce);
+        let retained = cache.hints_for_store(&store);
+        assert_eq!(
+            retained,
+            vec![dup, id(0x0A)],
+            "the cache dedupes the duplicate"
+        );
+        assert_eq!(cache.len(), 2);
+    }
+
+    /// Pinned choice 4: an all-zero `store_id` and an all-zero launcher id round-trip like any
+    /// other id and carry no sentinel meaning (not a wildcard, not "none", not "unknown").
+    #[test]
+    fn all_zero_ids_round_trip_as_ordinary_ids() {
+        let zero_store = [0u8; 32];
+        let zero_launcher = [0u8; 32];
+        let announce = DistributorAnnounce::new(zero_store, vec![zero_launcher]).unwrap();
+
+        let bytes = announce.encode();
+        let decoded = DistributorAnnounce::decode(&bytes).expect("all-zero frame decodes");
+        assert_eq!(decoded, announce);
+
+        let mut cache = DistributorHintCache::new();
+        cache.union(&announce);
+        assert_eq!(cache.hints_for_store(&zero_store), vec![zero_launcher]);
     }
 
     #[test]
