@@ -290,12 +290,23 @@ pub fn frame_distributor_announce(announce: &DistributorAnnounce) -> DigMessage 
 /// that age-based cap); it can never shrink it, and two frames are never diffed against each
 /// other. This is the module invariant applied to storage: see the module docs' "union, never
 /// replace, never diff" rule.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct DistributorHintCache {
     /// Oldest-first insertion order, for age-based eviction.
     order: std::collections::VecDeque<([u8; 32], [u8; 32])>,
     /// Membership index mirroring `order`, so `union` can dedupe in O(1).
     seen: std::collections::HashSet<([u8; 32], [u8; 32])>,
+}
+
+/// Manual `Debug` — a derived impl would print `order` in **insertion order**, handing back
+/// exactly the arrival ordering [`Self::hints_for_store`]'s sort exists to hide (a derived trait
+/// impl is public surface; the field being private does not help). Exposes only a count.
+impl std::fmt::Debug for DistributorHintCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DistributorHintCache")
+            .field("retained", &self.order.len())
+            .finish()
+    }
 }
 
 impl DistributorHintCache {
@@ -330,9 +341,19 @@ impl DistributorHintCache {
     ///
     /// This order is **deterministic and meaningless**: it exists only so two receivers that
     /// retain the same set return the same sequence, and carries no preference, recency, trust
-    /// or ranking signal of any kind. **Arrival order is not observable through this API** —
-    /// see the module docs' "hint, never authority" rule, which this accessor must not violate
-    /// by leaking the order ids happened to arrive in.
+    /// or ranking signal of any kind. **No read accessor returns arrival order**: this method
+    /// returns a receiver-computed byte-wise sort, and [`Self`]'s `Debug` impl exposes only a
+    /// count — see the module docs' "hint, never authority" rule, which this accessor must not
+    /// violate by leaking the order ids happened to arrive in.
+    ///
+    /// This is narrower than "arrival order is unobservable" in general: **age-based eviction is
+    /// itself arrival-ordered and is observable to a holder of this cache.** At capacity, a
+    /// holder that feeds one novel id and diffs the result before and after can learn which of
+    /// its *own* retained ids was oldest, because that is the one [`Self::union`] evicted. That
+    /// is inherent to the age-based eviction policy (by design, not a defect) and is **not**
+    /// reachable through any accessor — it is a property of a holder observing its own cache
+    /// over time, not of a call this API returns. It reveals nothing about the sending peer's
+    /// eviction, retraction or knowledge; the sender never learns anything from it.
     #[must_use]
     pub fn hints_for_store(&self, store_id: &[u8; 32]) -> Vec<[u8; 32]> {
         let mut ids: Vec<[u8; 32]> = self
@@ -648,5 +669,38 @@ mod tests {
         };
         let got = hex::encode(a.encode());
         assert_eq!(got, KAT_HEX, "KAT_HEX drift: got {got}");
+    }
+
+    /// Regression guard for a derived `Debug` defeating the ordering-privacy remedy:
+    /// `format!("{:?}", cache)` must not contain any retained launcher id, in hex or raw byte
+    /// form, and must only report a count. Without this test the derive can silently come back.
+    #[test]
+    fn debug_render_does_not_contain_a_launcher_id() {
+        let store = id(0xAB);
+        let launchers = [id(0x11), id(0x22), id(0x33)];
+
+        let mut cache = DistributorHintCache::new();
+        for &launcher in &launchers {
+            cache.union(&DistributorAnnounce::new(store, vec![launcher]).unwrap());
+        }
+
+        let rendered = format!("{cache:?}");
+
+        for launcher in launchers {
+            let hex_form = hex::encode(launcher);
+            assert!(
+                !rendered.contains(&hex_form),
+                "Debug render must not contain launcher id {hex_form}: {rendered}"
+            );
+            assert!(
+                !rendered.contains(&format!("{launcher:?}")),
+                "Debug render must not contain launcher id bytes {launcher:?}: {rendered}"
+            );
+        }
+
+        assert_eq!(
+            rendered, "DistributorHintCache { retained: 3 }",
+            "Debug must expose only a count"
+        );
     }
 }
