@@ -98,8 +98,7 @@ pub const MAX_LAUNCHER_IDS_PER_ANNOUNCE: usize = 32;
 /// `max_size` (`connection::inbound_limits`), referenced by that row rather than restated, so
 /// the limiter and the enforced bound can never drift apart (mirrors the opcode-222 tie to
 /// `MAX_ANNOUNCE_FRAME_BYTES`).
-pub const MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES: usize =
-    32 + 2 + MAX_LAUNCHER_IDS_PER_ANNOUNCE * 32;
+pub const MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES: usize = 32 + 2 + MAX_LAUNCHER_IDS_PER_ANNOUNCE * 32;
 
 /// Bounds how many distinct `(store_id, launcher_id)` hints [`DistributorHintCache`] retains
 /// for one sending peer before the oldest is aged out.
@@ -366,9 +365,8 @@ mod tests {
 
     #[test]
     fn a_max_size_announce_encodes_within_the_body_bound() {
-        let launcher_ids: Vec<[u8; 32]> = (0..MAX_LAUNCHER_IDS_PER_ANNOUNCE as u8)
-            .map(id)
-            .collect();
+        let launcher_ids: Vec<[u8; 32]> =
+            (0..MAX_LAUNCHER_IDS_PER_ANNOUNCE as u8).map(id).collect();
         let a = DistributorAnnounce::new(id(0xAA), launcher_ids).expect("at cap");
         assert_eq!(a.encode().len(), MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES);
     }
@@ -465,7 +463,10 @@ mod tests {
         retained.sort();
         let mut expected = vec![id(0x01), id(0x02), id(0x03), id(0x04)];
         expected.sort();
-        assert_eq!(retained, expected, "must retain the union, not just `second`");
+        assert_eq!(
+            retained, expected,
+            "must retain the union, not just `second`"
+        );
     }
 
     /// A later frame that omits an id previously announced does NOT evict it — the absence
@@ -537,7 +538,12 @@ mod tests {
 
     #[test]
     fn kat_body_layout_is_pinned() {
-        const KAT_HEX: &str = "3333333333333333333333333333333333333333333333333333333333333300024444444444444444444444444444444444444444444444444444444444444455555555555555555555555555555555555555555555555555555555555555";
+        // store_id(32x0x33) || launcher_id_count(u16 BE = 0x0002) || id1(32x0x44) || id2(32x0x55).
+        // Regression (#3252): the previous literal here was short by 3 bytes (31 repeats of
+        // 0x33 instead of 32), a hand-typing slip that shifted every field after `store_id`.
+        // The encoder was never wrong — every other test in this module (round-trip, max-size,
+        // body-bound) already proved it matches this exact layout.
+        const KAT_HEX: &str = "3333333333333333333333333333333333333333333333333333333333333333000244444444444444444444444444444444444444444444444444444444444444445555555555555555555555555555555555555555555555555555555555555555";
         let a = DistributorAnnounce {
             store_id: [0x33; 32],
             launcher_ids: vec![[0x44; 32], [0x55; 32]],

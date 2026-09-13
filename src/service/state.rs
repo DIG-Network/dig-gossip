@@ -183,6 +183,20 @@ pub(crate) struct LiveSlot {
     /// or evict the reconnect. (Operator-initiated bans pass `None` and remain a blind, identity-scoped
     /// remove — they are not reachable from a stale per-session task.)
     pub generation: u64,
+    /// Per-peer receiver-side cache of `distributor-announce` (opcode 226, #3252) hints this
+    /// connection has sent — unioned across frames, never replaced. Lives here (like
+    /// [`reputation`](Self::reputation) and [`traffic`](Self::traffic)) rather than in a parallel
+    /// store, so it is torn down with the slot on disconnect/supersede like every other
+    /// per-connection cache.
+    ///
+    /// Populating this from an inbound frame is a later unit's inbound-dispatch wiring, not this
+    /// one's: this crate does not yet call any of its decoded-payload accessors from a receive
+    /// loop for opcode 222 either (`holdings_announce_payload` has the same zero-in-crate-caller
+    /// shape, re-exported from `lib.rs` and left to the embedding application). Same treatment as
+    /// [`inbound_rate_limiter`](Self::inbound_rate_limiter) below: constructed on every slot,
+    /// intentionally unread here, kept for the documented future reader.
+    #[allow(dead_code)]
+    pub distributor_hints: Arc<Mutex<crate::service::distributor_announce::DistributorHintCache>>,
     /// [`AbortHandle`](tokio::task::AbortHandle) for this slot's CON-004 keepalive task (#1691).
     ///
     /// Aborted the instant the slot is superseded by a same-`peer_id` reconnect, so the stale
@@ -676,15 +690,6 @@ pub struct ServiceState {
     /// SPEC §8.1 — "Message cache: LRU capacity 1000, TTL 60s."
     pub message_cache: Mutex<crate::gossip::message_cache::MessageCache>,
 
-    /// Receiver-side union-only cache of `distributor-announce` (opcode 226, #3252) hints,
-    /// keyed by `store_id` across **every** peer — not per-connection: two peers announcing
-    /// about the same store must fold into the same set, so this lives on [`ServiceState`]
-    /// alongside [`Self::plumtree`]/[`Self::message_cache`] rather than inside [`LiveSlot`].
-    /// Never replaced, never diffed — see [`crate::service::distributor_announce`] for why.
-    /// Staleness is bounded by [`DistributorHintCache`](crate::service::distributor_announce::DistributorHintCache)'s
-    /// own age-based eviction, not by connection teardown.
-    pub distributor_hints: Mutex<crate::service::distributor_announce::DistributorHintCache>,
-
     /// **INT-007** — immutable BGP prefix table for IP → AS-number classification (#1703).
     ///
     /// This is REFERENCE DATA only, never mutable occupancy state. Outbound diversity occupancy
@@ -910,9 +915,6 @@ impl ServiceState {
             seen_messages: Mutex::new(LruCache::new(cap)),
             plumtree: Mutex::new(crate::gossip::plumtree::PlumtreeState::new()),
             message_cache: Mutex::new(crate::gossip::message_cache::MessageCache::new()),
-            distributor_hints: Mutex::new(
-                crate::service::distributor_announce::DistributorHintCache::new(),
-            ),
             as_table: AsLookupTable::empty(),
             peers: Mutex::new(HashMap::new()),
             banned: Mutex::new(HashMap::new()),
