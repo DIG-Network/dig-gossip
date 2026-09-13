@@ -90,6 +90,11 @@ impl MessagePriority {
             // DIG band. The DIRECTED profile opcodes (224/225) take the `Normal` default: a body
             // request is a user waiting on an answer, so it must not queue behind bulk floods.
             crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE => Self::Bulk,
+            // DistributorAnnounce (opcode 226) → Bulk: small, infrequent public discovery
+            // broadcast (#3252), unsigned (authority is the on-chain coin, not the sender). This
+            // is the ONLY path that classifies it: upstream `ProtocolMessageTypes` has no
+            // `DistributorAnnounce` variant (dig_ecosystem#2228).
+            crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE => Self::Bulk,
             // Default
             _ => Self::Normal,
         }

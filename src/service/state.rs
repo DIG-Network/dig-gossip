@@ -183,6 +183,13 @@ pub(crate) struct LiveSlot {
     /// or evict the reconnect. (Operator-initiated bans pass `None` and remain a blind, identity-scoped
     /// remove — they are not reachable from a stale per-session task.)
     pub generation: u64,
+    /// Per-peer receiver-side cache of `distributor-announce` (opcode 226, #3252) hints this
+    /// connection has sent — unioned across frames, never replaced. Lives here (like
+    /// [`reputation`](Self::reputation) and [`traffic`](Self::traffic)) rather than in a parallel
+    /// store, so it is torn down with the slot on disconnect/supersede like every other
+    /// per-connection cache.
+    pub distributor_hints:
+        Arc<Mutex<crate::service::distributor_announce::DistributorHintCache>>,
     /// [`AbortHandle`](tokio::task::AbortHandle) for this slot's CON-004 keepalive task (#1691).
     ///
     /// Aborted the instant the slot is superseded by a same-`peer_id` reconnect, so the stale

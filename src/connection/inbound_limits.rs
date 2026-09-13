@@ -321,6 +321,27 @@ pub fn dig_extension_rate_limits_map() -> HashMap<u8, RateLimit> {
             None,
         ),
     );
+    // #3252 — distributor-announce (opcode 226) is an unsigned, small, infrequent public
+    // discovery broadcast: any internet host may originate it, and it costs the receiver no
+    // signature verify — only a chain lookup per novel launcher id, which the receiver-side
+    // `DistributorHintCache` bounds independently. Without an explicit row it would fall through
+    // to the loose `default_settings` (100/min, 1 MiB), the #1720/#1760-D fail-open class.
+    // - `max_size` = `MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES` (1058 B): the EXACT bound
+    //   `DistributorAnnounce::decode` enforces (rejects any count over
+    //   `MAX_LAUNCHER_IDS_PER_ANNOUNCE` before reserving), so every legit announce is provably
+    //   `<= max_size` and never hard-dropped. Referencing the const keeps the limiter and the
+    //   enforced bound from drifting (mirrors the 222 tie to `MAX_ANNOUNCE_FRAME_BYTES`).
+    // - `freq` 6/min: at 32 novel launcher ids/frame this bounds a connection to 192 novel ids/min
+    //   (192 wasted chain lookups/min/conn worst case) — well below the 20-100/min rows above,
+    //   since a distributor set changes far less often than a holdings re-announce.
+    m.insert(
+        crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE,
+        RateLimit::new(
+            6.0,
+            crate::service::distributor_announce::MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES as f64,
+            None,
+        ),
+    );
     m
 }
 
@@ -432,6 +453,23 @@ mod tests {
         assert_eq!(
             row.max_size,
             crate::service::holdings_announce::MAX_ANNOUNCE_FRAME_BYTES as f64
+        );
+    }
+
+    /// The opcode-226 `max_size` MUST equal the enforced `MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES`
+    /// bound (#3252) — the limiter row references that const, so a legit announce that passes
+    /// the enforced body bound is provably within the limiter cap and never hard-dropped.
+    /// Deleting this row instead is the revert-proof for `every_220_band_opcode_is_classified`
+    /// going RED.
+    #[test]
+    fn distributor_announce_226_max_size_ties_to_enforced_body_bound() {
+        let limits = dig_extension_rate_limits_map();
+        let row = limits
+            .get(&crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE)
+            .expect("opcode 226 has a DIG rate-limit row");
+        assert_eq!(
+            row.max_size,
+            crate::service::distributor_announce::MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES as f64
         );
     }
 

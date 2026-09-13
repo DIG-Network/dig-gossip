@@ -10,6 +10,7 @@
 pub(crate) mod state;
 
 pub mod dig_message;
+pub mod distributor_announce;
 pub mod gossip_handle;
 pub mod gossip_service;
 pub mod holdings_announce;

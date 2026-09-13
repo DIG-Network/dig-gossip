@@ -204,9 +204,9 @@ fn test_cargo_toml_chia_crates_share_one_version_line() {
 /// `[[package]]` block lists `chia-sha2`, `chia-traits`, `chia_streamable_macro`) and confirm
 /// they match `LINE` in `test_cargo_toml_chia_crates_share_one_version_line` above. If they
 /// don't match, the pin move is incoherent and must be abandoned — do not edit this assertion
-/// to make it pass. `"0.9"` was verified this way: `dig-peer-protocol` 0.9.1 resolves
+/// to make it pass. `"0.10"` was verified this way (#3252): `dig-peer-protocol` 0.10.0 resolves
 /// `chia-sha2` / `chia-traits` / `chia_streamable_macro` all at 0.36.1, the same cohort
-/// `chia-protocol` is pinned to, so the pin move is coherent and `"0.9"` is correct here.
+/// `chia-protocol` is pinned to, so the pin move is coherent and `"0.10"` is correct here.
 #[test]
 fn test_cargo_toml_dig_peer_protocol_is_on_the_matching_line() {
     let manifest = load_cargo_toml();
@@ -214,7 +214,7 @@ fn test_cargo_toml_dig_peer_protocol_is_on_the_matching_line() {
     let dep = deps
         .get("dig-peer-protocol")
         .expect("dig-peer-protocol must be declared");
-    assert_eq!(dep_version(dep), "0.9");
+    assert_eq!(dep_version(dep), "0.10");
 }
 
 #[test]
