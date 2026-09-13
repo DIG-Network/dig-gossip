@@ -185,9 +185,9 @@ pub enum HostileFrame {
 
     /// A frame whose opcode this build has no meaning for.
     ///
-    /// Opcode 226 is the next unallocated slot in the 220-255 DIG free band (this build knows
-    /// 220 `DigMessage`, 221 `StoreMelted`, 222 `HoldingsAnnounce`, and 223/224/225 profile-sync),
-    /// so it is exactly what a peer
+    /// Opcode 227 is the next unallocated slot in the 220-255 DIG free band (this build knows
+    /// 220 `DigMessage`, 221 `StoreMelted`, 222 `HoldingsAnnounce`, 223/224/225 profile-sync, and
+    /// 226 `DistributorAnnounce`), so it is exactly what a peer
     /// running a newer dig-node emits — the realistic case, not a synthetic one. The previous
     /// transport decoded through a closed enum, so this was a fatal decode error.
     UnknownOpcode,
@@ -202,11 +202,32 @@ pub enum HostileFrame {
 
 /// The unallocated DIG free-band opcode used by [`HostileFrame::UnknownOpcode`].
 ///
-/// Moved 223 -> 226 when dig_ecosystem#3014 allocated 223/224/225 to profile sync. The
-/// `hostile_fixtures_still_have_the_property_they_are_named_for` guard is what caught it: this
-/// value MUST stay unallocated in both the DIG and Chia namespaces, or the tolerance tests above
-/// go vacuous while staying green.
-const UNALLOCATED_DIG_OPCODE: u8 = 226;
+/// Moved 223 -> 226 when dig_ecosystem#3014 allocated 223/224/225 to profile sync, then 226 was
+/// itself allocated by dig_ecosystem#3252 (`distributor-announce`) — the second hand-patch for
+/// the identical reason. The `hostile_fixtures_still_have_the_property_they_are_named_for` guard
+/// is what caught both: this value MUST stay unallocated in both the DIG and Chia namespaces, or
+/// the tolerance tests above go vacuous while staying green.
+///
+/// A hardcoded literal here just queues up a third expiry the next time an opcode is allocated,
+/// so the value is now **derived** rather than hand-maintained: this scans the DIG free band
+/// upward from [`dig_peer_protocol::FREE_BAND_START`] for the first value that is neither in
+/// [`dig_peer_protocol::ALL_DIG_OPCODES`] nor decodable as a Chia [`ProtocolMessageTypes`] — the
+/// same two predicates the `sec_2391` guard independently checks. A function rather than a
+/// `const fn`: the derivation walks `ALL_DIG_OPCODES` with `.contains` and decodes via
+/// `TryFrom`/`from_bytes`, neither of which is usable in a `const` context on this crate's
+/// edition.
+fn unallocated_dig_opcode() -> u8 {
+    (dig_peer_protocol::FREE_BAND_START..=u8::MAX)
+        .find(|candidate| {
+            !dig_peer_protocol::ALL_DIG_OPCODES.contains(candidate)
+                && ProtocolMessageTypes::from_bytes(&[*candidate]).is_err()
+        })
+        .expect(
+            "every opcode from FREE_BAND_START..=255 is allocated in one namespace or the \
+             other -- the DIG free band is exhausted and this fixture can no longer produce an \
+             unallocated opcode",
+        )
+}
 
 impl HostileFrame {
     /// The exact wire bytes this frame puts on the socket.
@@ -231,7 +252,7 @@ impl HostileFrame {
             }
             Self::UnknownOpcode => {
                 let body = b"a body this build has no meaning for".to_vec();
-                let mut out = vec![UNALLOCATED_DIG_OPCODE, 0];
+                let mut out = vec![unallocated_dig_opcode(), 0];
                 out.extend_from_slice(&(body.len() as u32).to_be_bytes());
                 out.extend_from_slice(&body);
                 out
