@@ -1148,6 +1148,9 @@ impl GossipHandle {
                         inbound_rate_limiter: Arc::clone(&inbound_limiter),
                         traffic: Arc::new(Mutex::new(PeerConnectionWireMetrics::new(opened_at))),
                         generation,
+                        distributor_hints: Arc::new(Mutex::new(
+                            crate::service::distributor_announce::DistributorHintCache::new(),
+                        )),
                         keepalive_task: keepalive_task.clone(),
                     }),
                 )),

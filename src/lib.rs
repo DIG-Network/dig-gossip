@@ -107,6 +107,12 @@ pub use service::dig_message::{
     dig_message_payload, frame_dig_message, frame_envelope, is_dig_message, ReassembleError,
     StreamFrame, StreamReassembler, DIG_MESSAGE, MAX_BUFFERED_BYTES, MAX_BUFFERED_CHUNKS,
 };
+pub use service::distributor_announce::{
+    distributor_announce_payload, frame_distributor_announce, is_distributor_announce,
+    DistributorAnnounce, DistributorAnnounceError, DistributorHintCache, DISTRIBUTOR_ANNOUNCE,
+    MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES, MAX_LAUNCHER_IDS_PER_ANNOUNCE,
+    MAX_RETAINED_HINTS_PER_PEER,
+};
 pub use service::gossip_handle::{pool_auto_dial_traversal_methods, GossipHandle};
 pub use service::gossip_service::GossipService;
 pub use service::holdings_announce::{

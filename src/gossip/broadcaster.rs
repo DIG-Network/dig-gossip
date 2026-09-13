@@ -73,7 +73,10 @@ pub fn classify_broadcast(
         // `ProfileRootAnnounce` (223, #3014) is likewise a public all-peers flood: it announces a
         // profile-SMT root to everyone. It is unsigned by design — its authority is the on-chain
         // root, which the receiver compares against — so it needs no signature to disseminate.
-        | crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE => {
+        | crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE
+        // `DistributorAnnounce` (226, #3252) is likewise a public all-peers flood, deliberately
+        // unsigned: its authority is the on-chain distributor coin, not the announcing peer.
+        | crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE => {
             return BroadcastStrategy::Plumtree
         }
         // A `DigMessage` (220) is a 1:1 directed frame (WU6), never broadcast. The profile-body
