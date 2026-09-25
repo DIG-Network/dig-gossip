@@ -139,9 +139,16 @@ impl InboundRateLimiter {
 ///
 /// This is keyed by the very opcode constants the [`dig_extension_rate_limits_map`] rows use, and it
 /// must stay in lockstep with the canonical public-flood grouping in
-/// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast): an opcode is a member here
-/// if and only if `classify_broadcast` routes it to `BroadcastStrategy::Plumtree`. That iff is what
-/// the guard test asserts, opcode by opcode, over the assigned 220-band namespace — so the two lists
+/// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast): **for an opcode in the
+/// assigned DIG 220 band**, it is a member here if and only if `classify_broadcast` routes that
+/// opcode to `BroadcastStrategy::Plumtree`.
+///
+/// That band qualifier is load-bearing — the iff holds ONLY over the assigned 220-band opcodes, never
+/// over the whole `u8` space. `classify_broadcast` also routes Chia's `NewPeak` (56) to `Plumtree`,
+/// and every byte that fails to decode as a `ProtocolMessageTypes` — including an unassigned opcode
+/// such as 227 — falls through to its safe `Plumtree` DEFAULT, which is a dissemination default and
+/// not a public-flood claim. None of those is a member here, and none should be. The band-scoped iff
+/// is what the guard test asserts, opcode by opcode, over exactly that domain — so the two lists
 /// cannot drift even when a new flood opcode is added. It is the single source of truth for the SET
 /// of flood opcodes the #1626/#1796 penalty exemption applies to (the exemption itself is further
 /// narrowed to RATE violations — see [`rejected_frame_incurs_penalty`]).
@@ -695,6 +702,45 @@ mod tests {
         );
     }
 
+    /// #1626/#3252 — same guarantee for 226 (DistributorAnnounce): the 7th frame is dropped by the
+    /// REAL gate (the 6/min DIG row) yet is EXEMPT from the reputation penalty. 226 is a public flood,
+    /// so the delivering connection is a forwarder rather than the origin and must not be charged for
+    /// redistributing another host's over-cap announce.
+    ///
+    /// RED without the fix: with `DISTRIBUTOR_ANNOUNCE` absent from [`is_public_flood_opcode`], the
+    /// final assertion (`!incurs_penalty`) fails — the honest relayer is charged (#1626 false
+    /// attribution, reopened for 226).
+    #[test]
+    fn over_cap_distributor_announce_226_is_dropped_but_not_penalised() {
+        let frame = |seed: u32| DigMessage {
+            msg_type: crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE,
+            id: None,
+            data: Bytes::new({
+                // Distinct payloads (well under the 1058 B cap) so each is a real, non-duplicate frame.
+                let mut v = vec![0u8; 66];
+                v[0] = seed as u8;
+                v[1] = (seed >> 8) as u8;
+                v
+            }),
+        };
+        let mut gate = InboundRateLimiter::new(1.0);
+        for seed in 0..6 {
+            assert!(
+                gate.allows(&frame(seed)),
+                "frame {seed} within the 6/min 226 cap must pass the REAL gate"
+            );
+        }
+        let over_cap = frame(999);
+        assert!(
+            !gate.allows(&over_cap),
+            "7th 226 must be DROPPED by the REAL gate (#3252 cap intact)"
+        );
+        assert!(
+            !rejected_frame_incurs_penalty(&over_cap),
+            "a dropped 226 public flood must NOT charge a reputation penalty (#1626)"
+        );
+    }
+
     /// #1626 — CONTRAST: an over-cap NON-flood opcode is dropped by the REAL gate AND still incurs the
     /// penalty. Proves the exemption is opcode-scoped, not a blanket disable of rate-limit attribution.
     #[test]
@@ -768,6 +814,36 @@ mod tests {
         assert!(
             rejected_frame_incurs_penalty(&over_size),
             "an oversized (size-violating) 221 flood is origin-attributable and MUST be penalised"
+        );
+    }
+
+    /// #1796/#3252 — an oversized 226 (DistributorAnnounce) frame — payload EXCEEDS
+    /// `MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES` (1058 B) — is a SIZE violation, attributable to the
+    /// delivering connection itself, so it is dropped AND penalised. Mirrors the 221/222 cases: the
+    /// #1626 flood exemption is violation-kind scoped, so adding 226 to the flood set must NOT hand it
+    /// a free pass on oversize.
+    ///
+    /// RED if the #1796 narrowing is inverted (the flood exemption made unconditional for 226): the
+    /// final assertion fails and an oversized 226 escapes attribution.
+    #[test]
+    fn oversized_distributor_announce_226_is_penalised() {
+        let over_size = DigMessage {
+            msg_type: crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE,
+            id: None,
+            data: Bytes::new(vec![
+                0u8;
+                crate::service::distributor_announce::MAX_DISTRIBUTOR_ANNOUNCE_BODY_BYTES
+                    + 1
+            ]),
+        };
+        let mut gate = InboundRateLimiter::new(1.0);
+        assert!(
+            !gate.allows(&over_size),
+            "an oversized 226 frame must be rejected by the REAL gate (size cap)"
+        );
+        assert!(
+            rejected_frame_incurs_penalty(&over_size),
+            "an oversized (size-violating) 226 flood is origin-attributable and MUST be penalised"
         );
     }
 
