@@ -133,22 +133,25 @@ impl InboundRateLimiter {
 }
 
 /// Whether `msg_type` is a **public-flood** broadcast opcode: a message any internet host may
-/// originate and that disseminates to EVERY peer via Plumtree — `StoreMelted` = 221 (#1316) and
-/// `HoldingsAnnounce` = 222 (#1428) and `ProfileRootAnnounce` = 223 (#3014).
+/// originate and that disseminates to EVERY peer via Plumtree — `StoreMelted` = 221 (#1316),
+/// `HoldingsAnnounce` = 222 (#1428), `ProfileRootAnnounce` = 223 (#3014) and
+/// `DistributorAnnounce` = 226 (#3252).
 ///
 /// This is keyed by the very opcode constants the [`dig_extension_rate_limits_map`] rows use, and it
-/// is kept in lockstep with the canonical public-flood grouping in
-/// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) — both name exactly
-/// `StoreMelted | HoldingsAnnounce` — so the two lists cannot drift (a guard test enumerates the wire
-/// enum to prove it). It is the single source of truth for the SET of flood opcodes the #1626/#1796
-/// penalty exemption applies to (the exemption itself is further narrowed to RATE violations — see
-/// [`rejected_frame_incurs_penalty`]).
+/// must stay in lockstep with the canonical public-flood grouping in
+/// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast): an opcode is a member here
+/// if and only if `classify_broadcast` routes it to `BroadcastStrategy::Plumtree`. That iff is what
+/// the guard test asserts, opcode by opcode, over the assigned 220-band namespace — so the two lists
+/// cannot drift even when a new flood opcode is added. It is the single source of truth for the SET
+/// of flood opcodes the #1626/#1796 penalty exemption applies to (the exemption itself is further
+/// narrowed to RATE violations — see [`rejected_frame_incurs_penalty`]).
 pub(crate) fn is_public_flood_opcode(msg_type: u8) -> bool {
     matches!(
         msg_type,
         crate::service::store_melted::STORE_MELTED
             | crate::service::holdings_announce::HOLDINGS_ANNOUNCE
             | crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE
+            | crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE
     )
 }
 
@@ -161,7 +164,8 @@ pub(crate) fn is_public_flood_opcode(msg_type: u8) -> bool {
 /// KIND of violation (#1796):
 ///
 /// - A **non-flood** opcode is always penalised on rejection (unchanged).
-/// - A **public-flood** opcode (221/222/223) is penalised ONLY when the frame is a SIZE/format violation
+/// - A **public-flood** opcode (see [`is_public_flood_opcode`]) is penalised ONLY when the frame is a
+///   SIZE/format violation
 ///   (`exceeds_dig_wire_max_size`). An over-cap RATE/frequency rejection of a legit-sized flood stays
 ///   EXEMPT: on a multi-hop public flood the delivering connection is a **forwarder, not the origin**,
 ///   so charging it for redistributing another host's over-cap flood would ban honest relayers by
@@ -185,7 +189,7 @@ pub(crate) fn rejected_frame_incurs_penalty(msg: &DigMessage) -> bool {
 /// [`dig_extension_rate_limits_map`] row declares — i.e. the rejection is a SIZE/format violation
 /// rather than a rate/frequency one. The row is the SINGLE SOURCE OF TRUTH for the bound (never a
 /// hardcoded literal); an opcode with no row cannot exceed a bound it doesn't have, so returns
-/// `false` (unreachable for 221/222/223 — the completeness guard pins their rows).
+/// `false` (unreachable for a public-flood opcode — the completeness guard pins every 220-band row).
 fn exceeds_dig_wire_max_size(msg: &DigMessage) -> bool {
     dig_extension_rate_limits_map()
         .get(&msg.msg_type)
@@ -567,38 +571,57 @@ mod tests {
         }
     }
 
-    /// #1626 — the public-flood exemption set is EXACTLY `StoreMelted` (221), `HoldingsAnnounce`
-    /// (222) and `ProfileRootAnnounce` (223, #3014), enumerated over the WHOLE opcode space so the classification can never silently widen
-    /// away from the canonical
-    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) grouping.
+    /// #1626/#3252 — the penalty-exemption set and the canonical broadcast classification are the
+    /// SAME set: for every assigned 220-band opcode,
+    /// [`is_public_flood_opcode`] is true **if and only if**
+    /// [`classify_broadcast`](crate::gossip::broadcaster::classify_broadcast) routes that opcode to
+    /// [`BroadcastStrategy::Plumtree`](crate::gossip::broadcaster::BroadcastStrategy::Plumtree).
     ///
-    /// Every one of the 256 opcodes is asked directly. There is deliberately no decode filter: the
-    /// DIG band has no `ProtocolMessageTypes` variants, so filtering on a successful decode would
-    /// skip exactly the opcodes this test is named after and leave it asserting the empty set.
+    /// The iff is asserted in BOTH directions against the real `classify_broadcast`, not against a
+    /// hardcoded literal set: the previous guard pinned only a copied list and so could not see that
+    /// 226 (`DistributorAnnounce`) had been added to the flood arm of `classify_broadcast` while the
+    /// exemption still named 221/222/223 — the #1626 false-attribution bug reopened for 226.
+    ///
+    /// The domain is `ALL_DIG_OPCODES` filtered to the band, NOT `0u8..=u8::MAX`: an unassigned byte
+    /// fails to decode as a `ProtocolMessageTypes` and falls through to `classify_broadcast`'s safe
+    /// `Plumtree` default, which is a dissemination default and not a public-flood claim — iterating
+    /// the whole space would assert a falsehood about every unassigned opcode.
     #[test]
-    fn public_flood_opcode_set_is_exactly_221_222_and_223() {
+    fn public_flood_opcode_set_matches_classify_broadcast() {
+        use crate::gossip::broadcaster::{classify_broadcast, BroadcastStrategy};
+
+        let band: Vec<u8> = ALL_DIG_OPCODES
+            .into_iter()
+            .filter(|opcode| *opcode >= DIG_WIRE_BAND_START)
+            .collect();
+        assert!(
+            !band.is_empty(),
+            "the assigned 220-band opcode set must be non-empty, or this guard checks nothing"
+        );
         let mut flood = Vec::new();
-        for opcode in 0u8..=u8::MAX {
-            let expected = opcode == crate::service::store_melted::STORE_MELTED
-                || opcode == crate::service::holdings_announce::HOLDINGS_ANNOUNCE
-                || opcode == crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE;
+        for opcode in band {
+            let floods = classify_broadcast(opcode, false) == BroadcastStrategy::Plumtree;
             assert_eq!(
                 is_public_flood_opcode(opcode),
-                expected,
-                "opcode {opcode} public-flood classification"
+                floods,
+                "opcode {opcode}: is_public_flood_opcode() must agree with classify_broadcast() in \
+                 BOTH directions — a flood opcode missing from the exemption set charges the \
+                 delivering peer for another host's flood (#1626 false attribution), and a \
+                 non-flood opcode wrongly exempted loses its rate penalty"
             );
-            if is_public_flood_opcode(opcode) {
+            if floods {
                 flood.push(opcode);
             }
         }
-        // Belt and braces against a future refactor that makes the loop body vacuous: the set is
-        // named, in full, not merely agreed with opcode by opcode.
+        // Belt and braces, secondary to the iff above: guards against a future refactor that makes
+        // the loop body vacuous by naming the set in full.
         assert_eq!(
             flood,
             vec![
                 crate::service::store_melted::STORE_MELTED,
                 crate::service::holdings_announce::HOLDINGS_ANNOUNCE,
-                crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE
+                crate::service::profile_sync::PROFILE_ROOT_ANNOUNCE,
+                crate::service::distributor_announce::DISTRIBUTOR_ANNOUNCE
             ]
         );
     }
