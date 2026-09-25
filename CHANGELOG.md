@@ -4,6 +4,11 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
+## [0.33.1] - 2026-09-25
+
+### Bug Fixes
+- **limits:** Opcode 226 DISTRIBUTOR_ANNOUNCE is a public flood (#97)
+
 ## [0.33.0] - 2026-09-13
 
 ### Features
