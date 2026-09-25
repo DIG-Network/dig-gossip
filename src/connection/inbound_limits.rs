@@ -144,7 +144,7 @@ impl InboundRateLimiter {
 /// opcode to `BroadcastStrategy::Plumtree`.
 ///
 /// That band qualifier is load-bearing — the iff holds ONLY over the assigned 220-band opcodes, never
-/// over the whole `u8` space. `classify_broadcast` also routes Chia's `NewPeak` (56) to `Plumtree`,
+/// over the whole `u8` space. `classify_broadcast` also routes Chia's `NewPeak` to `Plumtree`,
 /// and every byte that fails to decode as a `ProtocolMessageTypes` — including an unassigned opcode
 /// such as 227 — falls through to its safe `Plumtree` DEFAULT, which is a dissemination default and
 /// not a public-flood claim. None of those is a member here, and none should be. The band-scoped iff
