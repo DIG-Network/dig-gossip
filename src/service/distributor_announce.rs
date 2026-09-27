@@ -282,7 +282,9 @@ pub fn frame_distributor_announce(announce: &DistributorAnnounce) -> DigMessage 
 // ============================================================================
 
 /// A per-sending-peer cache of `(store_id, launcher_id)` hints, unioned across every
-/// `distributor-announce` frame that peer has sent — **never replaced**.
+/// `distributor-announce` frame that peer has sent — **never replaced**. Owned by the embedding
+/// application, keyed by the `PeerId` in the `inbound_receiver` tuple; this crate never
+/// instantiates it (same as 222/223 consumption).
 ///
 /// Bounded by [`MAX_RETAINED_HINTS_PER_PEER`]: once at capacity, [`Self::union`] ages out the
 /// **oldest-inserted** entry, one per new entry admitted — never in response to what a frame
