@@ -4,10 +4,10 @@ All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org) and
 [Conventional Commits](https://www.conventionalcommits.org).
 
-## [0.33.2] - 2026-09-26
+## [0.33.2] - 2026-09-27
 
-### Maintenance
-- Remove dead `distributor_hints` field from `LiveSlot` — cache ownership moves to embedding app (#3252)
+### Bug Fixes
+- Remove dead distributor_hints field from LiveSlot (#100)
 
 ## [0.33.1] - 2026-09-25
 
