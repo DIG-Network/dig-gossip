@@ -827,9 +827,6 @@ where
                     PeerConnectionWireMetrics::new(opened_at),
                 )),
                 generation,
-                distributor_hints: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::service::distributor_announce::DistributorHintCache::new(),
-                )),
                 keepalive_task,
             }),
         )
